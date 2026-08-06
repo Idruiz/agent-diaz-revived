@@ -1,0 +1,6 @@
+.chatlog{display:grid;gap:1rem;max-height:50vh;overflow:auto;padding:.25rem}
+.bubble{max-width:82%;padding:1rem 1.2rem;border-radius:16px;background:#102330;border:1px solid #244255}
+.bubble.user{justify-self:end;background:#193447}
+.bubble.assistant{justify-self:start}
+.bubble b{color:#c99a2e;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}
+.bubble p{white-space:pre-wrap;line-height:1.55;margin:.5rem 0 0}
