@@ -9,6 +9,16 @@ import { getSkillForKind } from "./skills.js";
 
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 
+export function providerFailureMessage(response:any):string{
+  const code=response?.error?.code||response?.incomplete_details?.reason||response?.status||"unknown";
+  const detail=response?.error?.message||"The model provider did not return a completed response.";
+  return `OpenAI response failed (${code}): ${detail}`;
+}
+
+function isTransientProviderFailure(response:any):boolean{
+  return ["server_error","rate_limit_exceeded"].includes(response?.error?.code);
+}
+
 function artifactInstructions(kind:JobKind):string{
   return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, sections[{heading,body,bullets,speakerNotes, optional imageQuery, optional table{title,headers,rows}, optional chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote}, optional diagram{title,nodes,caption}}], optional pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Every material factual claim must be supported. Never invent numbers. Use 7-12 sections for presentations and 5-14 otherwise. Include at least two meaningful visual elements across tables, charts, or diagrams when the evidence supports them. Do not add decorative charts without real data. Body and bullets must contain finished content, not directions or placeholders.${kind==="website"?" A website MUST define 3-6 pages with unique lowercase slugs (use index for the home page), assign every section heading to a page, and give at least four sections concrete imageQuery values for relevant documentary photographs. Do not request logos, illustrations, AI images, text-heavy graphics, or identifiable private people.":""}`;
 }
@@ -90,25 +100,43 @@ export class AgentRunner {
     const job=this.db.getJob(jobId);if(!job||["completed","cancelled"].includes(job.status))return;
     try{
       this.db.updateJob(jobId,{status:"running",progress:10,message:"Agent is working"});
-      let rid=this.db.getProviderResponseId(jobId);let response:any;
-      if(rid){response=await this.client.responses.retrieve(rid);}else{
-        const skill=getSkillForKind(job.kind);
+      const skill=getSkillForKind(job.kind);
+      const artifactKinds=["research","analysis","presentation","document","website"];
+      const createFreshResponse=async()=>{
         const uploadRows=this.db.raw.prepare("SELECT file_ids_json FROM jobs WHERE id=?").get(jobId) as any;
         const ids:string[]=JSON.parse(uploadRows.file_ids_json);const uploads=this.db.getUploads(ids);
         const tools:any[]=[];if(skill.tools.includes("web_search"))tools.push({type:"web_search"});if(skill.tools.includes("python"))tools.push({type:"code_interpreter",container:{type:"auto",file_ids:uploads.map(u=>u.openaiFileId)}});
         if(skill.tools.includes("mcp")&&this.config.MCP_SERVER_URL)tools.push(this.mcpTool());
-        const artifactKinds=["research","analysis","presentation","document","website"];const instructions=["You are Agent Díaz, a careful autonomous work agent. Complete read-only work autonomously. Never claim an action succeeded without a tool result. External writes require explicit approval. State uncertainty and never fabricate evidence.",`ACTIVE SKILL: ${skill.name}\n${skill.instructions}\nValidation: ${skill.validation.join("; ")}`,...artifactKinds.includes(job.kind)?[artifactInstructions(job.kind)]:[]].join("\n\n");
+        const instructions=["You are Agent Díaz, a careful autonomous work agent. Complete read-only work autonomously. Never claim an action succeeded without a tool result. External writes require explicit approval. State uncertainty and never fabricate evidence.",`ACTIVE SKILL: ${skill.name}\n${skill.instructions}\nValidation: ${skill.validation.join("; ")}`,...artifactKinds.includes(job.kind)?[artifactInstructions(job.kind)]:[]].join("\n\n");
         const messages=this.db.listMessages(job.conversationId);
         const archives=this.db.listArchiveSummaries(20);
-        const prior=messages.filter(m=>m.jobId!==job.id).map(m=>({role:m.role,content:m.content}));
+        const priorMessages=messages.filter(m=>m.jobId!==job.id);
+        if(!messages.some(m=>m.jobId===job.id)){
+          let retrySource=-1;for(let i=priorMessages.length-1;i>=0;i--)if(priorMessages[i]?.role==="user"&&priorMessages[i]?.content===job.prompt){retrySource=i;break}
+          if(retrySource>=0)priorMessages.splice(retrySource,1);
+        }
+        const prior=priorMessages.map(m=>({role:m.role,content:m.content}));
         const archiveContext=archives.length?`ARCHIVAL MEMORY FROM OLDER CONVERSATIONS (use only when relevant; never claim it was said in this conversation):\n${archives.map(a=>`[${a.title}] ${a.summary}`).join("\n\n")}`:"";
         const continuity=`Maintain continuity with every prior turn in this conversation. Answer the newest request, build on established decisions, and do not repeat an answer already given unless the user asks for repetition. If correcting an earlier answer, identify the change. ${archiveContext}`;
-        response=await this.client.responses.create({model:this.config.OPENAI_MODEL,instructions:`${instructions}\n\n${continuity}`,input:[...prior,{role:"user",content:job.prompt}],tools,background:true,store:true,...(artifactKinds.includes(job.kind)?{text:{format:{type:"json_object"}}}:{})} as any);
+        return this.client.responses.create({model:this.config.OPENAI_MODEL,instructions:`${instructions}\n\n${continuity}`,input:[...prior,{role:"user",content:job.prompt}],tools,background:true,store:true,...(artifactKinds.includes(job.kind)?{text:{format:{type:"json_object"}}}:{})} as any);
+      };
+      let rid=this.db.getProviderResponseId(jobId);let response:any;
+      if(rid){response=await this.client.responses.retrieve(rid);}else{
+        response=await createFreshResponse();
         rid=response.id;this.db.updateJob(jobId,{providerResponseId:rid,progress:25,message:"Background response started"});
       }
-      while(["queued","in_progress"].includes(response.status)){await sleep(1800);if(this.db.getJob(jobId)?.status==="cancelled")return;response=await this.client.responses.retrieve(rid!);this.db.updateJob(jobId,{progress:Math.min(75,(this.db.getJob(jobId)?.progress??25)+3),message:`Agent status: ${response.status}`});}
-      if(this.captureApproval(jobId,response))return;
-      if(response.status!=="completed")throw new Error(`Provider response ended with status ${response.status}`);
+      let automaticRetries=0;
+      for(;;){
+        while(["queued","in_progress"].includes(response.status)){await sleep(1800);if(this.db.getJob(jobId)?.status==="cancelled")return;response=await this.client.responses.retrieve(rid!);this.db.updateJob(jobId,{progress:Math.min(75,(this.db.getJob(jobId)?.progress??25)+3),message:`Agent status: ${response.status}`});}
+        if(this.captureApproval(jobId,response))return;
+        if(response.status==="completed")break;
+        const providerError=providerFailureMessage(response);
+        log("error","provider.response_failed",{jobId,responseId:response.id,status:response.status,code:response?.error?.code,error:response?.error?.message});
+        if(automaticRetries===0&&!this.config.MCP_SERVER_URL&&isTransientProviderFailure(response)){
+          automaticRetries++;this.db.updateJob(jobId,{progress:25,message:"Provider failed transiently; retrying once"});await sleep(response?.error?.code==="rate_limit_exceeded"?5000:1200);response=await createFreshResponse();rid=response.id;this.db.updateJob(jobId,{providerResponseId:rid,message:"Background response restarted"});continue;
+        }
+        throw new Error(providerError);
+      }
       const output=response.output_text?.trim()||"";
       if(["research","analysis","presentation","document","website"].includes(job.kind)){
         this.db.updateJob(jobId,{status:"building",progress:82,message:"Building and validating artifact"});

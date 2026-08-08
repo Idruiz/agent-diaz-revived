@@ -15,6 +15,7 @@ export const api={
   createConversation:(title?:string)=>call<ConversationView>("/api/conversations",{method:"POST",body:JSON.stringify({title})}),
   job:(id:string)=>call<JobView&{artifacts:ArtifactView[];approvals:ApprovalView[]}>(`/api/jobs/${id}`),
   createJob:(input:{prompt:string;kind:JobKind;fileIds:string[];conversationId:string})=>call<JobView>("/api/jobs",{method:"POST",body:JSON.stringify(input)}),
+  retry:(id:string)=>call<JobView>(`/api/jobs/${id}/retry`,{method:"POST",body:"{}"}),
   cancel:(id:string)=>call(`/api/jobs/${id}/cancel`,{method:"POST",body:"{}"}),
   upload:async(files:File[])=>{const fd=new FormData();files.forEach(f=>fd.append("files",f));return call<UploadView[]>("/api/uploads",{method:"POST",body:fd});},
   decide:(id:string,decision:"approved"|"rejected")=>call(`/api/approvals/${id}`,{method:"POST",body:JSON.stringify({decision})})

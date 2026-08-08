@@ -10,7 +10,7 @@ export interface Db {
   createSession(id: string, hash: string, expiresAt: string): void;
   getSession(hash: string): { id: string; expiresAt: string } | undefined;
   deleteSession(hash: string): void;
-  createJob(input: { id: string; kind: JobKind; prompt: string; conversationId: string; fileIds: string[] }): JobView;
+  createJob(input: { id: string; kind: JobKind; prompt: string; conversationId: string; fileIds: string[]; recordUserMessage?: boolean }): JobView;
   getJob(id: string): JobView | undefined;
   listJobs(limit?: number): JobView[];
   updateJob(id: string, patch: Partial<Pick<JobView, "status" | "progress" | "message" | "outputText" | "error">> & { providerResponseId?: string | null }): void;
@@ -87,7 +87,7 @@ export function openDatabase(config: Config): Db {
       if(!raw.prepare("SELECT 1 FROM conversations WHERE id=? AND status='active'").get(input.conversationId)) throw new Error("Conversation is missing or archived");
       const t=now(); raw.prepare(`INSERT INTO jobs(id,kind,status,prompt,conversation_id,file_ids_json,progress,message,created_at,updated_at) VALUES(?,?,'queued',?,?,?,0,'Queued',?,?)`)
         .run(input.id,input.kind,input.prompt,input.conversationId,JSON.stringify(input.fileIds),t,t);
-      raw.prepare("INSERT INTO messages(id,conversation_id,role,content,job_id,created_at) VALUES(?,?,'user',?,?,?)").run(crypto.randomUUID(),input.conversationId,input.prompt,input.id,t);
+      if(input.recordUserMessage!==false)raw.prepare("INSERT INTO messages(id,conversation_id,role,content,job_id,created_at) VALUES(?,?,'user',?,?,?)").run(crypto.randomUUID(),input.conversationId,input.prompt,input.id,t);
       raw.prepare("UPDATE conversations SET updated_at=? WHERE id=?").run(t,input.conversationId);
       raw.prepare("UPDATE conversations SET title=? WHERE id=? AND title='New conversation'").run(input.prompt.replace(/\s+/g," ").slice(0,72),input.conversationId);
       return mapJob(raw.prepare("SELECT * FROM jobs WHERE id=?").get(input.id));
