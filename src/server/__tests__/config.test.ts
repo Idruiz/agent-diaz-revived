@@ -11,8 +11,8 @@ afterEach(() => {
 describe("durable storage configuration", () => {
   it("defaults to the writable storage directory when STORAGE_DIR is unset", () => {
     const config = loadConfig({
-      OPENAI_API_KEY: "test",
-      ADMIN_PASSWORD: "1234567890123456",
+      OPENAI_API_KEY: crypto.randomUUID(),
+      ADMIN_PASSWORD: crypto.randomUUID(),
     });
     const storageRoot = path.join(process.cwd(), "storage");
     expect(config.storageRoot).toBe(storageRoot);
@@ -25,8 +25,8 @@ describe("durable storage configuration", () => {
     const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-storage-"));
     roots.push(storageRoot);
     const config = loadConfig({
-      OPENAI_API_KEY: "test",
-      ADMIN_PASSWORD: "1234567890123456",
+      OPENAI_API_KEY: crypto.randomUUID(),
+      ADMIN_PASSWORD: crypto.randomUUID(),
       STORAGE_DIR: storageRoot,
     });
     expect(config.storageRoot).toBe(path.resolve(storageRoot));

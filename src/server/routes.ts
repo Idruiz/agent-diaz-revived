@@ -113,7 +113,7 @@ export function apiRoutes(
     const conversation = db.getConversation(req.params.id);
     if (!conversation || conversation.status !== "active")
       return res.status(404).json({ error: "Active conversation not found" });
-    res.json(db.setConversationMode(conversation.id, parsed.data.modelMode));
+    res.json(db.setConversationSettings(conversation.id, parsed.data));
   });
   const upload = multer({
     storage: multer.diskStorage({
@@ -238,6 +238,7 @@ export function apiRoutes(
         content: "",
         jobId: job.id,
         status: "streaming",
+        persona: job.persona,
       });
       res.status(200);
       res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -267,6 +268,7 @@ export function apiRoutes(
               model: profile.model,
               mode: profile.mode,
               reasoningEffort: profile.reasoningEffort,
+              persona: job.persona,
             }),
           onDelta: (delta) => send({ type: "delta", delta }),
           onApproval: (count) =>
@@ -297,10 +299,7 @@ export function apiRoutes(
       if (!parsed.success)
         return res.status(400).json({ error: "Invalid voice settings" });
       res.json(
-        await runner.createRealtimeToken(
-          parsed.data.conversationId,
-          parsed.data.voice,
-        ),
+        await runner.createRealtimeToken(parsed.data.conversationId),
       );
     } catch (error) {
       next(error);
@@ -319,11 +318,13 @@ export function apiRoutes(
       assistantId: crypto.randomUUID(),
       userText: parsed.data.userText,
       assistantText: parsed.data.assistantText,
+      persona: parsed.data.persona,
     });
     log("info", "voice.turn_saved", {
       conversationId: conversation.id,
       userCharacters: parsed.data.userText.length,
       assistantCharacters: parsed.data.assistantText.length,
+      persona: parsed.data.persona,
     });
     res.status(201).json({ ok: true });
   });

@@ -1,4 +1,4 @@
-# Agent Díaz 3.1
+# Agent Díaz 3.2
 
 Agent Díaz is a private, single-owner AI workbench for durable conversations, cited research, uploaded-file analysis, visual document production, presentations, and portable multi-page websites.
 
@@ -7,7 +7,9 @@ This repository is the complete application source. It does not contain credenti
 ## Production capabilities
 
 - Streaming Responses API chat with immediate user messages, inline thinking, stop, retry, and durable delivery state.
-- Per-conversation Quick (`gpt-5.6-luna` + low), Balanced (`gpt-5.6-terra` + medium), and Deep (`gpt-5.6-sol` + high) modes.
+- Per-conversation Quick (`gpt-5.6-luna` + light), Balanced (`gpt-5.6-terra` + medium), and Deep (`gpt-5.6-sol` + high) modes.
+- Six durable, selectable personas: Díaz, Javier, Vega, Mara, Luz, and Salcedo. Each has a distinct reasoning style, written voice, Realtime voice, and spoken delivery.
+- One shared factual memory across personas, with per-response persona provenance and explicit protection against promoting persona performance into autobiographical facts.
 - Background execution, polling, cancellation, approval continuation, and restart recovery for artifact jobs.
 - Full durable context inside each conversation.
 - Five recent conversations retain full transcripts; older conversations are summarized and archived read-only.
@@ -16,7 +18,8 @@ This repository is the complete application source. It does not contain credenti
 - Hosted web search for research and fact-grounded artifacts.
 - Message-level image and document inputs, with visible upload/read failures instead of silent attachment loss.
 - Automatic Code Interpreter routing for spreadsheets plus explicit analytical jobs.
-- Browser-to-OpenAI WebRTC voice conversations using short-lived server-minted credentials, `gpt-realtime-2.1-mini`, and Marin/Cedar voices.
+- Browser-to-OpenAI WebRTC voice conversations using short-lived server-minted credentials and `gpt-realtime-2.1-mini`. OpenAI audio is used end-to-end; browser speech synthesis is never used.
+- Server-owned persona voices: Díaz/Cedar, Javier/Echo, Vega/Sage, Mara/Ash, Luz/Coral, and Salcedo/Marin.
 - Visual PPTX files with editable tables, charts, diagrams, notes, sources, and licensed photography when requested.
 - Visual DOCX files with editable tables, rendered charts/diagrams, structured prose, sources, and licensed photography when requested.
 - Three-to-six-page website ZIPs with responsive navigation, inline SVG visualizations, tables, embedded CSS, and embedded licensed Wikimedia images.
@@ -127,7 +130,7 @@ React UI
   -> authenticated Express API
      -> SSE chat -> OpenAI Responses (multimodal files / Code Interpreter / optional MCP)
      -> WebRTC voice -> short-lived OpenAI Realtime credential
-     -> SQLite conversations, message states, model modes, jobs, approvals, uploads, artifacts
+     -> SQLite conversations, persona provenance, message states, model modes, jobs, approvals, uploads, artifacts
      -> background Responses jobs (web search / Code Interpreter / optional MCP)
      -> deterministic PPTX, DOCX, and portable website builders
      -> validation gate and authenticated downloads

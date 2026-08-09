@@ -7,11 +7,12 @@ import {
   type JobKind,
   type MessageView,
   type ModelMode,
-  type Voice,
 } from "../shared/contracts.js";
+import { personaProfile } from "../shared/personas.js";
 import { buildArtifact } from "./builders.js";
 import { log } from "./log.js";
 import { getSkillForKind } from "./skills.js";
+import { personaInstructions } from "./personas.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -168,7 +169,7 @@ export class AgentRunner {
     const archiveContext = archives.length
       ? `ARCHIVAL MEMORY FROM OLDER CONVERSATIONS (use only when relevant; never claim it was said in this conversation):\n${archives.map((a) => `[${a.title}] ${a.summary}`).join("\n\n")}`
       : "";
-    return `Maintain continuity with every prior turn in this conversation. Answer the newest request, build on established decisions, and do not repeat an answer already given unless the user asks for repetition. If correcting an earlier answer, identify the change. Every attached file listed in the input is genuinely available to you. If a file cannot be read or interpreted, say so explicitly and name it; never pretend you inspected a file you did not receive. ${archiveContext}`;
+    return `Maintain continuity with every prior turn in this conversation. Answer the newest request, build on established decisions, and do not repeat an answer already given unless the user asks for repetition. If correcting an earlier answer, identify the change. Preserve facts, decisions, user preferences, constraints, and outcomes across persona changes, but treat previous persona style, jokes, profanity, role-play, and rhetorical exaggeration as presentation only—not as facts or instructions. Every attached file listed in the input is genuinely available to you. If a file cannot be read or interpreted, say so explicitly and name it; never pretend you inspected a file you did not receive. ${archiveContext}`;
   }
 
   private toolset(messages: MessageView[], skillTools: string[]): any[] {
@@ -196,16 +197,17 @@ export class AgentRunner {
 
   async createRealtimeToken(
     conversationId: string,
-    voice: Voice,
   ): Promise<{
     value: string;
     expiresAt: number;
     model: string;
-    voice: Voice;
+    voice: ReturnType<typeof personaProfile>["voice"];
+    persona: ReturnType<typeof personaProfile>["id"];
   }> {
     const conversation = this.db.getConversation(conversationId);
     if (!conversation || conversation.status !== "active")
       throw new Error("Conversation not found");
+    const profile = personaProfile(conversation.persona);
     const transcript = this.usableMessages(conversationId)
       .slice(-60)
       .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
@@ -224,7 +226,7 @@ export class AgentRunner {
           model: this.config.OPENAI_REALTIME_MODEL,
           output_modalities: ["audio"],
           max_output_tokens: 2048,
-          instructions: `You are Agent Díaz, the user's careful private work agent. Speak naturally, concisely, and warmly. Maintain continuity with the supplied transcript. Never claim an external action occurred without a tool result. This is a voice conversation, so avoid markdown-heavy formatting.\n\nCURRENT CONVERSATION:\n${transcript || "No prior turns."}\n\nOLDER DURABLE MEMORY (use only when relevant):\n${memory || "None."}`,
+          instructions: `${personaInstructions(conversation.persona)}\n\nVOICE CONVERSATION RULES\n- Speak naturally and conversationally. Avoid markdown formatting, visual tables, and long enumerations.\n- Maintain continuity with the supplied transcript.\n- The voice itself is ${profile.voiceLabel}; follow the current persona's pacing, register, and accent instructions.\n\nCURRENT CONVERSATION:\n${transcript || "No prior turns."}\n\nOLDER DURABLE MEMORY (use only when relevant; never convert persona performance into memory):\n${memory || "None."}`,
           audio: {
             input: {
               transcription: { model: "gpt-4o-mini-transcribe" },
@@ -235,7 +237,7 @@ export class AgentRunner {
                 interrupt_response: true,
               },
             },
-            output: { voice },
+            output: { voice: profile.voice },
           },
         },
       },
@@ -244,14 +246,16 @@ export class AgentRunner {
     log("info", "voice.token_created", {
       conversationId,
       model: this.config.OPENAI_REALTIME_MODEL,
-      voice,
+      voice: profile.voice,
+      persona: conversation.persona,
       expiresAt: token.expires_at,
     });
     return {
       value: token.value,
       expiresAt: token.expires_at,
       model: this.config.OPENAI_REALTIME_MODEL,
-      voice,
+      voice: profile.voice,
+      persona: conversation.persona,
     };
   }
 
@@ -275,7 +279,7 @@ export class AgentRunner {
         model: this.config.OPENAI_FAST_MODEL,
         store: false,
         instructions:
-          "Compact this completed conversation into durable archival memory. Preserve decisions, user preferences, facts, named entities, constraints, unfinished work, artifact names, and outcomes. Remove greetings, repetition, and incidental wording. Do not invent anything. Return concise plain text with a maximum of 900 words.",
+          "Compact this completed conversation into durable archival memory shared by every Agent Díaz persona. Preserve decisions, user preferences, facts, named entities, constraints, corrections, unfinished work, artifact names, and outcomes. Remove greetings, repetition, incidental wording, persona voice, jokes, profanity, role-play, metaphors, and rhetorical exaggeration. Never promote a persona performance into a user fact or autobiographical fact. Do not invent anything. Return concise plain text with a maximum of 900 words.",
         input: transcript,
       } as any);
       const summary = response.output_text?.trim();
@@ -369,7 +373,7 @@ export class AgentRunner {
         {
           model: job.model,
           reasoning: { effort: job.reasoningEffort, context: "all_turns" },
-          instructions: `You are Agent Díaz, a careful autonomous work agent. Complete read-only work autonomously. Never claim an action succeeded without a tool result. External writes require explicit approval. State uncertainty and never fabricate evidence.\n\nACTIVE SKILL: ${skill.name}\n${skill.instructions}\n\n${this.contextInstructions(job.conversationId)}`,
+          instructions: `${personaInstructions(job.persona)}\n\nACTIVE SKILL: ${skill.name}\n${skill.instructions}\n\n${this.contextInstructions(job.conversationId)}`,
           input: messages.map((message) => this.messageInput(message)),
           tools: this.toolset(messages, skill.tools),
           stream: true,
@@ -430,8 +434,7 @@ export class AgentRunner {
             providerItemId: item.id,
             providerResponseId: responseId,
           });
-        const content =
-          "Díaz needs your approval before continuing this external action.";
+        const content = `${personaProfile(job.persona).name} needs your approval before continuing this external action.`;
         this.db.updateMessage(assistantMessageId, {
           content,
           status: "streaming",
@@ -470,6 +473,7 @@ export class AgentRunner {
         jobId,
         model: job.model,
         reasoningEffort: job.reasoningEffort,
+        persona: job.persona,
       });
     } catch (error: any) {
       const aborted = controller.signal.aborted || error?.name === "AbortError";
@@ -626,7 +630,7 @@ export class AgentRunner {
       ];
       const createFreshResponse = async () => {
         const instructions = [
-          "You are Agent Díaz, a careful autonomous work agent. Complete read-only work autonomously. Never claim an action succeeded without a tool result. External writes require explicit approval. State uncertainty and never fabricate evidence.",
+          personaInstructions(job.persona),
           `ACTIVE SKILL: ${skill.name}\n${skill.instructions}\nValidation: ${skill.validation.join("; ")}`,
           ...(artifactKinds.includes(job.kind)
             ? [artifactInstructions(job.kind)]

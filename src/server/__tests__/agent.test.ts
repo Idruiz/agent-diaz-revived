@@ -22,8 +22,8 @@ function harness() {
     NODE_ENV: "test",
     PORT: 3000,
     BASE_URL: "http://localhost:3000",
-    OPENAI_API_KEY: "main-api-secret-should-never-escape",
-    ADMIN_PASSWORD: "1234567890123456",
+    OPENAI_API_KEY: crypto.randomUUID(),
+    ADMIN_PASSWORD: crypto.randomUUID(),
     OPENAI_MODEL: "gpt-5.6",
     OPENAI_FAST_MODEL: "gpt-5.6-terra",
     OPENAI_REALTIME_MODEL: "gpt-realtime-2.1-mini",
@@ -42,7 +42,10 @@ describe("agent production paths", () => {
   it("streams multimodal chat, enables Python for a spreadsheet, and persists the final assistant turn", async () => {
     const { config, db } = harness(),
       conversation = db.createConversation(crypto.randomUUID(), "Files");
-    db.setConversationMode(conversation.id, "balanced");
+    db.setConversationSettings(conversation.id, {
+      modelMode: "balanced",
+      persona: "mara",
+    });
     const imageId = crypto.randomUUID(),
       sheetId = crypto.randomUUID();
     db.addUpload({
@@ -99,6 +102,8 @@ describe("agent production paths", () => {
       stream: true,
       store: true,
     });
+    expect(request.instructions).toContain("CURRENT PERSONA: Mara");
+    expect(request.instructions).toContain("strict validation");
     expect(user.content).toEqual(
       expect.arrayContaining([
         { type: "input_image", file_id: "file_image", detail: "auto" },
@@ -119,15 +124,17 @@ describe("agent production paths", () => {
     ).toMatchObject({ content: "Evidence received.", status: "complete" });
     db.close();
   });
-  it("mints only a short-lived cost-controlled Realtime credential with the selected voice", async () => {
+  it("mints a short-lived Realtime credential with Javier's server-owned voice and accent", async () => {
     const { config, db } = harness(),
       conversation = db.createConversation(crypto.randomUUID(), "Voice");
+    db.setConversationSettings(conversation.id, { persona: "javier" });
     db.addVoiceTurn({
       conversationId: conversation.id,
       userId: crypto.randomUUID(),
       assistantId: crypto.randomUUID(),
       userText: "Hello Díaz",
       assistantText: "Hello comandante",
+      persona: "javier",
     });
     const create = vi.fn(async (_body: any, _options: any) => ({
         value: "ek_ephemeral",
@@ -136,23 +143,26 @@ describe("agent production paths", () => {
       })),
       runner = new AgentRunner(config, db);
     (runner as any).client = { realtime: { clientSecrets: { create } } };
-    const token = await runner.createRealtimeToken(conversation.id, "cedar"),
+    const token = await runner.createRealtimeToken(conversation.id),
       [body, options] = create.mock.calls[0]! as any;
     expect(token).toEqual({
       value: "ek_ephemeral",
       expiresAt: 12345,
       model: "gpt-realtime-2.1-mini",
-      voice: "cedar",
+      voice: "echo",
+      persona: "javier",
     });
     expect(body).toMatchObject({
       expires_after: { seconds: 120 },
       session: {
         type: "realtime",
         model: "gpt-realtime-2.1-mini",
-        audio: { output: { voice: "cedar" } },
+        audio: { output: { voice: "echo" } },
       },
     });
     expect(body.session.instructions).toContain("Hello Díaz");
+    expect(body.session.instructions).toContain("CURRENT PERSONA: Javier");
+    expect(body.session.instructions).toContain("adult Cuban Spanish cadence");
     expect(options.headers["OpenAI-Safety-Identifier"]).toBe(
       "agent-diaz-owner",
     );

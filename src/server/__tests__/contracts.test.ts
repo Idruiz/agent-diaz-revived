@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   ArtifactPlanSchema,
   CreateJobSchema,
+  RealtimeTokenSchema,
   StreamChatSchema,
+  UpdateConversationSettingsSchema,
 } from "../../shared/contracts";
+import { PERSONAS } from "../../shared/personas";
+import { personaInstructions } from "../personas";
 import {
   isImageUpload,
   isSpreadsheetUpload,
@@ -44,6 +48,41 @@ describe("contracts", () => {
       model: "gpt-5.6-sol",
       reasoningEffort: "high",
     });
+  });
+  it("locks six distinct OpenAI Realtime persona voices", () => {
+    expect(PERSONAS.map((persona) => persona.id)).toEqual([
+      "diaz",
+      "javier",
+      "vega",
+      "mara",
+      "luz",
+      "salcedo",
+    ]);
+    expect(new Set(PERSONAS.map((persona) => persona.voice)).size).toBe(6);
+    expect(PERSONAS.find((persona) => persona.id === "javier")).toMatchObject({
+      voice: "echo",
+      voiceLabel: "Echo · Cuban cadence",
+    });
+  });
+  it("keeps persona selection server-owned and rejects empty settings", () => {
+    expect(
+      UpdateConversationSettingsSchema.safeParse({ persona: "javier" })
+        .success,
+    ).toBe(true);
+    expect(UpdateConversationSettingsSchema.safeParse({}).success).toBe(false);
+    const parsed = RealtimeTokenSchema.parse({
+      conversationId: crypto.randomUUID(),
+      voice: "cedar",
+    });
+    expect(parsed).not.toHaveProperty("voice");
+  });
+  it("defines Javier as Cuban, solution-oriented, and memory-safe", () => {
+    const instructions = personaInstructions("javier");
+    expect(instructions).toContain("CURRENT PERSONA: Javier");
+    expect(instructions).toContain("Cuban Spanish swear");
+    expect(instructions).toContain("solution-oriented");
+    expect(instructions).toContain("not a separate factual database");
+    expect(instructions).toContain("Never turn jokes, profanity");
   });
   it("routes images and spreadsheets by actual file metadata", () => {
     expect(isImageUpload("image/png")).toBe(true);

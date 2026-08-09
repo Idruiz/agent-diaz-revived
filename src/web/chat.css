@@ -10,6 +10,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 1rem;
   padding: 0.75rem clamp(1rem, 3vw, 2.5rem);
   border-bottom: 1px solid #183141;
@@ -49,7 +50,28 @@
   gap: 0.45rem;
   align-items: center;
 }
-.voiceControls select,
+.personaAndVoice {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+}
+.personaControl {
+  display: grid;
+  grid-template-columns: auto minmax(190px, 280px);
+  align-items: center;
+  gap: 0.1rem 0.45rem;
+  min-width: 0;
+}
+.personaControl > span {
+  color: #8097a5;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.personaControl select,
+.voiceIdentity,
 .mic {
   height: 38px;
   border: 1px solid #345469;
@@ -57,6 +79,26 @@
   color: #dbe5eb;
   border-radius: 9px;
   padding: 0 0.7rem;
+}
+.personaControl select {
+  min-width: 0;
+  font-weight: 700;
+}
+.personaControl small {
+  grid-column: 2;
+  color: #728b9a;
+  font-size: 0.61rem;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voiceIdentity {
+  display: flex;
+  align-items: center;
+  color: #9fb3c0;
+  font-size: 0.68rem;
+  white-space: nowrap;
 }
 .mic {
   display: flex;
@@ -473,6 +515,7 @@
   .conversationToolbar {
     padding: 0.5rem 0.75rem;
     align-items: flex-start;
+    flex-wrap: wrap;
   }
   .modeSelector button {
     padding: 0.38rem;
@@ -480,8 +523,17 @@
   .modeSelector button small {
     display: none;
   }
-  .voiceControls select {
-    max-width: 82px;
+  .personaAndVoice {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .personaControl {
+    grid-template-columns: auto minmax(130px, 1fr);
+    flex: 1;
+  }
+  .personaControl small,
+  .voiceIdentity {
+    display: none;
   }
   .mic > span {
     display: none;

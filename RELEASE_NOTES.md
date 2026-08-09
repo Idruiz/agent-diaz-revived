@@ -1,3 +1,18 @@
+# Agent Díaz 3.2.0
+
+## Persona and voice release
+
+- Added six conversation personas with distinct reasoning and communication behavior: Díaz, Javier, Vega, Mara, Luz, and Salcedo.
+- Added durable per-conversation persona selection plus persona snapshots on jobs and assistant messages, so old responses keep their original speaker after a persona switch.
+- Added a shared-memory boundary that preserves facts, decisions, preferences, and constraints while excluding persona jokes, profanity, role-play, and exaggeration from autobiographical memory.
+- Realtime voice is now assigned on the server by persona: Cedar, Echo, Sage, Ash, Coral, and Marin respectively.
+- Spoken delivery instructions make each persona sound distinct; Javier receives Cuban cadence and natural Cuban Spanish code-switching.
+- Removed manual voice selection from the client contract, preventing the browser from overriding persona identity.
+- Confirmed the application uses OpenAI WebRTC audio only and never browser speech-synthesis voices.
+- Changed the Quick/Luna UI wording from `low` to `light` without changing the API reasoning value.
+- Added regression coverage for persona contracts, unique voices, server-owned voice selection, prompt injection, SQLite persistence, and persona provenance.
+- Replaced reusable credential-shaped test literals with per-run random smoke/test values.
+
 # Agent Díaz 3.1.0
 
 ## Conversational production pass

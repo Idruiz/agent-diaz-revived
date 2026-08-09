@@ -4,6 +4,7 @@ import type {
   ConversationView,
   MessageView,
   ModelMode,
+  Persona,
   Voice,
 } from "../shared/contracts";
 
@@ -38,10 +39,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ title }),
     }),
-  updateConversationMode: (id: string, modelMode: ModelMode) =>
+  updateConversationSettings: (
+    id: string,
+    settings: { modelMode?: ModelMode; persona?: Persona },
+  ) =>
     call<ConversationView>(`/api/conversations/${id}/settings`, {
       method: "PATCH",
-      body: JSON.stringify({ modelMode }),
+      body: JSON.stringify(settings),
     }),
   job: (id: string) =>
     call<JobView & { artifacts: ArtifactView[]; approvals: ApprovalView[] }>(
@@ -68,19 +72,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ decision }),
     }),
-  realtimeToken: (conversationId: string, voice: Voice) =>
+  realtimeToken: (conversationId: string) =>
     call<RealtimeTokenView>("/api/realtime/token", {
       method: "POST",
-      body: JSON.stringify({ conversationId, voice }),
+      body: JSON.stringify({ conversationId }),
     }),
   saveVoiceTurn: (
     conversationId: string,
+    persona: Persona,
     userText: string,
     assistantText: string,
   ) =>
     call("/api/voice/turns", {
       method: "POST",
-      body: JSON.stringify({ conversationId, userText, assistantText }),
+      body: JSON.stringify({ conversationId, persona, userText, assistantText }),
     }),
   streamChat: async (
     input: {
@@ -168,6 +173,7 @@ export interface RealtimeTokenView {
   expiresAt: number;
   model: string;
   voice: Voice;
+  persona: Persona;
 }
 export type ChatStreamEvent =
   | {
@@ -177,6 +183,7 @@ export type ChatStreamEvent =
       model: string;
       mode: ModelMode;
       reasoningEffort: string;
+      persona: Persona;
     }
   | { type: "delta"; delta: string }
   | { type: "approval"; jobId: string; count: number }

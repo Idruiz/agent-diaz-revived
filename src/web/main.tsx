@@ -17,8 +17,10 @@ import type {
   ConversationView,
   MessageView,
   ModelMode,
+  Persona,
   Voice,
 } from "../shared/contracts";
+import { PERSONAS, personaProfile } from "../shared/personas";
 import "./styles.css";
 import "./chat.css";
 
@@ -31,7 +33,7 @@ const kinds: { id: JobKind; label: string; hint: string }[] = [
   { id: "website", label: "Website", hint: "Multi-page site ZIP" },
 ];
 const modes: { id: ModelMode; label: string; detail: string }[] = [
-  { id: "quick", label: "Quick", detail: "Luna · low" },
+  { id: "quick", label: "Quick", detail: "Luna · light" },
   { id: "balanced", label: "Balanced", detail: "Terra · medium" },
   { id: "deep", label: "Deep", detail: "Sol · high" },
 ];
@@ -123,11 +125,14 @@ function App() {
     [sending, setSending] = useState(false),
     [err, setErr] = useState("");
   const [skills, setSkills] = useState<SkillView[]>([]),
-    [voice, setVoice] = useState<Voice>("marin"),
     [voiceActive, setVoiceActive] = useState(false),
     [voiceStatus, setVoiceStatus] = useState("Off"),
     [voiceDraft, setVoiceDraft] = useState<VoiceDraft>(null),
-    [voiceModel, setVoiceModel] = useState("");
+    [voiceModel, setVoiceModel] = useState(""),
+    [voiceIdentity, setVoiceIdentity] = useState<{
+      persona: Persona;
+      voice: Voice;
+    } | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null),
     streamRef = useRef<{
       controller: AbortController;
@@ -138,13 +143,18 @@ function App() {
     voiceAudioRef = useRef<HTMLAudioElement | null>(null),
     voiceUserRef = useRef(""),
     voiceAssistantRef = useRef(""),
-    voicePersistingRef = useRef(false);
+    voicePersistingRef = useRef(false),
+    voicePersonaRef = useRef<Persona>("diaz");
   const conversation = conversations.find((item) => item.id === conversationId),
     current = useMemo(
       () => detail ?? jobs.find((job) => job.id === selected) ?? null,
       [detail, jobs, selected],
     ),
     jobsById = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs]),
+    activePersona = personaProfile(conversation?.persona ?? "diaz"),
+    voicePersona = personaProfile(
+      voiceIdentity?.persona ?? conversation?.persona ?? "diaz",
+    ),
     latestAssistantJobId = [...messages]
       .reverse()
       .find((message) => message.role === "assistant")?.jobId;
@@ -216,6 +226,7 @@ function App() {
     setVoiceDraft(null);
     setVoiceActive(false);
     setVoiceStatus("Off");
+    setVoiceIdentity(null);
   };
   const persistVoiceTurn = async () => {
     if (
@@ -231,7 +242,12 @@ function App() {
     voiceUserRef.current = "";
     voiceAssistantRef.current = "";
     try {
-      await api.saveVoiceTurn(conversationId, userText, assistantText);
+      await api.saveVoiceTurn(
+        conversationId,
+        voicePersonaRef.current,
+        userText,
+        assistantText,
+      );
       await loadConversation(conversationId);
       setVoiceDraft(null);
     } catch (error) {
@@ -254,8 +270,10 @@ function App() {
     setErr("");
     setVoiceStatus("Connecting…");
     try {
-      const token = await api.realtimeToken(conversationId, voice);
+      const token = await api.realtimeToken(conversationId);
       setVoiceModel(token.model);
+      voicePersonaRef.current = token.persona;
+      setVoiceIdentity({ persona: token.persona, voice: token.voice });
       const peer = new RTCPeerConnection(),
         audio = document.createElement("audio");
       voicePeerRef.current = peer;
@@ -445,6 +463,7 @@ function App() {
           jobId: null,
           status: "complete",
           error: null,
+          persona: null,
           attachments,
           createdAt: new Date().toISOString(),
         },
@@ -459,6 +478,7 @@ function App() {
         jobId: null,
         status: "streaming",
         error: null,
+        persona: conversation?.persona ?? "diaz",
         attachments: [],
         createdAt: new Date().toISOString(),
       },
@@ -505,8 +525,7 @@ function App() {
                     ? {
                         ...message,
                         jobId: event.jobId,
-                        content:
-                          "Díaz needs your approval before continuing this external action.",
+                        content: `${activePersona.name} needs your approval before continuing this external action.`,
                         status: "streaming",
                       }
                     : message,
@@ -607,7 +626,23 @@ function App() {
   const changeMode = async (mode: ModelMode) => {
     if (!conversationId || sending || voiceActive) return;
     try {
-      const updated = await api.updateConversationMode(conversationId, mode);
+      const updated = await api.updateConversationSettings(conversationId, {
+        modelMode: mode,
+      });
+      setConversations((items) =>
+        items.map((item) => (item.id === updated.id ? updated : item)),
+      );
+    } catch (error) {
+      setErr((error as Error).message);
+    }
+  };
+  const changePersona = async (persona: Persona) => {
+    if (!conversationId || sending) return;
+    if (voiceActive) stopVoice();
+    try {
+      const updated = await api.updateConversationSettings(conversationId, {
+        persona,
+      });
       setConversations((items) =>
         items.map((item) => (item.id === updated.id ? updated : item)),
       );
@@ -662,7 +697,7 @@ function App() {
                 <small>
                   {item.status === "archived"
                     ? "Archived summary"
-                    : `${item.messageCount} messages · ${item.modelMode}`}
+                    : `${item.messageCount} messages · ${personaProfile(item.persona).name} · ${item.modelMode}`}
                 </small>
               </button>
             ))}
@@ -863,44 +898,63 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="voiceControls">
-                <select
-                  value={voice}
-                  disabled={voiceActive}
-                  onChange={(event) => setVoice(event.target.value as Voice)}
-                  aria-label="AI voice"
-                >
-                  <option value="marin">Marin</option>
-                  <option value="cedar">Cedar</option>
-                </select>
-                <button
-                  className={`mic ${voiceActive ? "active" : ""}`}
-                  onClick={() => void startVoice()}
-                  title={
-                    voiceActive
-                      ? "End voice conversation"
-                      : "Start voice conversation"
-                  }
-                >
-                  {voiceActive ? "■" : "●"}
-                  <span>{voiceActive ? voiceStatus : "Voice"}</span>
-                </button>
+              <div className="personaAndVoice">
+                <label className="personaControl">
+                  <span>Persona</span>
+                  <select
+                    value={conversation?.persona ?? "diaz"}
+                    disabled={sending}
+                    onChange={(event) =>
+                      void changePersona(event.target.value as Persona)
+                    }
+                    aria-label="Agent persona"
+                    title={activePersona.description}
+                  >
+                    {PERSONAS.map((persona) => (
+                      <option key={persona.id} value={persona.id}>
+                        {persona.name} — {persona.tagline}
+                      </option>
+                    ))}
+                  </select>
+                  <small>{activePersona.description}</small>
+                </label>
+                <div className="voiceControls">
+                  <span
+                    className="voiceIdentity"
+                    title="OpenAI Realtime voice"
+                  >
+                    {activePersona.voiceLabel}
+                  </span>
+                  <button
+                    className={`mic ${voiceActive ? "active" : ""}`}
+                    onClick={() => void startVoice()}
+                    title={
+                      voiceActive
+                        ? "End voice conversation"
+                        : "Start voice conversation"
+                    }
+                  >
+                    {voiceActive ? "■" : "●"}
+                    <span>{voiceActive ? voiceStatus : "Voice"}</span>
+                  </button>
+                </div>
               </div>
             </div>
             {voiceActive && (
               <div className="voiceNotice">
                 <span className="pulse" />
-                AI voice · {voice} · {voiceModel}
+                {voicePersona.name} · OpenAI {voiceIdentity?.voice} ·{" "}
+                {voiceModel}
               </div>
             )}
             <div className="chatlog">
               {messages.length === 0 && !voiceDraft && (
                 <div className="chatWelcome">
                   <div className="seal">D</div>
-                  <h2>Díaz is ready.</h2>
+                  <h2>{activePersona.welcome}</h2>
                   <p>
-                    Chat naturally, attach a file, or choose an artifact task
-                    below.
+                    {activePersona.tagline}. Chat naturally, attach a file, or
+                    choose an artifact task below.
                   </p>
                 </div>
               )}
@@ -915,7 +969,9 @@ function App() {
                   >
                     <div className={`bubble ${message.role} ${message.status}`}>
                       <div className="bubbleLabel">
-                        {message.role === "user" ? "You" : "Díaz"}
+                        {message.role === "user"
+                          ? "You"
+                          : personaProfile(message.persona ?? "diaz").name}
                         {message.status === "stopped" && <span>Stopped</span>}
                       </div>
                       {message.content ? (
@@ -978,7 +1034,9 @@ function App() {
                   </div>
                   <div className="messageRow assistant">
                     <div className="bubble assistant voiceDraft">
-                      <div className="bubbleLabel">Díaz · voice</div>
+                      <div className="bubbleLabel">
+                        {voicePersona.name} · voice
+                      </div>
                       {voiceDraft.assistant ? (
                         <p>{voiceDraft.assistant}</p>
                       ) : (
@@ -1076,7 +1134,7 @@ function App() {
                   }}
                   placeholder={
                     kind === "chat"
-                      ? "Message Díaz…"
+                      ? `Message ${activePersona.name}…`
                       : "Describe the finished artifact you want…"
                   }
                   rows={1}
@@ -1108,7 +1166,9 @@ function App() {
               </div>
               <div className="composerHint">
                 <span>Enter to send · Shift+Enter for a new line</span>
-                <span>{conversation?.modelMode} mode</span>
+                <span>
+                  {activePersona.name} · {conversation?.modelMode} mode
+                </span>
               </div>
               {err && <p className="error composerError">{err}</p>}
             </div>

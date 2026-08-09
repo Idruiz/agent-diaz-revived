@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -6,7 +7,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 
 const storage = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-runtime-smoke-")),
-  password = "diaz-runtime-smoke-2026";
+  password = randomBytes(24).toString("base64url"),
+  openAiKey = randomBytes(24).toString("base64url");
 const port = await new Promise((resolve, reject) => {
   const server = net.createServer();
   server.once("error", reject);
@@ -24,7 +26,7 @@ const base = `http://127.0.0.1:${port}`,
       NODE_ENV: "production",
       PORT: String(port),
       BASE_URL: base,
-      OPENAI_API_KEY: "runtime-smoke-key",
+      OPENAI_API_KEY: openAiKey,
       ADMIN_PASSWORD: password,
       STORAGE_DIR: storage,
     },
@@ -71,12 +73,14 @@ try {
       {
         method: "PATCH",
         headers: mutationHeaders,
-        body: JSON.stringify({ modelMode: "deep" }),
+        body: JSON.stringify({ modelMode: "deep", persona: "javier" }),
       },
     ),
     modeBody = await mode.json();
   if (modeBody.modelMode !== "deep")
     throw new Error("Conversation mode did not persist");
+  if (modeBody.persona !== "javier")
+    throw new Error("Conversation persona did not persist");
   const storageResponse = await fetch(`${base}/api/system/storage`, {
       headers: { cookie },
     }),
@@ -122,7 +126,7 @@ try {
   if (!page.ok || !html.includes('id="root"'))
     throw new Error("Production frontend was not served");
   console.log(
-    `[smoke] health, authentication, conversation mode, durable storage, artifact download, and production frontend passed on port ${port}.`,
+    `[smoke] health, authentication, conversation mode/persona, durable storage, artifact download, and production frontend passed on port ${port}.`,
   );
 } finally {
   child.kill("SIGTERM");

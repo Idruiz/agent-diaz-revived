@@ -10,6 +10,7 @@ import type {
   MessageView,
   ModelMode,
   MessageStatus,
+  Persona,
 } from "../shared/contracts.js";
 
 export interface Db {
@@ -28,6 +29,7 @@ export interface Db {
     modelMode?: ModelMode;
     model?: string;
     reasoningEffort?: "low" | "medium" | "high";
+    persona?: Persona;
   }): JobView;
   getJob(id: string): JobView | undefined;
   listJobs(limit?: number): JobView[];
@@ -127,6 +129,10 @@ export interface Db {
   listConversations(): ConversationView[];
   getConversation(id: string): ConversationView | undefined;
   setConversationMode(id: string, mode: ModelMode): ConversationView;
+  setConversationSettings(
+    id: string,
+    patch: { modelMode?: ModelMode; persona?: Persona },
+  ): ConversationView;
   addMessage(row: {
     id: string;
     conversationId: string;
@@ -136,6 +142,7 @@ export interface Db {
     status?: MessageStatus;
     error?: string | null;
     fileIds?: string[];
+    persona?: Persona | null;
   }): void;
   updateMessage(
     id: string,
@@ -147,6 +154,7 @@ export interface Db {
     assistantId: string;
     userText: string;
     assistantText: string;
+    persona: Persona;
   }): void;
   listMessages(conversationId: string): MessageView[];
   archiveOverflow(): ConversationView[];
@@ -172,6 +180,7 @@ function mapJob(r: any): JobView {
     modelMode: r.model_mode ?? "balanced",
     model: r.model ?? "gpt-5.6-terra",
     reasoningEffort: r.reasoning_effort ?? "medium",
+    persona: r.persona ?? "diaz",
   };
 }
 
@@ -182,6 +191,7 @@ function mapConversation(r: any): ConversationView {
     status: r.status,
     summary: r.summary,
     modelMode: r.model_mode ?? "balanced",
+    persona: r.persona ?? "diaz",
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     messageCount: Number(r.message_count ?? 0),
@@ -199,7 +209,7 @@ export function openDatabase(config: Config): Db {
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, prompt TEXT NOT NULL, conversation_id TEXT NOT NULL,
       file_ids_json TEXT NOT NULL, provider_response_id TEXT, progress INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '',
       output_text TEXT, error TEXT, model_mode TEXT NOT NULL DEFAULT 'balanced', model TEXT NOT NULL DEFAULT 'gpt-5.6-terra',
-      reasoning_effort TEXT NOT NULL DEFAULT 'medium', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      reasoning_effort TEXT NOT NULL DEFAULT 'medium', persona TEXT NOT NULL DEFAULT 'diaz', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS artifacts(
       id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE, name TEXT NOT NULL, mime TEXT NOT NULL,
@@ -214,8 +224,8 @@ export function openDatabase(config: Config): Db {
       arguments_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_at TEXT,
       provider_item_id TEXT, provider_response_id TEXT
     );
-    CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',summary TEXT,model_mode TEXT NOT NULL DEFAULT 'balanced',created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,role TEXT NOT NULL CHECK(role IN ('user','assistant')),content TEXT NOT NULL,job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,delivery_status TEXT NOT NULL DEFAULT 'complete',error TEXT,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',summary TEXT,model_mode TEXT NOT NULL DEFAULT 'balanced',persona TEXT NOT NULL DEFAULT 'diaz',created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,role TEXT NOT NULL CHECK(role IN ('user','assistant')),content TEXT NOT NULL,job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,delivery_status TEXT NOT NULL DEFAULT 'complete',error TEXT,persona TEXT,created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS message_uploads(message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,upload_id TEXT NOT NULL REFERENCES uploads(id) ON DELETE RESTRICT,PRIMARY KEY(message_id,upload_id));
     CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_artifacts_job ON artifacts(job_id);
@@ -248,12 +258,19 @@ export function openDatabase(config: Config): Db {
     "model_mode",
     "model_mode TEXT NOT NULL DEFAULT 'balanced'",
   );
+  ensureColumn("jobs", "persona", "persona TEXT NOT NULL DEFAULT 'diaz'");
+  ensureColumn(
+    "conversations",
+    "persona",
+    "persona TEXT NOT NULL DEFAULT 'diaz'",
+  );
   ensureColumn(
     "messages",
     "delivery_status",
     "delivery_status TEXT NOT NULL DEFAULT 'complete'",
   );
   ensureColumn("messages", "error", "error TEXT");
+  ensureColumn("messages", "persona", "persona TEXT");
   raw
     .prepare(
       "UPDATE messages SET delivery_status='failed',error=COALESCE(error,'The live response was interrupted by a service restart. Retry is safe.') WHERE delivery_status='streaming'",
@@ -296,15 +313,21 @@ export function openDatabase(config: Config): Db {
       )
         throw new Error("Conversation is missing or archived");
       const conversation = raw
-        .prepare("SELECT model_mode modelMode FROM conversations WHERE id=?")
-        .get(input.conversationId) as { modelMode: ModelMode };
+        .prepare(
+          "SELECT model_mode modelMode,persona FROM conversations WHERE id=?",
+        )
+        .get(input.conversationId) as {
+          modelMode: ModelMode;
+          persona: Persona;
+        };
       const modelMode = input.modelMode ?? conversation.modelMode ?? "balanced",
         model = input.model ?? "gpt-5.6-terra",
-        reasoningEffort = input.reasoningEffort ?? "medium";
+        reasoningEffort = input.reasoningEffort ?? "medium",
+        persona = input.persona ?? conversation.persona ?? "diaz";
       const t = now();
       raw
         .prepare(
-          `INSERT INTO jobs(id,kind,status,prompt,conversation_id,file_ids_json,progress,message,model_mode,model,reasoning_effort,created_at,updated_at) VALUES(?,?,'queued',?,?,?,0,'Queued',?,?,?,?,?)`,
+          `INSERT INTO jobs(id,kind,status,prompt,conversation_id,file_ids_json,progress,message,model_mode,model,reasoning_effort,persona,created_at,updated_at) VALUES(?,?,'queued',?,?,?,0,'Queued',?,?,?,?,?,?)`,
         )
         .run(
           input.id,
@@ -315,6 +338,7 @@ export function openDatabase(config: Config): Db {
           modelMode,
           model,
           reasoningEffort,
+          persona,
           t,
           t,
         );
@@ -322,7 +346,7 @@ export function openDatabase(config: Config): Db {
         const messageId = crypto.randomUUID();
         raw
           .prepare(
-            "INSERT INTO messages(id,conversation_id,role,content,job_id,delivery_status,created_at) VALUES(?,?,'user',?,?, 'complete',?)",
+            "INSERT INTO messages(id,conversation_id,role,content,job_id,delivery_status,persona,created_at) VALUES(?,?,'user',?,?,'complete',NULL,?)",
           )
           .run(messageId, input.conversationId, input.prompt, input.id, t);
         for (const fileId of input.fileIds)
@@ -472,7 +496,7 @@ export function openDatabase(config: Config): Db {
       const t = now();
       raw
         .prepare(
-          "INSERT INTO conversations(id,title,status,model_mode,created_at,updated_at) VALUES(?,?,'active','balanced',?,?)",
+          "INSERT INTO conversations(id,title,status,model_mode,persona,created_at,updated_at) VALUES(?,?,'active','balanced','diaz',?,?)",
         )
         .run(id, title, t, t);
       return mapConversation(
@@ -510,11 +534,36 @@ export function openDatabase(config: Config): Db {
       if (!row) throw new Error("Conversation not found");
       return mapConversation(row);
     },
+    setConversationSettings: (id, patch) => {
+      const updates: string[] = [];
+      const params: Record<string, unknown> = { id, updatedAt: now() };
+      if (patch.modelMode !== undefined) {
+        updates.push("model_mode=@modelMode");
+        params.modelMode = patch.modelMode;
+      }
+      if (patch.persona !== undefined) {
+        updates.push("persona=@persona");
+        params.persona = patch.persona;
+      }
+      if (!updates.length) throw new Error("No conversation settings supplied");
+      raw
+        .prepare(
+          `UPDATE conversations SET ${updates.join(",")},updated_at=@updatedAt WHERE id=@id AND status='active'`,
+        )
+        .run(params);
+      const row = raw
+        .prepare(
+          "SELECT c.*,(SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) message_count FROM conversations c WHERE id=?",
+        )
+        .get(id);
+      if (!row) throw new Error("Conversation not found");
+      return mapConversation(row);
+    },
     addMessage: (r) => {
       const t = now();
       raw
         .prepare(
-          "INSERT INTO messages(id,conversation_id,role,content,job_id,delivery_status,error,created_at) VALUES(?,?,?,?,?,?,?,?)",
+          "INSERT INTO messages(id,conversation_id,role,content,job_id,delivery_status,error,persona,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
         )
         .run(
           r.id,
@@ -524,6 +573,7 @@ export function openDatabase(config: Config): Db {
           r.jobId ?? null,
           r.status ?? "complete",
           r.error ?? null,
+          r.persona ?? null,
           t,
         );
       for (const fileId of r.fileIds ?? [])
@@ -561,14 +611,14 @@ export function openDatabase(config: Config): Db {
       raw.transaction(() => {
         raw
           .prepare(
-            "INSERT INTO messages(id,conversation_id,role,content,delivery_status,created_at) VALUES(?,?,'user',?,'complete',?)",
+            "INSERT INTO messages(id,conversation_id,role,content,delivery_status,persona,created_at) VALUES(?,?,'user',?,'complete',NULL,?)",
           )
           .run(r.userId, r.conversationId, r.userText, t);
         raw
           .prepare(
-            "INSERT INTO messages(id,conversation_id,role,content,delivery_status,created_at) VALUES(?,?,'assistant',?,'complete',?)",
+            "INSERT INTO messages(id,conversation_id,role,content,delivery_status,persona,created_at) VALUES(?,?,'assistant',?,'complete',?,?)",
           )
-          .run(r.assistantId, r.conversationId, r.assistantText, t);
+          .run(r.assistantId, r.conversationId, r.assistantText, r.persona, t);
         raw
           .prepare(
             "UPDATE conversations SET updated_at=?,title=CASE WHEN title='New conversation' THEN ? ELSE title END WHERE id=?",
@@ -583,7 +633,7 @@ export function openDatabase(config: Config): Db {
     listMessages: (id) => {
       const rows = raw
         .prepare(
-          "SELECT id,conversation_id conversationId,role,content,job_id jobId,delivery_status status,error,created_at createdAt FROM messages WHERE conversation_id=? ORDER BY created_at,rowid",
+          "SELECT id,conversation_id conversationId,role,content,job_id jobId,delivery_status status,error,persona,created_at createdAt FROM messages WHERE conversation_id=? ORDER BY created_at,rowid",
         )
         .all(id) as Array<Omit<MessageView, "attachments">>;
       const attachments = raw.prepare(

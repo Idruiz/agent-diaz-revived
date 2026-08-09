@@ -23,7 +23,27 @@ export type JobStatus = z.infer<typeof JobStatusSchema>;
 
 export const ModelModeSchema = z.enum(["quick", "balanced", "deep"]);
 export type ModelMode = z.infer<typeof ModelModeSchema>;
-export const VoiceSchema = z.enum(["marin", "cedar"]);
+export const PersonaSchema = z.enum([
+  "diaz",
+  "javier",
+  "vega",
+  "mara",
+  "luz",
+  "salcedo",
+]);
+export type Persona = z.infer<typeof PersonaSchema>;
+export const VoiceSchema = z.enum([
+  "alloy",
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "sage",
+  "shimmer",
+  "verse",
+  "marin",
+  "cedar",
+]);
 export type Voice = z.infer<typeof VoiceSchema>;
 export const MessageStatusSchema = z.enum([
   "complete",
@@ -43,9 +63,15 @@ export const CreateJobSchema = z.object({
 export const CreateConversationSchema = z.object({
   title: z.string().trim().min(1).max(120).optional(),
 });
-export const UpdateConversationSettingsSchema = z.object({
-  modelMode: ModelModeSchema,
-});
+export const UpdateConversationSettingsSchema = z
+  .object({
+    modelMode: ModelModeSchema.optional(),
+    persona: PersonaSchema.optional(),
+  })
+  .refine(
+    (value) => value.modelMode !== undefined || value.persona !== undefined,
+    { message: "At least one conversation setting is required" },
+  );
 export const StreamChatSchema = z
   .object({
     prompt: z.string().trim().min(2).max(30_000).optional(),
@@ -63,10 +89,10 @@ export const StreamChatSchema = z
   });
 export const RealtimeTokenSchema = z.object({
   conversationId: z.string().uuid(),
-  voice: VoiceSchema,
 });
 export const VoiceTurnSchema = z.object({
   conversationId: z.string().uuid(),
+  persona: PersonaSchema,
   userText: z.string().trim().min(1).max(12_000),
   assistantText: z.string().trim().min(1).max(30_000),
 });
@@ -83,6 +109,7 @@ export interface ConversationView {
   status: "active" | "archived";
   summary: string | null;
   modelMode: ModelMode;
+  persona: Persona;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -95,6 +122,7 @@ export interface MessageView {
   jobId: string | null;
   status: MessageStatus;
   error: string | null;
+  persona: Persona | null;
   attachments: AttachmentView[];
   createdAt: string;
 }
@@ -191,4 +219,5 @@ export interface JobView {
   modelMode: ModelMode;
   model: string;
   reasoningEffort: "low" | "medium" | "high";
+  persona: Persona;
 }
