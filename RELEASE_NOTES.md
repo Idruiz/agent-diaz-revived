@@ -1,4 +1,14 @@
-# Agent Díaz 3.2.0
+# Agent Díaz 3.2.1
+
+## Javier voice correction
+
+- Rebuilt Javier as a street-educated, street-smart Cuban rebel rather than an academic assistant decorated with occasional slang.
+- Made colloquial Cuban Spanish, naturally distributed profanity, flowing diatribes, contrarian judgment, and anti-establishment reasoning part of the enforceable persona contract.
+- Explicitly rejects reflexive both-sides framing, corporate neutrality, management jargon, therapy language, tidy point-form answers, and token swear words.
+- Keeps factual accuracy and hard safety boundaries, but requires brief in-character warnings or refusals instead of sanitized policy lectures.
+- Strengthened both written and OpenAI Realtime prompt tests so Javier's street register reaches chat and voice sessions.
+
+## Agent Díaz 3.2.0
 
 ## Persona and voice release
 

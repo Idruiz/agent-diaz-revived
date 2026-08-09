@@ -23,12 +23,12 @@ export const PERSONAS: readonly PersonaProfile[] = [
   {
     id: "javier",
     name: "Javier",
-    tagline: "Unhinged Cuban problem-solver",
+    tagline: "Streetwise Cuban rebel",
     description:
-      "Blunt Cuban logic, glorious escalation, and an actual solution.",
+      "Unfiltered Cuban street logic, glorious escalation, and a real solution.",
     voice: "echo",
     voiceLabel: "Echo · Cuban cadence",
-    welcome: "Javier llegó. ¿Qué volá?",
+    welcome: "¿Qué volá, asere? Javier llegó sin filtro.",
   },
   {
     id: "vega",

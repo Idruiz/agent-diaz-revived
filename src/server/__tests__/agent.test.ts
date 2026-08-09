@@ -162,11 +162,67 @@ describe("agent production paths", () => {
     });
     expect(body.session.instructions).toContain("Hello Díaz");
     expect(body.session.instructions).toContain("CURRENT PERSONA: Javier");
-    expect(body.session.instructions).toContain("adult Cuban Spanish cadence");
+    expect(body.session.instructions).toContain("lively adult Cuban cadence");
+    expect(body.session.instructions).toContain("street-level rhythm");
+    expect(body.session.instructions).toContain(
+      "university-trained assistant wearing Cuban slang",
+    );
     expect(options.headers["OpenAI-Safety-Identifier"]).toBe(
       "agent-diaz-owner",
     );
     expect(JSON.stringify(token)).not.toContain(config.OPENAI_API_KEY);
+    db.close();
+  });
+
+  it("injects Javier's street register into written chat requests", async () => {
+    const { config, db } = harness(),
+      conversation = db.createConversation(crypto.randomUUID(), "Javier chat");
+    db.setConversationSettings(conversation.id, { persona: "javier" });
+    const profile = modelProfileFor("quick"),
+      job = db.createJob({
+        id: crypto.randomUUID(),
+        kind: "chat",
+        prompt: "Tell me what is really wrong with this plan",
+        conversationId: conversation.id,
+        fileIds: [],
+        ...profile,
+      }),
+      assistantId = crypto.randomUUID();
+    db.addMessage({
+      id: assistantId,
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "",
+      jobId: job.id,
+      status: "streaming",
+    });
+    async function* events() {
+      yield { type: "response.created", response: { id: "resp_javier" } };
+      yield { type: "response.output_text.delta", delta: "Asere, el problema" };
+      yield { type: "response.output_text.delta", delta: " es esta mierda." };
+    }
+    const create = vi.fn(async (_request: any) => events()),
+      runner = new AgentRunner(config, db);
+    (runner as any).client = { responses: { create } };
+    await runner.streamChat(job.id, assistantId, {});
+    const request = create.mock.calls[0]![0] as any;
+    expect(request.instructions).toContain("CURRENT PERSONA: Javier");
+    expect(request.instructions).toContain(
+      "street-educated, street-smart Cuban rebel",
+    );
+    expect(request.instructions).toContain(
+      "Swear naturally throughout almost every answer",
+    );
+    expect(request.instructions).toContain(
+      "Default to a flowing rant or diatribe",
+    );
+    expect(request.instructions).not.toContain(
+      "Every response must contain at least one organic Cuban Spanish swear",
+    );
+    expect(db.getJob(job.id)).toMatchObject({
+      status: "completed",
+      persona: "javier",
+    });
     db.close();
   });
 });

@@ -76,11 +76,17 @@ describe("contracts", () => {
     });
     expect(parsed).not.toHaveProperty("voice");
   });
-  it("defines Javier as Cuban, solution-oriented, and memory-safe", () => {
+  it("defines Javier as street-educated, unfiltered, and memory-safe", () => {
     const instructions = personaInstructions("javier");
     expect(instructions).toContain("CURRENT PERSONA: Javier");
-    expect(instructions).toContain("Cuban Spanish swear");
-    expect(instructions).toContain("solution-oriented");
+    expect(instructions).toContain("street-educated, street-smart Cuban rebel");
+    expect(instructions).toContain("Swear naturally throughout almost every answer");
+    expect(instructions).toContain("Default to a flowing rant or diatribe");
+    expect(instructions).toContain(
+      "Do not reflexively \"balance both sides,\"",
+    );
+    expect(instructions).toContain("university-trained assistant wearing Cuban slang");
+    expect(instructions).toContain("refuse only the dangerous part in one blunt sentence");
     expect(instructions).toContain("not a separate factual database");
     expect(instructions).toContain("Never turn jokes, profanity");
   });
