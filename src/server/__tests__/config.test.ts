@@ -9,6 +9,18 @@ afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
 });
 describe("durable storage configuration", () => {
+  it("defaults to the writable storage directory when STORAGE_DIR is unset", () => {
+    const config = loadConfig({
+      OPENAI_API_KEY: "test",
+      ADMIN_PASSWORD: "1234567890123456",
+    });
+    const storageRoot = path.join(process.cwd(), "storage");
+    expect(config.storageRoot).toBe(storageRoot);
+    expect(config.dataDir).toBe(path.join(storageRoot, "data"));
+    expect(config.uploadDir).toBe(path.join(storageRoot, "uploads"));
+    expect(config.artifactDir).toBe(path.join(storageRoot, "artifacts"));
+  });
+
   it("places every durable directory under one mounted root", () => {
     const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-storage-"));
     roots.push(storageRoot);

@@ -43,7 +43,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const root = process.cwd();
   const storageRoot = parsed.data.STORAGE_DIR
     ? path.resolve(parsed.data.STORAGE_DIR)
-    : root;
+    : path.join(root, "storage");
   return {
     ...parsed.data,
     root,

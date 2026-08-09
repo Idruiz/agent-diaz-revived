@@ -6,7 +6,8 @@ COPY . .
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS runtime
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    STORAGE_DIR=/app/storage
 WORKDIR /app
 RUN groupadd --system diaz && useradd --system --gid diaz --home-dir /app diaz
 COPY --from=build --chown=diaz:diaz /app/package.json /app/package-lock.json ./
