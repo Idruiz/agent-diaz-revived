@@ -118,6 +118,39 @@ export function inspectJavierStyle(text: string): JavierStyleReport {
   };
 }
 
+/**
+ * A rewrite may miss the aspirational profanity density without being a
+ * sanitized Javier response. Style enforcement must never become an
+ * availability failure, so this floor accepts a clearly Cuban, volatile,
+ * non-academic rewrite once it reaches 60% of the density target.
+ */
+export function clearsJavierRewriteFloor(report: JavierStyleReport): boolean {
+  const minimumProfanity = Math.max(1, Math.ceil(report.profanityTarget * 0.6));
+  const minimumVariety = report.words > 85 ? 2 : 1;
+  return (
+    report.hasCubanOpening &&
+    report.hasVolatility &&
+    !report.usesListStructure &&
+    report.formalMarkers.length === 0 &&
+    report.cubanTexture >= 1 &&
+    report.profanityHits >= minimumProfanity &&
+    report.profanityVariety >= minimumVariety
+  );
+}
+
+/** Select the more characterful draft when the rewrite still misses the floor. */
+export function javierStyleScore(report: JavierStyleReport): number {
+  return (
+    Math.min(report.profanityHits, report.profanityTarget) * 2 +
+    report.profanityVariety * 3 +
+    report.cubanTexture * 2 +
+    (report.hasCubanOpening ? 4 : 0) +
+    (report.hasVolatility ? 2 : 0) -
+    report.formalMarkers.length * 5 -
+    (report.usesListStructure ? 6 : 0)
+  );
+}
+
 export function javierChatInstructions(baseInstructions: string): string {
   return `${baseInstructions}\n\n${JAVIER_FINAL_OVERRIDE}`;
 }

@@ -14,7 +14,9 @@ import { log } from "./log.js";
 import { getSkillForKind } from "./skills.js";
 import { personaInstructions } from "./personas.js";
 import {
+  clearsJavierRewriteFloor,
   inspectJavierStyle,
+  javierStyleScore,
   javierChatInstructions,
   javierRewriteInstructions,
 } from "./javier-style.js";
@@ -504,27 +506,36 @@ export class AgentRunner {
             throw new Error("Javier style rewrite returned no text");
           const finalReport = inspectJavierStyle(candidate);
           if (!finalReport.passes) {
-            log("error", "javier.style_gate_failed", {
+            const clearsFloor = clearsJavierRewriteFloor(finalReport);
+            const firstScore = javierStyleScore(firstReport);
+            const rewriteScore = javierStyleScore(finalReport);
+            output = rewriteScore >= firstScore ? candidate : output;
+            log(clearsFloor ? "warn" : "error", "javier.style_gate_degraded", {
               jobId,
               words: finalReport.words,
               profanityHits: finalReport.profanityHits,
               profanityTarget: finalReport.profanityTarget,
               profanityVariety: finalReport.profanityVariety,
               cubanTexture: finalReport.cubanTexture,
+              clearsFloor,
+              selected: rewriteScore >= firstScore ? "rewrite" : "original",
+              firstScore,
+              rewriteScore,
               failures: finalReport.failures,
             });
-            throw new Error(
-              `Javier rejected a second sanitized response (${finalReport.failures.join("; ")}). Retry the answer.`,
-            );
+            // Style is not a safety boundary. A model may miss a quantitative
+            // target, but the app must still return the best available answer.
+            // Keeping this observable lets us tune Javier without breaking chat.
+          } else {
+            output = candidate;
+            log("info", "javier.style_gate_passed_after_rewrite", {
+              jobId,
+              words: finalReport.words,
+              profanityHits: finalReport.profanityHits,
+              profanityVariety: finalReport.profanityVariety,
+              cubanTexture: finalReport.cubanTexture,
+            });
           }
-          output = candidate;
-          log("info", "javier.style_gate_passed_after_rewrite", {
-            jobId,
-            words: finalReport.words,
-            profanityHits: finalReport.profanityHits,
-            profanityVariety: finalReport.profanityVariety,
-            cubanTexture: finalReport.cubanTexture,
-          });
         } else {
           log("info", "javier.style_gate_passed", {
             jobId,

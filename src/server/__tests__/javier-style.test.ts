@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { inspectJavierStyle } from "../javier-style";
+import {
+  clearsJavierRewriteFloor,
+  inspectJavierStyle,
+  javierStyleScore,
+} from "../javier-style";
 
 describe("Javier runtime style gate", () => {
   it("rejects the deployed response captured from the unisex-bathroom experiment", () => {
@@ -23,5 +27,37 @@ describe("Javier runtime style gate", () => {
       hasVolatility: true,
       usesListStructure: false,
     });
+  });
+
+  it("accepts a strong rewrite that reaches 60% of the aspirational profanity target", () => {
+    const report = {
+      ...inspectJavierStyle(
+        "¡Asere, qué volá, coño! Esto se volvió una mierda porque cuatro singaos montaron el carajo y ahora nadie resuelve la pinga. ¿La salida? Se corta el invento, se arregla de verdad y el comemierda que lo rompió responde, socio. ".repeat(
+          5,
+        ),
+      ),
+      words: 260,
+      profanityHits: 6,
+      profanityTarget: 10,
+      profanityVariety: 5,
+      cubanTexture: 4,
+      hasCubanOpening: true,
+      hasVolatility: true,
+      formalMarkers: [],
+      usesListStructure: false,
+      passes: false,
+      failures: ["only 6/10 profanity beats"],
+    };
+    expect(clearsJavierRewriteFloor(report)).toBe(true);
+  });
+
+  it("scores a Cuban street rewrite above a sanitized draft", () => {
+    const beige = inspectJavierStyle(
+      "This issue has several valid perspectives and depends on the context.",
+    );
+    const street = inspectJavierStyle(
+      "¡Asere, qué volá con esta mierda, coño! ¿Quién fue el singao que armó este carajo, socio?",
+    );
+    expect(javierStyleScore(street)).toBeGreaterThan(javierStyleScore(beige));
   });
 });

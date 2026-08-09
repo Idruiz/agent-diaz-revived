@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../db";
 import { AgentRunner, modelProfileFor } from "../openai-agent";
+import { inspectJavierStyle } from "../javier-style";
 import type { Config } from "../config";
 const roots: string[] = [];
 afterEach(() => {
@@ -297,7 +298,7 @@ describe("agent production paths", () => {
     db.close();
   });
 
-  it("fails visibly instead of emitting a second sanitized Javier draft", async () => {
+  it("returns the best available draft instead of failing chat on style", async () => {
     const { config, db } = harness(),
       conversation = db.createConversation(crypto.randomUUID(), "Javier fail closed");
     db.setConversationSettings(conversation.id, { persona: "javier" });
@@ -342,14 +343,78 @@ describe("agent production paths", () => {
       onDelta: (delta) => deltas.push(delta),
       onError: (error) => errors.push(error),
     });
-    expect(deltas).toEqual([]);
-    expect(errors[0]).toContain("Javier rejected a second sanitized response");
-    expect(db.getJob(job.id)).toMatchObject({ status: "failed" });
+    expect(deltas).toEqual([
+      "Asere, esta cuestión merece una respuesta equilibrada y respetuosa.",
+    ]);
+    expect(errors).toEqual([]);
+    expect(db.getJob(job.id)).toMatchObject({ status: "completed" });
     expect(
       db
         .listMessages(conversation.id)
         .find((message) => message.id === assistantId),
-    ).toMatchObject({ content: "", status: "failed" });
+    ).toMatchObject({
+      content: "Asere, esta cuestión merece una respuesta equilibrada y respetuosa.",
+      status: "complete",
+    });
+    db.close();
+  });
+
+  it("delivers a 6/10 near-target rewrite instead of showing the deployed rejection error", async () => {
+    const { config, db } = harness(),
+      conversation = db.createConversation(crypto.randomUUID(), "Javier 6 of 10");
+    db.setConversationSettings(conversation.id, { persona: "javier" });
+    const job = db.createJob({
+        id: crypto.randomUUID(),
+        kind: "chat",
+        prompt: "Explain this your way",
+        conversationId: conversation.id,
+        fileIds: [],
+        ...modelProfileFor("quick"),
+      }),
+      assistantId = crypto.randomUUID();
+    db.addMessage({
+      id: assistantId,
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "",
+      jobId: job.id,
+      status: "streaming",
+      persona: "javier",
+    });
+    async function* events() {
+      yield { type: "response.created", response: { id: "resp_sanitized" } };
+      yield {
+        type: "response.output_text.delta",
+        delta: "This subject deserves a balanced and carefully structured response.",
+      };
+    }
+    const nearTarget = `${
+      "¡Asere, qué volá, coño! Esto arrancó como una mierda porque unos singaos montaron el carajo y nadie quiso resolver la pinga. ¿La salida? Se corta el invento, se habla claro y el comemierda responsable responde, socio. "
+    }${"La calle entiende rápido cuando el papeleo se vuelve humo y la gente común carga con el problema. ".repeat(13)}`;
+    const expectedAnswer = nearTarget.trim();
+    const create = vi.fn(async (request: any) =>
+        request.stream ? events() : { output_text: nearTarget },
+      ),
+      runner = new AgentRunner(config, db),
+      deltas: string[] = [],
+      errors: string[] = [];
+    (runner as any).client = { responses: { create } };
+    await runner.streamChat(job.id, assistantId, {
+      onDelta: (delta) => deltas.push(delta),
+      onError: (error) => errors.push(error),
+    });
+    const report = inspectJavierStyle(expectedAnswer);
+    expect(report.profanityHits).toBe(6);
+    expect(report.profanityTarget).toBe(10);
+    expect(report.passes).toBe(false);
+    expect(deltas).toEqual([expectedAnswer]);
+    expect(errors).toEqual([]);
+    expect(db.getJob(job.id)).toMatchObject({ status: "completed" });
+    expect(
+      db
+        .listMessages(conversation.id)
+        .find((message) => message.id === assistantId),
+    ).toMatchObject({ content: expectedAnswer, status: "complete" });
     db.close();
   });
 });
