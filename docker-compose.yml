@@ -3,14 +3,12 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      STORAGE_DIR: /app/storage
     ports:
       - "3000:3000"
     volumes:
-      - diaz-data:/app/data
-      - diaz-artifacts:/app/artifacts
-      - diaz-uploads:/app/uploads
+      - diaz-storage:/app/storage
 
 volumes:
-  diaz-data:
-  diaz-artifacts:
-  diaz-uploads:
+  diaz-storage:

@@ -1,6 +1,6 @@
 {
   "name": "agent-diaz-revived",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -16,7 +16,9 @@
     "test": "vitest run --root .",
     "test:watch": "vitest --root .",
     "audit:prod": "npm audit --omit=dev",
-    "verify": "npm run check && npm test && npm run build && npm run audit:prod"
+    "audit:reviewed": "node scripts/reviewed-audit.mjs",
+    "smoke": "node scripts/runtime-smoke.mjs",
+    "verify": "npm run check && npm test && npm run build && npm run smoke && npm run audit:reviewed"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -30,6 +32,8 @@
     "pptxgenjs": "^4.0.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "sharp": "^0.35.3",
     "zod": "^4.1.5"
   },

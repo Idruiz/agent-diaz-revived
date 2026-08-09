@@ -1,4 +1,18 @@
-# Agent Díaz 3.0.0
+# Agent Díaz 3.1.0
+
+## Conversational production pass
+
+- Ordinary chat now streams directly into the transcript through authenticated SSE; user messages appear immediately and stop/retry are inline.
+- Quick, Balanced, and Deep model/reasoning profiles persist per conversation and are recorded on every job.
+- Attachments are bound to their visible user message and sent as image or file inputs; spreadsheets automatically enable Code Interpreter.
+- Upload preparation, file-reading, provider, interruption, and restart failures remain visible and retryable.
+- Voice chat uses WebRTC, short-lived Realtime client secrets, the cost-controlled Realtime model, Marin/Cedar voices, and durable transcript pairs.
+- Artifact work remains a durable background pipeline with progress, cancellation, approvals, deterministic builders, and authenticated downloads.
+- SQLite, uploads, and artifacts can now live under one `STORAGE_DIR`, enabling a single Render persistent-disk mount.
+- The UI is now a responsive modern conversation workspace with a fixed composer and compact artifact/task controls.
+- GitHub Actions were removed; verified releases are deployed manually.
+
+## Revival baseline
 
 This release replaces every earlier Agent Díaz Revived archive.
 

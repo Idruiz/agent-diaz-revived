@@ -4,5 +4,6 @@ dist/
 data/
 artifacts/
 uploads/
+storage/
 *.log
 .DS_Store
