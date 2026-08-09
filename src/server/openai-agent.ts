@@ -13,6 +13,11 @@ import { buildArtifact } from "./builders.js";
 import { log } from "./log.js";
 import { getSkillForKind } from "./skills.js";
 import { personaInstructions } from "./personas.js";
+import {
+  inspectJavierStyle,
+  javierChatInstructions,
+  javierRewriteInstructions,
+} from "./javier-style.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -218,6 +223,7 @@ export class AgentRunner {
       .map((item) => `[${item.title}] ${item.summary}`)
       .join("\n\n")
       .slice(-30_000);
+    const realtimeInstructions = `${personaInstructions(conversation.persona)}\n\nVOICE CONVERSATION RULES\n- Speak naturally and conversationally. Avoid markdown formatting, visual tables, and long enumerations.\n- Maintain continuity with the supplied transcript.\n- The voice itself is ${profile.voiceLabel}; follow the current persona's pacing, register, and accent instructions.\n\nCURRENT CONVERSATION:\n${transcript || "No prior turns."}\n\nOLDER DURABLE MEMORY (use only when relevant; never convert persona performance into memory):\n${memory || "None."}`;
     const token = await this.client.realtime.clientSecrets.create(
       {
         expires_after: { anchor: "created_at", seconds: 120 },
@@ -226,7 +232,10 @@ export class AgentRunner {
           model: this.config.OPENAI_REALTIME_MODEL,
           output_modalities: ["audio"],
           max_output_tokens: 2048,
-          instructions: `${personaInstructions(conversation.persona)}\n\nVOICE CONVERSATION RULES\n- Speak naturally and conversationally. Avoid markdown formatting, visual tables, and long enumerations.\n- Maintain continuity with the supplied transcript.\n- The voice itself is ${profile.voiceLabel}; follow the current persona's pacing, register, and accent instructions.\n\nCURRENT CONVERSATION:\n${transcript || "No prior turns."}\n\nOLDER DURABLE MEMORY (use only when relevant; never convert persona performance into memory):\n${memory || "None."}`,
+          instructions:
+            conversation.persona === "javier"
+              ? javierChatInstructions(realtimeInstructions)
+              : realtimeInstructions,
           audio: {
             input: {
               transcription: { model: "gpt-4o-mini-transcribe" },
@@ -356,6 +365,7 @@ export class AgentRunner {
     let output = "",
       lastPersist = 0,
       responseId = "";
+    let bufferForStyleGate = false;
     const approvalItems: any[] = [];
     try {
       this.db.updateJob(jobId, {
@@ -369,11 +379,17 @@ export class AgentRunner {
           job.conversationId,
           excludeAssistantJobId,
         );
+      const baseInstructions = `${personaInstructions(job.persona)}\n\nACTIVE SKILL: ${skill.name}\n${skill.instructions}\n\n${this.contextInstructions(job.conversationId)}`;
+      const instructions =
+        job.persona === "javier"
+          ? javierChatInstructions(baseInstructions)
+          : baseInstructions;
+      bufferForStyleGate = job.persona === "javier";
       const stream = await this.client.responses.create(
         {
           model: job.model,
           reasoning: { effort: job.reasoningEffort, context: "all_turns" },
-          instructions: `${personaInstructions(job.persona)}\n\nACTIVE SKILL: ${skill.name}\n${skill.instructions}\n\n${this.contextInstructions(job.conversationId)}`,
+          instructions,
           input: messages.map((message) => this.messageInput(message)),
           tools: this.toolset(messages, skill.tools),
           stream: true,
@@ -394,9 +410,9 @@ export class AgentRunner {
         }
         if (event.type === "response.output_text.delta") {
           output += event.delta;
-          handlers.onDelta?.(event.delta);
+          if (!bufferForStyleGate) handlers.onDelta?.(event.delta);
           const now = Date.now();
-          if (now - lastPersist > 300) {
+          if (!bufferForStyleGate && now - lastPersist > 300) {
             this.db.updateMessage(assistantMessageId, { content: output });
             lastPersist = now;
           }
@@ -456,6 +472,70 @@ export class AgentRunner {
       }
       if (!output.trim())
         throw new Error("OpenAI completed without returning text");
+      if (bufferForStyleGate) {
+        const firstReport = inspectJavierStyle(output);
+        if (!firstReport.passes) {
+          log("warn", "javier.style_gate_rewrite", {
+            jobId,
+            words: firstReport.words,
+            profanityHits: firstReport.profanityHits,
+            profanityTarget: firstReport.profanityTarget,
+            profanityVariety: firstReport.profanityVariety,
+            cubanTexture: firstReport.cubanTexture,
+            failures: firstReport.failures,
+          });
+          this.db.updateJob(jobId, {
+            progress: 80,
+            message: "Javier is rejecting the polite draft",
+          });
+          const rewritten = await this.client.responses.create(
+            {
+              model: job.model,
+              reasoning: { effort: job.reasoningEffort },
+              instructions: javierRewriteInstructions(firstReport),
+              input: `DRAFT TO REWRITE:\n${output}`,
+              store: false,
+              safety_identifier: "agent-diaz-owner",
+            } as any,
+            { signal: controller.signal },
+          );
+          const candidate = rewritten.output_text?.trim() ?? "";
+          if (!candidate)
+            throw new Error("Javier style rewrite returned no text");
+          const finalReport = inspectJavierStyle(candidate);
+          if (!finalReport.passes) {
+            log("error", "javier.style_gate_failed", {
+              jobId,
+              words: finalReport.words,
+              profanityHits: finalReport.profanityHits,
+              profanityTarget: finalReport.profanityTarget,
+              profanityVariety: finalReport.profanityVariety,
+              cubanTexture: finalReport.cubanTexture,
+              failures: finalReport.failures,
+            });
+            throw new Error(
+              `Javier rejected a second sanitized response (${finalReport.failures.join("; ")}). Retry the answer.`,
+            );
+          }
+          output = candidate;
+          log("info", "javier.style_gate_passed_after_rewrite", {
+            jobId,
+            words: finalReport.words,
+            profanityHits: finalReport.profanityHits,
+            profanityVariety: finalReport.profanityVariety,
+            cubanTexture: finalReport.cubanTexture,
+          });
+        } else {
+          log("info", "javier.style_gate_passed", {
+            jobId,
+            words: firstReport.words,
+            profanityHits: firstReport.profanityHits,
+            profanityVariety: firstReport.profanityVariety,
+            cubanTexture: firstReport.cubanTexture,
+          });
+        }
+        handlers.onDelta?.(output);
+      }
       this.db.updateMessage(assistantMessageId, {
         content: output,
         status: "complete",
@@ -479,30 +559,30 @@ export class AgentRunner {
       const aborted = controller.signal.aborted || error?.name === "AbortError";
       if (aborted) {
         this.db.updateMessage(assistantMessageId, {
-          content: output,
+          content: bufferForStyleGate ? "" : output,
           status: "stopped",
           error: null,
         });
         this.db.updateJob(jobId, {
           status: "cancelled",
           message: "Stopped",
-          outputText: output || null,
+          outputText: bufferForStyleGate ? null : output || null,
           error: null,
         });
-        handlers.onDone?.(output);
+        handlers.onDone?.(bufferForStyleGate ? "" : output);
         log("info", "chat.stopped", { jobId });
       } else {
         const message =
           error instanceof Error ? error.message : "Unknown chat failure";
         this.db.updateMessage(assistantMessageId, {
-          content: output,
+          content: bufferForStyleGate ? "" : output,
           status: "failed",
           error: message,
         });
         this.db.updateJob(jobId, {
           status: "failed",
           message: "Failed",
-          outputText: output || null,
+          outputText: bufferForStyleGate ? null : output || null,
           error: message,
         });
         handlers.onError?.(message);

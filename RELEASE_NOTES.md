@@ -1,3 +1,15 @@
+# Agent Díaz 3.2.2
+
+## Javier runtime style gate
+
+- Moved Javier's final output contract after skill, continuity, transcript, and archival context so older polite answers can no longer dominate the active voice.
+- Added an executable style inspection for Cuban street register, distributed profanity, profanity variety, colloquial texture, volatility, formal-language leakage, and sanitized list structure.
+- Javier chat drafts are now quarantined until they pass; rejected drafts are never streamed to the browser or persisted to shared conversation memory.
+- A failed first draft receives one fact-preserving style rewrite. A second sanitized result fails visibly and remains retryable instead of silently impersonating Javier.
+- The other five personas keep the original direct streaming path and incur no extra model call.
+- Realtime voice now receives Javier's final output contract after the supplied transcript and durable memory.
+- Added regression coverage using the exact polite unisex-bathroom response captured from production.
+
 # Agent Díaz 3.2.1
 
 ## Javier voice correction

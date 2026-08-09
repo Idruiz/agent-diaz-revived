@@ -167,6 +167,9 @@ describe("agent production paths", () => {
     expect(body.session.instructions).toContain(
       "university-trained assistant wearing Cuban slang",
     );
+    expect(body.session.instructions.lastIndexOf("JAVIER FINAL OUTPUT CONTRACT")).toBeGreaterThan(
+      body.session.instructions.lastIndexOf("OLDER DURABLE MEMORY"),
+    );
     expect(options.headers["OpenAI-Safety-Identifier"]).toBe(
       "agent-diaz-owner",
     );
@@ -198,8 +201,14 @@ describe("agent production paths", () => {
     });
     async function* events() {
       yield { type: "response.created", response: { id: "resp_javier" } };
-      yield { type: "response.output_text.delta", delta: "Asere, el problema" };
-      yield { type: "response.output_text.delta", delta: " es esta mierda." };
+      yield {
+        type: "response.output_text.delta",
+        delta: "¡Asere, qué volá! Ese plan es una mierda, socio: ",
+      };
+      yield {
+        type: "response.output_text.delta",
+        delta: "lo armó un singao y quedó de pinga al revés. ¿Quién carajo aprobó eso?",
+      };
     }
     const create = vi.fn(async (_request: any) => events()),
       runner = new AgentRunner(config, db);
@@ -216,6 +225,9 @@ describe("agent production paths", () => {
     expect(request.instructions).toContain(
       "Default to a flowing rant or diatribe",
     );
+    expect(request.instructions.lastIndexOf("JAVIER FINAL OUTPUT CONTRACT")).toBeGreaterThan(
+      request.instructions.lastIndexOf("ACTIVE SKILL"),
+    );
     expect(request.instructions).not.toContain(
       "Every response must contain at least one organic Cuban Spanish swear",
     );
@@ -223,6 +235,121 @@ describe("agent production paths", () => {
       status: "completed",
       persona: "javier",
     });
+    db.close();
+  });
+
+  it("quarantines and rewrites the captured polite Javier response before emitting it", async () => {
+    const { config, db } = harness(),
+      conversation = db.createConversation(crypto.randomUUID(), "Javier gate");
+    db.setConversationSettings(conversation.id, { persona: "javier" });
+    const profile = modelProfileFor("quick"),
+      job = db.createJob({
+        id: crypto.randomUUID(),
+        kind: "chat",
+        prompt: "¿Qué piensas de los baños unisex?",
+        conversationId: conversation.id,
+        fileIds: [],
+        ...profile,
+      }),
+      assistantId = crypto.randomUUID();
+    db.addMessage({
+      id: assistantId,
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "",
+      jobId: job.id,
+      status: "streaming",
+      persona: "javier",
+    });
+    const politeDraft =
+      "Asere, un baño unisex es, en lo básico, un baño que puede usar cualquiera sin cartel de hombres y mujeres. No hay magia ni conspiración satánica con inodoros, coño. Puede ser un baño individual con una puerta que tranca o un local con cabinas cerradas y lavamanos compartidos. La idea práctica suele ser simple: menos espacio desperdiciado y más fácil para familias. Si las cabinas no cierran bien, es una chapucería. Pero eso no es porque sea unisex; es porque lo diseñaron unos singaos. La regla sana es bien sencilla: cabinas de verdad, puertas que cierren, buena limpieza y cero acoso.";
+    const rewritten =
+      "¡Asere, qué volá con esta comemierdería de convertir un baño en una guerra mundial, coño! Un baño es pa mear y cagar, no pa fundar la Universidad Internacional del Inodoro, carajo. Si la cabina cierra, hay privacidad y nadie acosa a nadie, que entre quien tenga que entrar y se acabó el mierdero. Ahora, si ponen puertas con huecos o cuatro singaos vigilando, ahí sí se formó la pinga. ¿La solución? Cabinas cerradas de verdad, limpieza, accesibilidad y al comemierda que moleste a otro lo sacan. Lo demás es político de mierda inflando un retrete hasta volverlo una comemierdería termonuclear, socio.";
+    async function* events() {
+      yield { type: "response.created", response: { id: "resp_polite" } };
+      yield { type: "response.output_text.delta", delta: politeDraft };
+    }
+    const create = vi.fn(async (request: any) =>
+        request.stream ? events() : { output_text: rewritten },
+      ),
+      runner = new AgentRunner(config, db),
+      deltas: string[] = [];
+    (runner as any).client = { responses: { create } };
+    await runner.streamChat(job.id, assistantId, {
+      onDelta: (delta) => deltas.push(delta),
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(deltas).toEqual([rewritten]);
+    expect(deltas.join("")).not.toContain("en lo básico");
+    const rewriteRequest = create.mock.calls[1]![0] as any;
+    expect(rewriteRequest).toMatchObject({
+      model: "gpt-5.6-luna",
+      store: false,
+      input: expect.stringContaining(politeDraft),
+    });
+    expect(rewriteRequest.instructions).toContain("JAVIER REWRITE GATE");
+    expect(rewriteRequest.instructions).toContain("formal register");
+    expect(
+      db
+        .listMessages(conversation.id)
+        .find((message) => message.id === assistantId),
+    ).toMatchObject({ content: rewritten, status: "complete" });
+    db.close();
+  });
+
+  it("fails visibly instead of emitting a second sanitized Javier draft", async () => {
+    const { config, db } = harness(),
+      conversation = db.createConversation(crypto.randomUUID(), "Javier fail closed");
+    db.setConversationSettings(conversation.id, { persona: "javier" });
+    const job = db.createJob({
+        id: crypto.randomUUID(),
+        kind: "chat",
+        prompt: "Give me your opinion",
+        conversationId: conversation.id,
+        fileIds: [],
+        ...modelProfileFor("quick"),
+      }),
+      assistantId = crypto.randomUUID();
+    db.addMessage({
+      id: assistantId,
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "",
+      jobId: job.id,
+      status: "streaming",
+      persona: "javier",
+    });
+    async function* events() {
+      yield { type: "response.created", response: { id: "resp_beige" } };
+      yield {
+        type: "response.output_text.delta",
+        delta: "This issue has several valid perspectives and depends on the context.",
+      };
+    }
+    const create = vi.fn(async (request: any) =>
+        request.stream
+          ? events()
+          : {
+              output_text:
+                "Asere, esta cuestión merece una respuesta equilibrada y respetuosa.",
+            },
+      ),
+      runner = new AgentRunner(config, db),
+      deltas: string[] = [],
+      errors: string[] = [];
+    (runner as any).client = { responses: { create } };
+    await runner.streamChat(job.id, assistantId, {
+      onDelta: (delta) => deltas.push(delta),
+      onError: (error) => errors.push(error),
+    });
+    expect(deltas).toEqual([]);
+    expect(errors[0]).toContain("Javier rejected a second sanitized response");
+    expect(db.getJob(job.id)).toMatchObject({ status: "failed" });
+    expect(
+      db
+        .listMessages(conversation.id)
+        .find((message) => message.id === assistantId),
+    ).toMatchObject({ content: "", status: "failed" });
     db.close();
   });
 });
