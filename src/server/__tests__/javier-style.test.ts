@@ -60,4 +60,12 @@ describe("Javier runtime style gate", () => {
     );
     expect(javierStyleScore(street)).toBeGreaterThan(javierStyleScore(beige));
   });
+
+  it("recognizes the meaning-specific 1980s and 1990s Cuban vocabulary", () => {
+    const report = inspectJavierStyle(
+      "¡Asere, esto es una morronga, coño! La hijadeputá fue premeditada y el comepinga que la inventó se puede ir pa casa del carajo. ¿Y esa mariconá de joder al vecino por gusto? Me cago en el coño de su madre, socio.",
+    );
+    expect(report.profanityHits).toBeGreaterThanOrEqual(7);
+    expect(report.profanityVariety).toBeGreaterThanOrEqual(6);
+  });
 });

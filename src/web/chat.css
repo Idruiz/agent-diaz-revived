@@ -72,7 +72,8 @@
 }
 .personaControl select,
 .voiceIdentity,
-.mic {
+.mic,
+.voiceEnd {
   height: 38px;
   border: 1px solid #345469;
   background: #102735;
@@ -105,8 +106,19 @@
   align-items: center;
   gap: 0.45rem;
 }
+.voiceEnd {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-color: #67454a;
+  color: #e5b9b6;
+  cursor: pointer;
+}
 .mic > span {
   font-size: 0.78rem;
+}
+.voiceEnd > span {
+  font-size: 0.72rem;
 }
 .mic:first-letter {
   color: #d1a43a;
@@ -126,6 +138,10 @@
   background: #142c3a;
   color: #aac0cc;
   font-size: 0.72rem;
+}
+.voiceNotice small {
+  color: #7893a2;
+  font-size: 0.65rem;
 }
 .pulse {
   width: 8px;
@@ -535,7 +551,11 @@
   .voiceIdentity {
     display: none;
   }
-  .mic > span {
+  .mic > span,
+  .voiceEnd > span {
+    display: inline;
+  }
+  .voiceNotice small {
     display: none;
   }
   .chatlog {

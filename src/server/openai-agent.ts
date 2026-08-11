@@ -240,10 +240,17 @@ export class AgentRunner {
               : realtimeInstructions,
           audio: {
             input: {
-              transcription: { model: "gpt-4o-mini-transcribe" },
+              transcription: {
+                model: "gpt-4o-mini-transcribe",
+                prompt:
+                  "Natural English, Spanish, or Cuban Spanish. Preserve Cuban words and names accurately, including asere, qué volá, hijadeputá, mariconá, comemierda, comepinga, morronga, carajo, pinga, and coño.",
+              },
               noise_reduction: { type: "near_field" },
               turn_detection: {
-                type: "semantic_vad",
+                type: "server_vad",
+                threshold: 0.35,
+                prefix_padding_ms: 500,
+                silence_duration_ms: 700,
                 create_response: true,
                 interrupt_response: true,
               },

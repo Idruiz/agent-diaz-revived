@@ -1,3 +1,23 @@
+# Agent Díaz 3.2.4
+
+## Android microphone reliability and Javier's old-school Cuban vocabulary
+
+- Replaced semantic turn detection with tuned server VAD so Android speech is committed after a clear pause instead of depending on semantic end-of-turn guesses.
+- Added an explicit Send control that manually commits the current microphone buffer and requests Javier's response when automatic turn detection does not fire.
+- Added live input transcription deltas, visible Transcribing/Thinking/Speaking states, data-channel readiness checks, microphone mute/end detection, a 30-second turn watchdog, and explicit provider/transcription errors.
+- Reconciles asynchronous voice events by `item_id` and persists only complete user/assistant pairs, preventing delayed transcripts from mixing adjacent turns.
+- Added safe lifecycle logging without raw microphone audio, API credentials, or transcript contents.
+- Added the user's meaning-specific Cuban vocabulary from the 1980s and 1990s: hijadeputá, mariconá (conduct only), me cago en el coño de la madre/de su madre, casa del carajo, casa de la pinga, comepinga, and morronga.
+- Added transcription context so Cuban words survive speech recognition instead of being normalized into unrelated Spanish.
+- Added regression coverage for out-of-order Realtime events, transcript failures, turn isolation, VAD configuration, and the expanded Javier lexicon.
+
+# Agent Díaz 3.2.3
+
+## Javier style-gate availability fix
+
+- Kept the rewrite gate from suppressing chat when a strong Javier answer missed only the aspirational profanity counter.
+- A rewrite that clears the character floor is accepted; if both drafts are weak, the better answer is delivered with explicit degraded-style telemetry instead of a red product failure.
+
 # Agent Díaz 3.2.2
 
 ## Javier runtime style gate

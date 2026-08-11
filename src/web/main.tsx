@@ -21,6 +21,12 @@ import type {
   Voice,
 } from "../shared/contracts";
 import { PERSONAS, personaProfile } from "../shared/personas";
+import {
+  RealtimeVoiceTracker,
+  sendRealtimeEvent,
+  voiceEventError,
+  type RealtimeVoiceEvent,
+} from "./realtime-voice";
 import "./styles.css";
 import "./chat.css";
 
@@ -139,11 +145,13 @@ function App() {
       jobId: string | null;
     } | null>(null),
     voicePeerRef = useRef<RTCPeerConnection | null>(null),
+    voiceChannelRef = useRef<RTCDataChannel | null>(null),
     voiceMediaRef = useRef<MediaStream | null>(null),
     voiceAudioRef = useRef<HTMLAudioElement | null>(null),
-    voiceUserRef = useRef(""),
-    voiceAssistantRef = useRef(""),
+    voiceTrackerRef = useRef(new RealtimeVoiceTracker()),
     voicePersistingRef = useRef(false),
+    voiceManualCommitRef = useRef(false),
+    voiceWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     voicePersonaRef = useRef<Persona>("diaz");
   const conversation = conversations.find((item) => item.id === conversationId),
     current = useMemo(
@@ -212,16 +220,21 @@ function App() {
 
   const stopVoice = () => {
     const peer = voicePeerRef.current,
+      channel = voiceChannelRef.current,
       media = voiceMediaRef.current,
       audio = voiceAudioRef.current;
+    if (voiceWatchdogRef.current) clearTimeout(voiceWatchdogRef.current);
+    voiceWatchdogRef.current = null;
     voicePeerRef.current = null;
+    voiceChannelRef.current = null;
     voiceMediaRef.current = null;
     voiceAudioRef.current = null;
+    channel?.close();
     peer?.close();
     media?.getTracks().forEach((track) => track.stop());
     audio?.remove();
-    voiceUserRef.current = "";
-    voiceAssistantRef.current = "";
+    voiceTrackerRef.current.resetTurn();
+    voiceManualCommitRef.current = false;
     voicePersistingRef.current = false;
     setVoiceDraft(null);
     setVoiceActive(false);
@@ -229,32 +242,53 @@ function App() {
     setVoiceIdentity(null);
   };
   const persistVoiceTurn = async () => {
-    if (
-      voicePersistingRef.current ||
-      !conversationId ||
-      !voiceUserRef.current.trim() ||
-      !voiceAssistantRef.current.trim()
-    )
-      return;
+    if (voicePersistingRef.current || !conversationId) return;
     voicePersistingRef.current = true;
-    const userText = voiceUserRef.current.trim(),
-      assistantText = voiceAssistantRef.current.trim();
-    voiceUserRef.current = "";
-    voiceAssistantRef.current = "";
     try {
-      await api.saveVoiceTurn(
-        conversationId,
-        voicePersonaRef.current,
-        userText,
-        assistantText,
-      );
-      await loadConversation(conversationId);
-      setVoiceDraft(null);
+      let turn = voiceTrackerRef.current.takeCompletedTurn();
+      while (turn) {
+        await api.saveVoiceTurn(
+          conversationId,
+          voicePersonaRef.current,
+          turn.userText,
+          turn.assistantText,
+        );
+        console.info("voice.turn_persisted", {
+          conversationId,
+          persona: voicePersonaRef.current,
+          userCharacters: turn.userText.length,
+          assistantCharacters: turn.assistantText.length,
+        });
+        await loadConversation(conversationId);
+        setVoiceDraft(null);
+        turn = voiceTrackerRef.current.takeCompletedTurn();
+      }
     } catch (error) {
       console.error("voice.persist_failed", error);
       setErr(`Voice transcript was not saved: ${(error as Error).message}`);
     } finally {
       voicePersistingRef.current = false;
+    }
+  };
+  const forceVoiceTurn = () => {
+    const channel = voiceChannelRef.current;
+    if (voiceManualCommitRef.current) return;
+    if (!channel) {
+      setErr("Voice connection is not ready. End voice and try again.");
+      return;
+    }
+    try {
+      const eventId = `diaz-manual-commit-${crypto.randomUUID()}`;
+      sendRealtimeEvent(channel, {
+        type: "input_audio_buffer.commit",
+        event_id: eventId,
+      });
+      voiceManualCommitRef.current = true;
+      setVoiceStatus("Sending…");
+      console.info("voice.manual_commit_sent", { eventId });
+    } catch (error) {
+      console.error("voice.manual_commit_failed", error);
+      setErr((error as Error).message);
     }
   };
   const startVoice = async () => {
@@ -273,6 +307,7 @@ function App() {
       const token = await api.realtimeToken(conversationId);
       setVoiceModel(token.model);
       voicePersonaRef.current = token.persona;
+      voiceTrackerRef.current.resetTurn();
       setVoiceIdentity({ persona: token.persona, voice: token.voice });
       const peer = new RTCPeerConnection(),
         audio = document.createElement("audio");
@@ -292,50 +327,130 @@ function App() {
         },
       });
       voiceMediaRef.current = media;
-      peer.addTrack(media.getAudioTracks()[0]!, media);
+      const microphone = media.getAudioTracks()[0];
+      if (!microphone || microphone.readyState !== "live")
+        throw new Error("Android did not provide a live microphone track.");
+      microphone.enabled = true;
+      microphone.addEventListener("mute", () => {
+        console.warn("voice.microphone_muted");
+        setErr("Android muted the microphone. Check the site microphone permission and try again.");
+      });
+      microphone.addEventListener("ended", () => {
+        console.warn("voice.microphone_ended");
+        if (voicePeerRef.current === peer)
+          setErr("The microphone stopped unexpectedly. End voice and reconnect.");
+      });
+      peer.addTrack(microphone, media);
       const channel = peer.createDataChannel("oai-events");
-      channel.addEventListener("open", () => setVoiceStatus("Listening"));
+      voiceChannelRef.current = channel;
+      const channelReady = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Voice event channel timed out.")),
+          10_000,
+        );
+        channel.addEventListener(
+          "open",
+          () => {
+            clearTimeout(timeout);
+            console.info("voice.channel_open", {
+              microphoneState: microphone.readyState,
+              microphoneEnabled: microphone.enabled,
+            });
+            setVoiceStatus("Listening");
+            resolve();
+          },
+          { once: true },
+        );
+      });
       channel.addEventListener("message", (event) => {
         try {
-          const data = JSON.parse(event.data);
-          if (data.type === "input_audio_buffer.speech_started")
-            setVoiceStatus("Listening");
-          if (
-            data.type ===
-            "conversation.item.input_audio_transcription.completed"
-          ) {
-            voiceUserRef.current = String(data.transcript ?? "");
-            setVoiceDraft({
-              user: voiceUserRef.current,
-              assistant: voiceAssistantRef.current,
+          const data = JSON.parse(event.data) as RealtimeVoiceEvent;
+          const important = [
+            "session.created",
+            "session.updated",
+            "input_audio_buffer.speech_started",
+            "input_audio_buffer.speech_stopped",
+            "input_audio_buffer.committed",
+            "conversation.item.input_audio_transcription.completed",
+            "conversation.item.input_audio_transcription.failed",
+            "response.created",
+            "response.done",
+            "error",
+          ];
+          if (important.includes(data.type ?? ""))
+            console.info("voice.lifecycle", {
+              type: data.type,
+              itemId: data.item_id,
+              responseStatus: data.response?.status,
             });
+          const eventError = voiceEventError(data);
+          if (eventError) {
+            voiceManualCommitRef.current = false;
+            console.error("voice.provider_error", {
+              type: data.type,
+              code: data.error?.code,
+              message: data.error?.message,
+            });
+            setErr(eventError);
+          }
+          const snapshot = voiceTrackerRef.current.handle(data);
+          if (data.type === "input_audio_buffer.speech_started") {
+            setVoiceStatus("Listening");
+            if (voiceWatchdogRef.current)
+              clearTimeout(voiceWatchdogRef.current);
+            voiceWatchdogRef.current = setTimeout(() => {
+              console.warn("voice.turn_detection_timeout");
+              forceVoiceTurn();
+            }, 30_000);
             void persistVoiceTurn();
           }
+          if (data.type === "input_audio_buffer.speech_stopped") {
+            if (voiceWatchdogRef.current)
+              clearTimeout(voiceWatchdogRef.current);
+            voiceWatchdogRef.current = null;
+            setVoiceStatus("Transcribing…");
+          }
+          if (
+            data.type === "conversation.item.input_audio_transcription.delta" ||
+            data.type === "conversation.item.input_audio_transcription.completed"
+          ) {
+            setVoiceDraft({
+              user: snapshot.userText,
+              assistant: snapshot.assistantText,
+            });
+            if (data.type.endsWith(".completed")) setVoiceStatus("Thinking…");
+            void persistVoiceTurn();
+          }
+          if (data.type === "input_audio_buffer.committed" && voiceManualCommitRef.current) {
+            voiceManualCommitRef.current = false;
+            sendRealtimeEvent(channel, {
+              type: "response.create",
+              event_id: `diaz-manual-response-${crypto.randomUUID()}`,
+            });
+            setVoiceStatus("Thinking…");
+          }
+          if (data.type === "response.created") setVoiceStatus("Thinking…");
           if (
             [
               "response.output_audio_transcript.delta",
               "response.audio_transcript.delta",
-            ].includes(data.type)
+            ].includes(data.type ?? "")
           ) {
-            voiceAssistantRef.current += String(data.delta ?? "");
             setVoiceStatus("Speaking");
             setVoiceDraft({
-              user: voiceUserRef.current,
-              assistant: voiceAssistantRef.current,
+              user: snapshot.userText,
+              assistant: snapshot.assistantText,
             });
           }
           if (
             [
               "response.output_audio_transcript.done",
               "response.audio_transcript.done",
-            ].includes(data.type)
+            ].includes(data.type ?? "")
           ) {
-            voiceAssistantRef.current = String(
-              data.transcript ?? voiceAssistantRef.current,
-            );
             setVoiceDraft({
-              user: voiceUserRef.current,
-              assistant: voiceAssistantRef.current,
+              user: snapshot.userText,
+              assistant: snapshot.assistantText,
             });
             void persistVoiceTurn();
           }
@@ -343,12 +458,9 @@ function App() {
             setVoiceStatus("Listening");
             void persistVoiceTurn();
           }
-          if (data.type === "error")
-            setErr(
-              `Voice error: ${data.error?.message ?? "Realtime session failed"}`,
-            );
         } catch (error) {
           console.error("voice.event_invalid", error);
+          setErr("Díaz received an invalid voice event. End voice and reconnect.");
         }
       });
       peer.onconnectionstatechange = () => {
@@ -374,6 +486,7 @@ function App() {
         type: "answer",
         sdp: await response.text(),
       });
+      await channelReady;
       setVoiceActive(true);
       setVoiceStatus("Listening");
     } catch (error) {
@@ -927,16 +1040,31 @@ function App() {
                   </span>
                   <button
                     className={`mic ${voiceActive ? "active" : ""}`}
-                    onClick={() => void startVoice()}
+                    disabled={
+                      voiceActive &&
+                      !["Listening", "Transcribing…"].includes(voiceStatus)
+                    }
+                    onClick={() =>
+                      voiceActive ? forceVoiceTurn() : void startVoice()
+                    }
                     title={
                       voiceActive
-                        ? "End voice conversation"
+                        ? "Send the current microphone turn now"
                         : "Start voice conversation"
                     }
                   >
-                    {voiceActive ? "■" : "●"}
-                    <span>{voiceActive ? voiceStatus : "Voice"}</span>
+                    {voiceActive ? "↑" : "●"}
+                    <span>{voiceActive ? "Send" : "Voice"}</span>
                   </button>
+                  {voiceActive && (
+                    <button
+                      className="voiceEnd"
+                      onClick={stopVoice}
+                      title="End voice conversation"
+                    >
+                      ■ <span>End</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -944,7 +1072,8 @@ function App() {
               <div className="voiceNotice">
                 <span className="pulse" />
                 {voicePersona.name} · OpenAI {voiceIdentity?.voice} ·{" "}
-                {voiceModel}
+                {voiceModel} · {voiceStatus}
+                <small>Speak, pause, or tap Send</small>
               </div>
             )}
             <div className="chatlog">

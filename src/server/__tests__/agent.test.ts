@@ -158,13 +158,31 @@ describe("agent production paths", () => {
       session: {
         type: "realtime",
         model: "gpt-realtime-2.1-mini",
-        audio: { output: { voice: "echo" } },
+        audio: {
+          input: {
+            transcription: {
+              model: "gpt-4o-mini-transcribe",
+              prompt: expect.stringContaining("hijadeputá"),
+            },
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.35,
+              prefix_padding_ms: 500,
+              silence_duration_ms: 700,
+              create_response: true,
+              interrupt_response: true,
+            },
+          },
+          output: { voice: "echo" },
+        },
       },
     });
     expect(body.session.instructions).toContain("Hello Díaz");
     expect(body.session.instructions).toContain("CURRENT PERSONA: Javier");
     expect(body.session.instructions).toContain("lively adult Cuban cadence");
     expect(body.session.instructions).toContain("street-level rhythm");
+    expect(body.session.instructions).toContain("esto es una morronga");
+    expect(body.session.instructions).toContain("que se vaya pa casa del carajo");
     expect(body.session.instructions).toContain(
       "university-trained assistant wearing Cuban slang",
     );

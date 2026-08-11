@@ -15,7 +15,7 @@ export interface JavierStyleReport {
 }
 
 const PROFANITY =
-  /comemierd\w*|mierd\w*|coñ\w*|cojon\w*|singao\w*|pinga\w*|caraj\w*|jod\w*|cabron\w*|desping\w*|\bculo\b|\bput(?:a|o|ísima|ísimo)s?\b/giu;
+  /comemierd\w*|comeping\w*|hijadeput\w*|maricon\w*|morrong\w*|mierd\w*|coñ\w*|cojon\w*|singao\w*|pinga\w*|caraj\w*|jod\w*|cabron\w*|desping\w*|\bculo\b|\bput(?:a|o|ísima|ísimo)s?\b/giu;
 
 const CUBAN_TEXTURE =
   /\b(?:asere|acere|socio|compadre|candela|yuma|chivato|invento|resolver|guagua|jama|pincha|tipo)\b|qué\s+volá|mi\s+hermano|pa['’]?\b|pal\s+carajo|de\s+pinga/giu;
@@ -41,6 +41,10 @@ function profanityRoot(word: string): string {
   const lower = word.toLocaleLowerCase("es");
   for (const root of [
     "comemierd",
+    "comeping",
+    "hijadeput",
+    "maricon",
+    "morrong",
     "mierd",
     "coñ",
     "cojon",
