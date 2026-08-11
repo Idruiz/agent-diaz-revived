@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import sharp from "sharp";
 import { openDatabase } from "../db";
 import {
   AgentRunner,
@@ -354,6 +355,7 @@ describe("agent production paths", () => {
             body: "The deterministic builder validates and writes the file.",
             bullets: [],
             speakerNotes: "",
+            imageQuery: "software validation workflow photograph",
           },
         ],
         sources: [
@@ -395,7 +397,25 @@ describe("agent production paths", () => {
       responses: { create, retrieve: vi.fn() },
     };
 
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    }).jpeg().toBuffer();
+    const imageFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("commons.wikimedia.org/w/api.php"))
+        return new Response(JSON.stringify({query:{pages:{1:{title:"Validation workflow",imageinfo:[{thumburl:"https://images.example.test/workflow.jpg",descriptionurl:"https://commons.wikimedia.org/wiki/File:Workflow.jpg",width:1200,height:800,extmetadata:{ObjectName:{value:"Validation workflow"},Artist:{value:"Test photographer"},LicenseShortName:{value:"CC BY 4.0"}}}]}}}}),{status:200,headers:{"content-type":"application/json"}});
+      if (url === "https://images.example.test/workflow.jpg")
+        return new Response(imageBytes,{status:200,headers:{"content-type":"image/jpeg"}});
+      throw new Error(`Unexpected fetch in artifact test: ${url}`);
+    });
+
     await (runner as any).run(job.id);
+    imageFetch.mockRestore();
 
     expect(create).toHaveBeenCalledTimes(2);
     const evidenceRequest = create.mock.calls[0]![0] as any,

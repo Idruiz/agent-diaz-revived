@@ -9,6 +9,10 @@ FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     STORAGE_DIR=/app/storage
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core fonts-liberation2 fonts-crosextra-carlito \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system diaz && useradd --system --gid diaz --home-dir /app diaz
 COPY --from=build --chown=diaz:diaz /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=diaz:diaz /app/node_modules ./node_modules

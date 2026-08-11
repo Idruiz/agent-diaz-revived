@@ -1,3 +1,17 @@
+# Agent Díaz 3.3.0
+
+## Rebuild artifact quality around visual evidence
+
+- Replaced the presentation's single repeated template with editorial title, statement, native chart, native table, native diagram, split-photo, and full-bleed-photo layouts. Slide counts, source pages, notes, credits, and pagination now reflect the actual deck.
+- Made PowerPoint charts, tables, diagrams, and labels crisp and editable instead of flattening them into fragile raster graphics. Licensed photographs are cropped intentionally, credited, and given alt text.
+- Rebuilt document, analysis, and research output with a real cover, first-page treatment, running furniture, fixed-width tables, deliberate figure pagination, accessible image descriptions, and legible source pages.
+- Reworked websites as responsive, self-contained editorial bundles with distinct page photography, alternating content layouts, mobile behavior, embedded visualizations, and complete image licensing.
+- Repaired Wikimedia retrieval by removing reliance on a missing search-response MIME field, ranking results for subject relevance, rejecting bad/tiny downloads, normalizing assets, retrying throttled requests, and failing visibly when required photography cannot be supplied.
+- Raised planning and validation requirements so presentations request at least three distinct photographs and five visuals, documents request visual evidence, vague image searches are rejected, and charts require source notes.
+- Added production fonts to the runtime image and switched SVG text to an installed fallback stack, eliminating square-glyph labels in generated charts and diagrams.
+- Added package-structure regressions for editable PowerPoint visuals and print-safe Word documents, then rendered and visually inspected representative PPTX and DOCX output plus the portable website bundle.
+- Left persona prompts, Javier's style gate, voice generation, and browser playback unchanged.
+
 # Agent Díaz 3.2.8
 
 ## Make strict artifact schemas compatible with OpenAI

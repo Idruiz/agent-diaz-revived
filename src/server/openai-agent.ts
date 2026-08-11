@@ -163,7 +163,15 @@ function isTransientProviderFailure(response: any): boolean {
 }
 
 function artifactInstructions(kind: JobKind): string {
-  return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, sections[{heading,body,bullets,speakerNotes, imageQuery, table{title,headers,rows}, chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote}, diagram{title,nodes,caption}}], pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Use null for imageQuery, table, chart, diagram, or pages when that field does not apply. Every material factual claim must be supported. Never invent numbers. Use 7-12 sections for presentations and 5-14 otherwise. Include at least two meaningful visual elements across tables, charts, or diagrams when the evidence supports them. Do not add decorative charts without real data. Body and bullets must contain finished content, not directions or placeholders.${kind === "website" ? " A website MUST define 3-6 pages with unique lowercase slugs (use index for the home page), assign every section heading to a page, and give at least four sections concrete imageQuery values for relevant documentary photographs. Do not request logos, illustrations, AI images, text-heavy graphics, or identifiable private people." : ""}`;
+  const visualPolicy =
+    kind === "presentation"
+      ? " Create 7-11 content sections. At least half of them must have exactly one primary visual. Give at least three sections distinct, concrete imageQuery values for relevant licensed photographs or explanatory scientific/historical illustrations; use a compact 3-7 word search phrase naming the visible subject and setting. Prefer imagery to generic process boxes. Use a chart only for exact values present in the evidence dossier and include its source in sourceNote. Keep visible slide copy concise: normally 2-4 bullets, with no bibliography section because the builder adds source slides."
+      : kind === "website"
+        ? " Define 3-6 pages with unique lowercase slugs (use index for the home page), assign every section heading to a page, and give at least four sections distinct concrete imageQuery values for relevant documentary photographs. Do not request logos, AI images, text-heavy graphics, or identifiable private people."
+        : kind === "research" || kind === "document"
+          ? " Create 5-12 sections. Include at least three meaningful visuals and at least one distinct concrete imageQuery for a relevant licensed photograph or explanatory illustration. Use charts only for exact sourced values and include sourceNote. Do not create a Sources or References section because the builder adds it."
+          : " Create 5-12 sections. Use charts and tables only from executed analysis; every numerical visual must state its data source in sourceNote. Decorative imagery is optional.";
+  return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, sections[{heading,body,bullets,speakerNotes,imageQuery,table{title,headers,rows},chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote},diagram{title,nodes,caption}}], pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Use null for imageQuery, table, chart, diagram, or pages when that field does not apply. Every material factual claim must be supported. Never invent numbers. Body and bullets must contain finished audience-facing content, not directions, placeholders, production notes, or visual descriptions.${visualPolicy}`;
 }
 
 function validateArtifactPlan(
@@ -177,6 +185,40 @@ function validateArtifactPlan(
   if (visualCount < minVisuals)
     throw new Error(
       `Artifact plan validation failed: expected at least ${minVisuals} meaningful visuals, received ${visualCount}`,
+    );
+  const imageQueries = plan.sections
+    .map((section: any) => section.imageQuery?.trim())
+    .filter(Boolean);
+  if (new Set(imageQueries.map((query: string) => query.toLocaleLowerCase())).size !== imageQueries.length)
+    throw new Error("Artifact plan validation failed: image queries must be distinct");
+  for (const section of plan.sections) {
+    if (section.imageQuery && section.imageQuery.trim().split(/\s+/).length < 3)
+      throw new Error(
+        `Artifact plan validation failed: image query '${section.imageQuery}' is too vague`,
+      );
+    if (section.chart && !section.chart.sourceNote?.trim())
+      throw new Error(
+        `Artifact plan validation failed: chart '${section.chart.title}' has no source note`,
+      );
+  }
+  if (kind === "presentation") {
+    if (plan.sections.length < 7 || plan.sections.length > 11)
+      throw new Error(
+        "Presentation plan validation failed: expected 7-11 content sections",
+      );
+    const requiredVisuals = Math.max(minVisuals, Math.ceil(plan.sections.length / 2));
+    if (visualCount < requiredVisuals)
+      throw new Error(
+        `Presentation plan validation failed: expected ${requiredVisuals} visual sections, received ${visualCount}`,
+      );
+    if (imageQueries.length < 3)
+      throw new Error(
+        `Presentation plan validation failed: expected at least 3 licensed-image briefs, received ${imageQueries.length}`,
+      );
+  }
+  if (["research", "document"].includes(kind) && imageQueries.length < 1)
+    throw new Error(
+      "Document plan validation failed: at least one licensed-image brief is required",
     );
   if (kind === "website") {
     if (!plan.pages || plan.pages.length < 3)

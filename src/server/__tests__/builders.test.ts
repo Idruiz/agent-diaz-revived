@@ -92,6 +92,46 @@ describe("artifact builders", () => {
       expect(out.size).toBeGreaterThan(kind === "website" ? 1500 : 8000);
       expect(path.dirname(out.path)).toBe(config.artifactDir);
     });
+  it("keeps PowerPoint charts and diagrams editable and avoids raster-label failures", async () => {
+    const out = await buildArtifact(config, "presentation", plan);
+    const zip = new AdmZip(out.path),
+      names = zip.getEntries().map((entry) => entry.entryName),
+      slideNames = names.filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)),
+      slideText = slideNames
+        .map((name) => zip.getEntry(name)!.getData().toString("utf8"))
+        .join("\n");
+    expect(slideNames).toHaveLength(5);
+    expect(
+      names.some(
+        (name) => name.startsWith("ppt/charts/") && name.endsWith(".xml"),
+      ),
+    ).toBe(true);
+    expect(
+      names.filter(
+        (name) => name.startsWith("ppt/media/") && !name.endsWith("/"),
+      ),
+    ).toHaveLength(0);
+    expect(slideText).not.toContain(" / 3");
+    expect(slideText.match(/>Sources</g)).toHaveLength(1);
+    expect(slideText).toContain("Validated workflow");
+  });
+  it("generates print-safe Word structure with fixed tables and a distinct cover", async () => {
+    const out = await buildArtifact(config, "document", plan);
+    const zip = new AdmZip(out.path),
+      documentXml = zip
+        .getEntry("word/document.xml")!
+        .getData()
+        .toString("utf8"),
+      numberingXml = zip
+        .getEntry("word/numbering.xml")!
+        .getData()
+        .toString("utf8");
+    expect(documentXml).toContain('w:type="fixed"');
+    expect(documentXml).toContain('w:w="9360"');
+    expect(documentXml).toContain("<w:titlePg");
+    expect(documentXml).toContain("<w:keepNext");
+    expect(numberingXml).toContain('w:val="bullet"');
+  });
   it("packages phone-portable self-contained website pages", async () => {
     const out = await buildArtifact(config, "website", plan);
     const zip = new AdmZip(out.path);
