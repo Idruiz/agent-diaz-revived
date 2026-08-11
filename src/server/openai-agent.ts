@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import OpenAI from "openai";
+import { zodTextFormat } from "openai/helpers/zod";
+import { z } from "zod";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
 import {
@@ -93,6 +95,36 @@ export function assertProviderRequestCompatible(request: any): void {
     );
 }
 
+const artifactSectionSchema = ArtifactPlanSchema.shape.sections.element;
+const artifactPlanProviderSchema = ArtifactPlanSchema.extend({
+  sections: z
+    .array(
+      artifactSectionSchema.extend({
+        table: artifactSectionSchema.shape.table.unwrap().nullable(),
+        chart: artifactSectionSchema.shape.chart.unwrap().nullable(),
+        diagram: artifactSectionSchema.shape.diagram.unwrap().nullable(),
+        imageQuery: artifactSectionSchema.shape.imageQuery.unwrap().nullable(),
+      }),
+    )
+    .min(1)
+    .max(30),
+  pages: ArtifactPlanSchema.shape.pages.unwrap().nullable(),
+});
+
+export function artifactPlanTextFormat() {
+  return zodTextFormat(artifactPlanProviderSchema, "artifact_plan");
+}
+
+export function omitNullObjectFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(omitNullObjectFields);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, child]) => child !== null)
+      .map(([key, child]) => [key, omitNullObjectFields(child)]),
+  );
+}
+
 function isTransientProviderFailure(response: any): boolean {
   return ["server_error", "rate_limit_exceeded"].includes(
     response?.error?.code,
@@ -100,7 +132,7 @@ function isTransientProviderFailure(response: any): boolean {
 }
 
 function artifactInstructions(kind: JobKind): string {
-  return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, sections[{heading,body,bullets,speakerNotes, optional imageQuery, optional table{title,headers,rows}, optional chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote}, optional diagram{title,nodes,caption}}], optional pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Every material factual claim must be supported. Never invent numbers. Use 7-12 sections for presentations and 5-14 otherwise. Include at least two meaningful visual elements across tables, charts, or diagrams when the evidence supports them. Do not add decorative charts without real data. Body and bullets must contain finished content, not directions or placeholders.${kind === "website" ? " A website MUST define 3-6 pages with unique lowercase slugs (use index for the home page), assign every section heading to a page, and give at least four sections concrete imageQuery values for relevant documentary photographs. Do not request logos, illustrations, AI images, text-heavy graphics, or identifiable private people." : ""}`;
+  return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, sections[{heading,body,bullets,speakerNotes, imageQuery, table{title,headers,rows}, chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote}, diagram{title,nodes,caption}}], pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Use null for imageQuery, table, chart, diagram, or pages when that field does not apply. Every material factual claim must be supported. Never invent numbers. Use 7-12 sections for presentations and 5-14 otherwise. Include at least two meaningful visual elements across tables, charts, or diagrams when the evidence supports them. Do not add decorative charts without real data. Body and bullets must contain finished content, not directions or placeholders.${kind === "website" ? " A website MUST define 3-6 pages with unique lowercase slugs (use index for the home page), assign every section heading to a page, and give at least four sections concrete imageQuery values for relevant documentary photographs. Do not request logos, illustrations, AI images, text-heavy graphics, or identifiable private people." : ""}`;
 }
 
 function validateArtifactPlan(
@@ -906,7 +938,7 @@ export class AgentRunner {
           background: true,
           store: true,
           safety_identifier: "agent-diaz-owner",
-          text: { format: { type: "json_object" } },
+          text: { format: artifactPlanTextFormat() },
         } as any;
         assertProviderRequestCompatible(request);
         return this.client.responses.create(request);
@@ -964,13 +996,13 @@ export class AgentRunner {
                 context: "all_turns",
               },
               instructions:
-                "Retry the artifact structure phase from the original request and evidence in the previous response. Return one complete JSON object only. Do not use tools.",
+                "Retry the artifact structure phase from the original request and evidence in the previous response. Return one complete JSON artifact plan only. Do not use tools.",
               input:
                 "Reconstruct the complete artifact plan; the previous structure attempt failed transiently.",
               background: true,
               store: true,
               safety_identifier: "agent-diaz-owner",
-              text: { format: { type: "json_object" } },
+              text: { format: artifactPlanTextFormat() },
             } as any),
           79,
           "Structuring artifact",
@@ -986,7 +1018,9 @@ export class AgentRunner {
           message: "Building and validating artifact",
         });
         if (!this.db.listArtifacts(jobId).length) {
-          const raw = JSON.parse(output.replace(/^```json\s*|```$/g, ""));
+          const raw = omitNullObjectFields(
+            JSON.parse(output.replace(/^```json\s*|```$/g, "")),
+          );
           const plan = ArtifactPlanSchema.parse(raw);
           validateArtifactPlan(
             job.kind,

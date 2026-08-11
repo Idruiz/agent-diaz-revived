@@ -47,6 +47,7 @@ app.use(
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", "data:"],
+        mediaSrc: ["'self'", "blob:"],
         connectSrc: ["'self'", "https://api.openai.com"],
       },
     },

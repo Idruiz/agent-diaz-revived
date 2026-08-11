@@ -1,3 +1,12 @@
+# Agent Díaz 3.2.7
+
+## Repair structured artifacts and browser speech playback
+
+- Replaced legacy `json_object` artifact planning with a strict JSON Schema derived from the same Zod contract used to validate finished artifacts; provider-required nullable fields are normalized before the builders run.
+- Added a regression that verifies the structure request carries the complete `artifact_plan` schema, not merely a mock JSON response.
+- Allowed generated `blob:` audio URLs in the production `media-src` Content Security Policy. The previous default policy caused Chrome to reject otherwise valid WAV data with `MEDIA_ELEMENT_ERROR: Media load rejected by URL safety check`.
+- Extended the production smoke test to fail if the deployed Content Security Policy blocks voice Blob playback.
+
 # Agent Díaz 3.2.6
 
 ## Separate artifact routes and make voice playback device-neutral

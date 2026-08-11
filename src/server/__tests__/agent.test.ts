@@ -5,6 +5,7 @@ import path from "node:path";
 import { openDatabase } from "../db";
 import {
   AgentRunner,
+  artifactPlanTextFormat,
   assertProviderRequestCompatible,
   isValidWav,
   modelProfileFor,
@@ -340,6 +341,17 @@ describe("agent production paths", () => {
           },
         ],
       },
+      providerPlan = {
+        ...plan,
+        pages: null,
+        sections: plan.sections.map((section) => ({
+          table: null,
+          chart: null,
+          diagram: null,
+          imageQuery: null,
+          ...section,
+        })),
+      },
       create = vi.fn(async (request: any) =>
         request.tools?.length
           ? {
@@ -352,7 +364,7 @@ describe("agent production paths", () => {
           : {
               id: "resp_structure",
               status: "completed",
-              output_text: JSON.stringify(plan),
+              output_text: JSON.stringify(providerPlan),
               output: [],
             },
       ),
@@ -379,9 +391,22 @@ describe("agent production paths", () => {
       "Research a verified three-step workflow",
     );
     expect(structureRequest.tools).toBeUndefined();
-    expect(structureRequest.text).toEqual({
-      format: { type: "json_object" },
+    expect(structureRequest.text.format).toMatchObject({
+      type: "json_schema",
+      name: "artifact_plan",
+      strict: true,
     });
+    const schema = artifactPlanTextFormat().schema as any;
+    expect(schema.required).toContain("pages");
+    expect(schema.properties.sections.items.required).toEqual(
+      expect.arrayContaining([
+        "table",
+        "chart",
+        "diagram",
+        "imageQuery",
+      ]),
+    );
+    expect(structureRequest.text.format.schema).toEqual(schema);
     expect(structureRequest.input).toContain("Verified evidence dossier");
     expect(db.getJob(job.id)).toMatchObject({
       status: "completed",

@@ -47,6 +47,10 @@ const waitForHealth = async () => {
 };
 try {
   await waitForHealth();
+  const health = await fetch(`${base}/healthz`),
+    csp = health.headers.get("content-security-policy") || "";
+  if (!/media-src[^;]*blob:/.test(csp))
+    throw new Error(`CSP blocks generated voice Blob URLs: ${csp}`);
   const login = await fetch(`${base}/api/login`, {
     method: "POST",
     headers: { "content-type": "application/json", origin: base },
@@ -126,7 +130,7 @@ try {
   if (!page.ok || !html.includes('id="root"'))
     throw new Error("Production frontend was not served");
   console.log(
-    `[smoke] health, authentication, conversation mode/persona, durable storage, artifact download, and production frontend passed on port ${port}.`,
+    `[smoke] health/CSP voice playback, authentication, conversation mode/persona, durable storage, artifact download, and production frontend passed on port ${port}.`,
   );
 } finally {
   child.kill("SIGTERM");
