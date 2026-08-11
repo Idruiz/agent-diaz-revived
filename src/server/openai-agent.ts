@@ -111,8 +111,39 @@ const artifactPlanProviderSchema = ArtifactPlanSchema.extend({
   pages: ArtifactPlanSchema.shape.pages.unwrap().nullable(),
 });
 
+const supportedStructuredOutputStringFormats = new Set([
+  "date-time",
+  "time",
+  "date",
+  "duration",
+  "email",
+  "hostname",
+  "ipv4",
+  "ipv6",
+  "uuid",
+]);
+
+export function sanitizeStructuredOutputSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeStructuredOutputSchema);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(
+        ([key, child]) =>
+          key !== "format" ||
+          (typeof child === "string" &&
+            supportedStructuredOutputStringFormats.has(child)),
+      )
+      .map(([key, child]) => [key, sanitizeStructuredOutputSchema(child)]),
+  );
+}
+
 export function artifactPlanTextFormat() {
-  return zodTextFormat(artifactPlanProviderSchema, "artifact_plan");
+  const format = zodTextFormat(artifactPlanProviderSchema, "artifact_plan");
+  return {
+    ...format,
+    schema: sanitizeStructuredOutputSchema(format.schema),
+  };
 }
 
 export function omitNullObjectFields(value: unknown): unknown {

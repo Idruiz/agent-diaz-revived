@@ -1,3 +1,12 @@
+# Agent Díaz 3.2.8
+
+## Make strict artifact schemas compatible with OpenAI
+
+- Removed the unsupported JSON Schema `uri` string format from the provider-facing artifact contract while preserving strict URL validation in the application before any builder runs.
+- Added a recursive Structured Outputs compatibility boundary with an explicit OpenAI-supported format allowlist, preventing nested Zod fields from silently reintroducing unsupported formats.
+- Added a regression for the exact production failure path (`sources[].url`) and verified that supported formats remain intact.
+- Left persona prompts, Javier's style gate, voice generation, and browser playback unchanged.
+
 # Agent Díaz 3.2.7
 
 ## Repair structured artifacts and browser speech playback

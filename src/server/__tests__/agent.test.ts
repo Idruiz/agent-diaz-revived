@@ -9,6 +9,7 @@ import {
   assertProviderRequestCompatible,
   isValidWav,
   modelProfileFor,
+  sanitizeStructuredOutputSchema,
 } from "../openai-agent";
 import { inspectJavierStyle } from "../javier-style";
 import type { Config } from "../config";
@@ -267,6 +268,27 @@ describe("agent production paths", () => {
         text: { format: { type: "json_object" } },
       }),
     ).not.toThrow();
+  });
+
+  it("removes unsupported URI formats from every artifact structure request", () => {
+    const format = artifactPlanTextFormat() as any,
+      sourceUrl = format.schema.properties.sources.items.properties.url;
+    expect(format).toMatchObject({
+      type: "json_schema",
+      name: "artifact_plan",
+      strict: true,
+    });
+    expect(sourceUrl).toEqual({ type: "string" });
+    expect(JSON.stringify(format.schema)).not.toContain('"format":"uri"');
+    expect(
+      sanitizeStructuredOutputSchema({
+        contact: { type: "string", format: "email" },
+        source: { type: "string", format: "uri" },
+      }),
+    ).toEqual({
+      contact: { type: "string", format: "email" },
+      source: { type: "string" },
+    });
   });
 
   it("runs artifact evidence and JSON structuring as two incompatible-safe provider phases", async () => {
