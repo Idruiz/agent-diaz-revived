@@ -90,6 +90,10 @@ export const StreamChatSchema = z
 export const RealtimeTokenSchema = z.object({
   conversationId: z.string().uuid(),
 });
+export const SpeechSchema = z.object({
+  conversationId: z.string().uuid(),
+  text: z.string().trim().min(1).max(4000),
+});
 export const VoiceTurnSchema = z.object({
   conversationId: z.string().uuid(),
   persona: PersonaSchema,

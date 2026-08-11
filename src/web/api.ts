@@ -77,6 +77,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ conversationId }),
     }),
+  speech: async (
+    conversationId: string,
+    text: string,
+    signal: AbortSignal,
+  ): Promise<Blob> => {
+    const response = await fetch("/api/voice/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "audio/mpeg",
+      },
+      body: JSON.stringify({ conversationId, text }),
+      signal,
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `Speech failed (${response.status})`);
+    }
+    const audio = await response.blob();
+    if (!audio.size) throw new Error("Díaz received empty speech audio");
+    return audio;
+  },
   saveVoiceTurn: (
     conversationId: string,
     persona: Persona,

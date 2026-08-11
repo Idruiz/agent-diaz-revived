@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { RealtimeVoiceTracker, voiceEventError } from "./realtime-voice";
+import {
+  isInternalTranscriptionEcho,
+  RealtimeVoiceTracker,
+  runCanonicalVoiceTurn,
+  splitSpeechText,
+  voiceEventError,
+} from "./realtime-voice";
 
 describe("Android-safe Realtime voice tracking", () => {
   it("shows input transcript deltas and persists when final events arrive out of order", () => {
@@ -77,5 +83,77 @@ describe("Android-safe Realtime voice tracking", () => {
         error: { message: "Audio was unintelligible" },
       }),
     ).toContain("transcription failed: Audio was unintelligible");
+  });
+
+  it("blocks the exact internal hint that 3.2.4 leaked into the user's chat", () => {
+    expect(
+      isInternalTranscriptionEcho(
+        "Natural English, Spanish, or Cuban Spanish. Preserve Cuban words and names accurately, including asere, qué volá, hijadeputá, mariconá, comemierda, comepinga, morronga, carajo, pinga, and coño.",
+      ),
+    ).toBe(true);
+    expect(isInternalTranscriptionEcho("Qué volá con el bloqueo")).toBe(false);
+    expect(isInternalTranscriptionEcho("Qué volá")).toBe(false);
+  });
+
+  it("splits a long Javier answer without dropping or reordering any words", () => {
+    const text = Array.from(
+      { length: 240 },
+      (_, index) => `Frase ${index} con candela y contexto.`,
+    ).join(" ");
+    const chunks = splitSpeechText(text, 500);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.length <= 500)).toBe(true);
+    expect(chunks.join(" ")).toBe(text);
+  });
+
+  it("routes the exact Android transcript through canonical chat and plays every final TTS chunk", async () => {
+    const userText = "Qué volá con el bloqueo",
+      finalText = Array.from(
+        { length: 420 },
+        (_, index) => `Golpe cubano ${index}, coño, sin bajar la cabeza.`,
+      ).join(" "),
+      streamedUsers: string[] = [],
+      synthesized: string[] = [],
+      played: string[] = [];
+    const result = await runCanonicalVoiceTurn({
+      userText,
+      signal: new AbortController().signal,
+      streamChat: async (text, onEvent) => {
+        streamedUsers.push(text);
+        onEvent({ type: "ready", jobId: "job-canonical" });
+        onEvent({ type: "delta", delta: "Asere…" });
+        onEvent({ type: "done", content: finalText });
+      },
+      synthesize: async (chunk) => {
+        synthesized.push(chunk);
+        return new Blob([chunk], { type: "audio/mpeg" });
+      },
+      play: async (audio) => {
+        played.push(await audio.text());
+      },
+    });
+    expect(streamedUsers).toEqual([userText]);
+    expect(result).toBe(finalText);
+    expect(synthesized.length).toBeGreaterThan(1);
+    expect(synthesized.every((chunk) => chunk.length <= 3800)).toBe(true);
+    expect(synthesized.join(" ")).toBe(finalText);
+    expect(played).toEqual(synthesized);
+  });
+
+  it("never sends the leaked internal transcription prompt to canonical chat", async () => {
+    let streamed = false;
+    await expect(
+      runCanonicalVoiceTurn({
+        userText:
+          "Natural English, Spanish, or Cuban Spanish. Preserve Cuban words and names accurately, including asere.",
+        signal: new AbortController().signal,
+        streamChat: async () => {
+          streamed = true;
+        },
+        synthesize: async () => new Blob(),
+        play: async () => undefined,
+      }),
+    ).rejects.toThrow("Internal transcription hint was blocked");
+    expect(streamed).toBe(false);
   });
 });

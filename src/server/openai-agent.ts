@@ -242,8 +242,6 @@ export class AgentRunner {
             input: {
               transcription: {
                 model: "gpt-4o-mini-transcribe",
-                prompt:
-                  "Natural English, Spanish, or Cuban Spanish. Preserve Cuban words and names accurately, including asere, qué volá, hijadeputá, mariconá, comemierda, comepinga, morronga, carajo, pinga, and coño.",
               },
               noise_reduction: { type: "near_field" },
               turn_detection: {
@@ -251,8 +249,8 @@ export class AgentRunner {
                 threshold: 0.35,
                 prefix_padding_ms: 500,
                 silence_duration_ms: 700,
-                create_response: true,
-                interrupt_response: true,
+                create_response: false,
+                interrupt_response: false,
               },
             },
             output: { voice: profile.voice },
@@ -275,6 +273,37 @@ export class AgentRunner {
       voice: profile.voice,
       persona: conversation.persona,
     };
+  }
+
+  async createSpeech(conversationId: string, text: string): Promise<Buffer> {
+    const conversation = this.db.getConversation(conversationId);
+    if (!conversation || conversation.status !== "active")
+      throw new Error("Conversation not found");
+    const profile = personaProfile(conversation.persona);
+    const instructions =
+      conversation.persona === "javier"
+        ? "Read the supplied text completely and verbatim. Use a lively adult Cuban cadence rooted in Cuba of the 1980s and 1990s: irreverent, volatile, subversive, fast-changing, street-level, and naturally profane. Do not summarize, soften, censor, omit, or replace any word."
+        : `Read the supplied text completely and verbatim in the ${profile.voiceLabel} delivery assigned to this persona. Do not summarize, omit, or replace any word.`;
+    const response = await this.client.audio.speech.create(
+      {
+        model: "gpt-4o-mini-tts",
+        voice: profile.voice,
+        input: text,
+        instructions,
+        response_format: "mp3",
+      },
+      { headers: { "OpenAI-Safety-Identifier": "agent-diaz-owner" } },
+    );
+    const audio = Buffer.from(await response.arrayBuffer());
+    if (!audio.length) throw new Error("OpenAI returned empty speech audio");
+    log("info", "voice.tts_created", {
+      conversationId,
+      persona: conversation.persona,
+      voice: profile.voice,
+      textCharacters: text.length,
+      audioBytes: audio.length,
+    });
+    return audio;
   }
 
   async compactConversation(conversationId: string): Promise<void> {

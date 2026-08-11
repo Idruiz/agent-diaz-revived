@@ -18,6 +18,86 @@ export interface VoiceSnapshot {
   assistantComplete: boolean;
 }
 
+const LEAKED_TRANSCRIPTION_PROMPT =
+  /preserve cuban words and names accurately|natural english, spanish, or cuban spanish/i;
+
+export function isInternalTranscriptionEcho(text: string): boolean {
+  return LEAKED_TRANSCRIPTION_PROMPT.test(text.trim());
+}
+
+export function splitSpeechText(text: string, limit = 3800): string[] {
+  const normalized = text.trim();
+  if (!normalized) return [];
+  if (!Number.isInteger(limit) || limit < 200)
+    throw new Error("Speech chunk limit must be an integer of at least 200");
+  const chunks: string[] = [];
+  let remaining = normalized;
+  while (remaining.length > limit) {
+    const window = remaining.slice(0, limit + 1);
+    const candidates = [
+      window.lastIndexOf("\n\n"),
+      window.lastIndexOf(". "),
+      window.lastIndexOf("! "),
+      window.lastIndexOf("? "),
+      window.lastIndexOf("; "),
+      window.lastIndexOf(", "),
+      window.lastIndexOf(" "),
+    ].filter((index) => index >= Math.floor(limit * 0.55));
+    const boundary = candidates.length ? Math.max(...candidates) + 1 : limit;
+    chunks.push(remaining.slice(0, boundary).trim());
+    remaining = remaining.slice(boundary).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+export type CanonicalVoiceChatEvent =
+  | { type: "ready"; jobId: string }
+  | { type: "delta"; delta: string }
+  | { type: "done"; content: string }
+  | { type: "error"; error: string }
+  | { type: "approval"; jobId: string; count: number };
+
+export async function runCanonicalVoiceTurn(options: {
+  userText: string;
+  signal: AbortSignal;
+  streamChat: (
+    userText: string,
+    onEvent: (event: CanonicalVoiceChatEvent) => void,
+    signal: AbortSignal,
+  ) => Promise<void>;
+  synthesize: (text: string, signal: AbortSignal) => Promise<Blob>;
+  play: (audio: Blob, signal: AbortSignal) => Promise<void>;
+  onEvent?: (event: CanonicalVoiceChatEvent) => void;
+  onSpeechChunk?: (index: number, total: number) => void;
+}): Promise<string> {
+  const userText = options.userText.trim();
+  if (!userText) throw new Error("Voice transcript was empty");
+  if (isInternalTranscriptionEcho(userText))
+    throw new Error("Internal transcription hint was blocked");
+  let finalText = "",
+    streamError = "";
+  await options.streamChat(
+    userText,
+    (event) => {
+      options.onEvent?.(event);
+      if (event.type === "done") finalText = event.content.trim();
+      if (event.type === "error") streamError = event.error;
+    },
+    options.signal,
+  );
+  if (streamError) throw new Error(streamError);
+  if (!finalText)
+    throw new Error("The canonical chat path returned no final response.");
+  const chunks = splitSpeechText(finalText);
+  for (let index = 0; index < chunks.length; index++) {
+    options.onSpeechChunk?.(index, chunks.length);
+    const audio = await options.synthesize(chunks[index]!, options.signal);
+    await options.play(audio, options.signal);
+  }
+  return finalText;
+}
+
 /**
  * Realtime transcription and response events are asynchronous and may arrive
  * in either order. This tracker reconciles partial/final input by item_id and

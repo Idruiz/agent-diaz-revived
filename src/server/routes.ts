@@ -13,6 +13,7 @@ import {
   UpdateConversationSettingsSchema,
   StreamChatSchema,
   RealtimeTokenSchema,
+  SpeechSchema,
   VoiceTurnSchema,
 } from "../shared/contracts.js";
 import { safeJoin } from "./files.js";
@@ -301,6 +302,25 @@ export function apiRoutes(
       res.json(
         await runner.createRealtimeToken(parsed.data.conversationId),
       );
+    } catch (error) {
+      next(error);
+    }
+  });
+  r.post("/voice/speech", async (req, res, next) => {
+    try {
+      const parsed = SpeechSchema.safeParse(req.body);
+      if (!parsed.success)
+        return res.status(400).json({ error: "Invalid speech request" });
+      const audio = await runner.createSpeech(
+        parsed.data.conversationId,
+        parsed.data.text,
+      );
+      res.set({
+        "Content-Type": "audio/mpeg",
+        "Content-Length": String(audio.length),
+        "Cache-Control": "private, no-store",
+      });
+      res.send(audio);
     } catch (error) {
       next(error);
     }

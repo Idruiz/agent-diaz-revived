@@ -22,8 +22,11 @@ import type {
 } from "../shared/contracts";
 import { PERSONAS, personaProfile } from "../shared/personas";
 import {
+  isInternalTranscriptionEcho,
   RealtimeVoiceTracker,
+  runCanonicalVoiceTurn,
   sendRealtimeEvent,
+  splitSpeechText,
   voiceEventError,
   type RealtimeVoiceEvent,
 } from "./realtime-voice";
@@ -148,8 +151,11 @@ function App() {
     voiceChannelRef = useRef<RTCDataChannel | null>(null),
     voiceMediaRef = useRef<MediaStream | null>(null),
     voiceAudioRef = useRef<HTMLAudioElement | null>(null),
+    voicePlaybackRef = useRef<HTMLAudioElement | null>(null),
     voiceTrackerRef = useRef(new RealtimeVoiceTracker()),
-    voicePersistingRef = useRef(false),
+    voiceProcessingRef = useRef(false),
+    voiceAbortRef = useRef<AbortController | null>(null),
+    voiceHandledItemsRef = useRef(new Set<string>()),
     voiceManualCommitRef = useRef(false),
     voiceWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null),
     voicePersonaRef = useRef<Persona>("diaz");
@@ -222,57 +228,223 @@ function App() {
     const peer = voicePeerRef.current,
       channel = voiceChannelRef.current,
       media = voiceMediaRef.current,
-      audio = voiceAudioRef.current;
+      audio = voiceAudioRef.current,
+      playback = voicePlaybackRef.current;
     if (voiceWatchdogRef.current) clearTimeout(voiceWatchdogRef.current);
     voiceWatchdogRef.current = null;
+    voiceAbortRef.current?.abort();
+    voiceAbortRef.current = null;
+    playback?.pause();
+    if (playback) playback.src = "";
     voicePeerRef.current = null;
     voiceChannelRef.current = null;
     voiceMediaRef.current = null;
     voiceAudioRef.current = null;
+    voicePlaybackRef.current = null;
     channel?.close();
     peer?.close();
     media?.getTracks().forEach((track) => track.stop());
     audio?.remove();
     voiceTrackerRef.current.resetTurn();
+    voiceHandledItemsRef.current.clear();
     voiceManualCommitRef.current = false;
-    voicePersistingRef.current = false;
+    voiceProcessingRef.current = false;
+    streamRef.current = null;
+    setSending(false);
     setVoiceDraft(null);
     setVoiceActive(false);
     setVoiceStatus("Off");
     setVoiceIdentity(null);
   };
-  const persistVoiceTurn = async () => {
-    if (voicePersistingRef.current || !conversationId) return;
-    voicePersistingRef.current = true;
-    try {
-      let turn = voiceTrackerRef.current.takeCompletedTurn();
-      while (turn) {
-        await api.saveVoiceTurn(
-          conversationId,
-          voicePersonaRef.current,
-          turn.userText,
-          turn.assistantText,
-        );
-        console.info("voice.turn_persisted", {
-          conversationId,
-          persona: voicePersonaRef.current,
-          userCharacters: turn.userText.length,
-          assistantCharacters: turn.assistantText.length,
-        });
-        await loadConversation(conversationId);
-        setVoiceDraft(null);
-        turn = voiceTrackerRef.current.takeCompletedTurn();
+  const playSpeechBlob = (blob: Blob, signal: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+      const url = URL.createObjectURL(blob),
+        audio = voiceAudioRef.current;
+      if (!audio) {
+        URL.revokeObjectURL(url);
+        reject(new Error("Voice playback element is unavailable."));
+        return;
       }
-    } catch (error) {
-      console.error("voice.persist_failed", error);
-      setErr(`Voice transcript was not saved: ${(error as Error).message}`);
+      audio.srcObject = null;
+      audio.src = url;
+      voicePlaybackRef.current = audio;
+      const cleanup = () => {
+        signal.removeEventListener("abort", onAbort);
+        audio.removeEventListener("ended", onEnded);
+        audio.removeEventListener("error", onError);
+        URL.revokeObjectURL(url);
+        if (voicePlaybackRef.current === audio)
+          voicePlaybackRef.current = null;
+      };
+      const onAbort = () => {
+        audio.pause();
+        audio.src = "";
+        cleanup();
+        reject(new DOMException("Voice playback stopped", "AbortError"));
+      };
+      const onEnded = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error("Android could not play the generated speech audio."));
+      };
+      audio.addEventListener("ended", onEnded, { once: true });
+      audio.addEventListener("error", onError, { once: true });
+      signal.addEventListener("abort", onAbort, { once: true });
+      void audio.play().catch((error) => {
+        cleanup();
+        reject(
+          new Error(
+            `Android blocked speech playback: ${error instanceof Error ? error.message : "unknown playback error"}`,
+          ),
+        );
+      });
+    });
+
+  const processVoiceTranscript = async (userText: string, itemId: string) => {
+    if (!conversationId || voiceProcessingRef.current) return;
+    const text = userText.trim();
+    if (!text || voiceHandledItemsRef.current.has(itemId)) return;
+    voiceHandledItemsRef.current.add(itemId);
+    if (isInternalTranscriptionEcho(text)) {
+      console.error("voice.transcription_prompt_echo_blocked", {
+        itemId,
+        characters: text.length,
+      });
+      setErr(
+        "The transcription service echoed an internal hint instead of your speech. Nothing was saved or sent; please try that turn again.",
+      );
+      voiceTrackerRef.current.resetTurn();
+      setVoiceDraft(null);
+      setVoiceStatus("Listening");
+      return;
+    }
+
+    const controller = new AbortController(),
+      localAssistantId = `voice-stream-${crypto.randomUUID()}`,
+      microphone = voiceMediaRef.current?.getAudioTracks()[0];
+    voiceProcessingRef.current = true;
+    voiceAbortRef.current = controller;
+    if (microphone) microphone.enabled = false;
+    setVoiceDraft(null);
+    setSending(true);
+    setErr("");
+    setVoiceStatus("Javier is thinking…");
+    setMessages((items) => [
+      ...items,
+      {
+        id: `voice-user-${crypto.randomUUID()}`,
+        conversationId,
+        role: "user",
+        content: text,
+        jobId: null,
+        status: "complete",
+        error: null,
+        persona: null,
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: localAssistantId,
+        conversationId,
+        role: "assistant",
+        content: "",
+        jobId: null,
+        status: "streaming",
+        error: null,
+        persona: voicePersonaRef.current,
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    streamRef.current = { controller, jobId: null };
+    try {
+      const finalText = await runCanonicalVoiceTurn({
+        userText: text,
+        signal: controller.signal,
+        streamChat: (voiceText, onEvent, signal) =>
+          api.streamChat(
+            { conversationId, prompt: voiceText, fileIds: [] },
+            { onEvent: (event) => onEvent(event) },
+            signal,
+          ),
+        synthesize: (chunk, signal) =>
+          api.speech(conversationId, chunk, signal),
+        play: playSpeechBlob,
+        onEvent: (event) => {
+          if (event.type === "ready") {
+            if (streamRef.current) streamRef.current.jobId = event.jobId;
+            setMessages((items) =>
+              items.map((message) =>
+                message.id === localAssistantId
+                  ? { ...message, jobId: event.jobId }
+                  : message,
+              ),
+            );
+          }
+          if (event.type === "delta")
+            setMessages((items) =>
+              items.map((message) =>
+                message.id === localAssistantId
+                  ? { ...message, content: message.content + event.delta }
+                  : message,
+              ),
+            );
+          if (event.type === "done")
+            setMessages((items) =>
+              items.map((message) =>
+                message.id === localAssistantId
+                  ? { ...message, content: event.content, status: "complete" }
+                  : message,
+              ),
+            );
+          if (event.type === "error")
+            setMessages((items) =>
+              items.map((message) =>
+                message.id === localAssistantId
+                  ? { ...message, status: "failed", error: event.error }
+                  : message,
+              ),
+            );
+        },
+        onSpeechChunk: (index, total) =>
+          setVoiceStatus(`Speaking ${index + 1}/${total}`),
+      });
+      await loadConversation(conversationId);
+      console.info("voice.canonical_response_ready", {
+        conversationId,
+        persona: voicePersonaRef.current,
+        userCharacters: text.length,
+        assistantCharacters: finalText.length,
+        speechChunks: splitSpeechText(finalText).length,
+      });
+    } catch (error: any) {
+      if (error?.name !== "AbortError") {
+        console.error("voice.canonical_turn_failed", error);
+        setErr(
+          `Voice turn failed explicitly: ${error instanceof Error ? error.message : "unknown error"}`,
+        );
+      }
     } finally {
-      voicePersistingRef.current = false;
+      if (voiceAbortRef.current === controller) voiceAbortRef.current = null;
+      if (streamRef.current?.controller === controller) streamRef.current = null;
+      voiceProcessingRef.current = false;
+      voiceManualCommitRef.current = false;
+      voiceTrackerRef.current.resetTurn();
+      if (voicePeerRef.current && !controller.signal.aborted) {
+        const currentMicrophone = voiceMediaRef.current?.getAudioTracks()[0];
+        if (currentMicrophone?.readyState === "live") currentMicrophone.enabled = true;
+        setVoiceStatus("Listening");
+      }
+      setSending(false);
+      void refresh();
     }
   };
   const forceVoiceTurn = () => {
     const channel = voiceChannelRef.current;
-    if (voiceManualCommitRef.current) return;
+    if (voiceManualCommitRef.current || voiceProcessingRef.current) return;
     if (!channel) {
       setErr("Voice connection is not ready. End voice and try again.");
       return;
@@ -402,7 +574,6 @@ function App() {
               console.warn("voice.turn_detection_timeout");
               forceVoiceTurn();
             }, 30_000);
-            void persistVoiceTurn();
           }
           if (data.type === "input_audio_buffer.speech_stopped") {
             if (voiceWatchdogRef.current)
@@ -416,47 +587,19 @@ function App() {
           ) {
             setVoiceDraft({
               user: snapshot.userText,
-              assistant: snapshot.assistantText,
+              assistant: "",
             });
-            if (data.type.endsWith(".completed")) setVoiceStatus("Thinking…");
-            void persistVoiceTurn();
+            if (data.type.endsWith(".completed")) {
+              setVoiceStatus("Sending to canonical chat…");
+              void processVoiceTranscript(
+                snapshot.userText,
+                data.item_id || `transcript-${snapshot.userText.trim()}`,
+              );
+            }
           }
           if (data.type === "input_audio_buffer.committed" && voiceManualCommitRef.current) {
             voiceManualCommitRef.current = false;
-            sendRealtimeEvent(channel, {
-              type: "response.create",
-              event_id: `diaz-manual-response-${crypto.randomUUID()}`,
-            });
-            setVoiceStatus("Thinking…");
-          }
-          if (data.type === "response.created") setVoiceStatus("Thinking…");
-          if (
-            [
-              "response.output_audio_transcript.delta",
-              "response.audio_transcript.delta",
-            ].includes(data.type ?? "")
-          ) {
-            setVoiceStatus("Speaking");
-            setVoiceDraft({
-              user: snapshot.userText,
-              assistant: snapshot.assistantText,
-            });
-          }
-          if (
-            [
-              "response.output_audio_transcript.done",
-              "response.audio_transcript.done",
-            ].includes(data.type ?? "")
-          ) {
-            setVoiceDraft({
-              user: snapshot.userText,
-              assistant: snapshot.assistantText,
-            });
-            void persistVoiceTurn();
-          }
-          if (data.type === "response.done") {
-            setVoiceStatus("Listening");
-            void persistVoiceTurn();
+            setVoiceStatus("Transcribing…");
           }
         } catch (error) {
           console.error("voice.event_invalid", error);
@@ -1042,7 +1185,7 @@ function App() {
                     className={`mic ${voiceActive ? "active" : ""}`}
                     disabled={
                       voiceActive &&
-                      !["Listening", "Transcribing…"].includes(voiceStatus)
+                      voiceStatus !== "Listening"
                     }
                     onClick={() =>
                       voiceActive ? forceVoiceTurn() : void startVoice()

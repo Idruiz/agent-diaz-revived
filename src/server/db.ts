@@ -12,6 +12,7 @@ import type {
   MessageStatus,
   Persona,
 } from "../shared/contracts.js";
+import { log } from "./log.js";
 
 export interface Db {
   raw: Database.Database;
@@ -271,6 +272,46 @@ export function openDatabase(config: Config): Db {
   );
   ensureColumn("messages", "error", "error TEXT");
   ensureColumn("messages", "persona", "persona TEXT");
+  const leakedVoiceTurns = raw
+    .prepare(
+      `SELECT rowid,id,conversation_id conversationId,created_at createdAt
+       FROM messages
+       WHERE role='user' AND job_id IS NULL
+         AND LOWER(content) LIKE 'natural english, spanish, or cuban spanish.%preserve cuban words and names accurately%'`,
+    )
+    .all() as Array<{
+      rowid: number;
+      id: string;
+      conversationId: string;
+      createdAt: string;
+    }>;
+  if (leakedVoiceTurns.length) {
+    let removedMessages = 0;
+    raw.transaction(() => {
+      for (const leaked of leakedVoiceTurns) {
+        const pairedAssistant = raw
+          .prepare(
+            `SELECT id FROM messages
+             WHERE conversation_id=? AND role='assistant' AND job_id IS NULL
+               AND persona IS NOT NULL AND created_at=? AND rowid>?
+             ORDER BY rowid LIMIT 1`,
+          )
+          .get(leaked.conversationId, leaked.createdAt, leaked.rowid) as
+          | { id: string }
+          | undefined;
+        if (pairedAssistant) {
+          raw.prepare("DELETE FROM messages WHERE id=?").run(pairedAssistant.id);
+          removedMessages++;
+        }
+        raw.prepare("DELETE FROM messages WHERE id=?").run(leaked.id);
+        removedMessages++;
+      }
+    })();
+    log("warn", "db.leaked_voice_turns_removed", {
+      contaminatedTurns: leakedVoiceTurns.length,
+      removedMessages,
+    });
+  }
   raw
     .prepare(
       "UPDATE messages SET delivery_status='failed',error=COALESCE(error,'The live response was interrupted by a service restart. Retry is safe.') WHERE delivery_status='streaming'",

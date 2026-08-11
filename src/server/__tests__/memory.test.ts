@@ -210,6 +210,42 @@ describe("conversation memory", () => {
     expect(db.getConversation(c.id)?.title).toBe("Can you hear me?");
     db.close();
   });
+  it("repairs only the exact 3.2.4 transcription-prompt leak on restart", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-voice-repair-"));
+    dirs.push(root);
+    const config = {
+      root,
+      dataDir: path.join(root, "data"),
+      artifactDir: path.join(root, "artifacts"),
+      uploadDir: path.join(root, "uploads"),
+    } as Config;
+    let db = openDatabase(config);
+    const c = db.createConversation(crypto.randomUUID(), "Voice repair");
+    db.addVoiceTurn({
+      conversationId: c.id,
+      userId: crypto.randomUUID(),
+      assistantId: crypto.randomUUID(),
+      userText:
+        "Natural English, Spanish, or Cuban Spanish. Preserve Cuban words and names accurately, including asere, qué volá, hijadeputá, mariconá, comemierda, comepinga, morronga, carajo, pinga, and coño.",
+      assistantText: "A beige answer generated from the contaminated turn.",
+      persona: "javier",
+    });
+    db.addVoiceTurn({
+      conversationId: c.id,
+      userId: crypto.randomUUID(),
+      assistantId: crypto.randomUUID(),
+      userText: "Qué volá con el bloqueo",
+      assistantText: "Asere, ahora sí va la respuesta de verdad, coño.",
+      persona: "javier",
+    });
+    db.close();
+    db = openDatabase(config);
+    expect(db.listMessages(c.id).map((message) => message.content)).toEqual([
+      "Qué volá con el bloqueo",
+      "Asere, ahora sí va la respuesta de verdad, coño.",
+    ]);
+    db.close();
+  });
   it("marks an interrupted live stream retryable after reopening storage", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-recovery-"));
     dirs.push(root);

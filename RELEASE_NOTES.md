@@ -1,3 +1,15 @@
+# Agent Díaz 3.2.5
+
+## Restore canonical Javier voice and repair contaminated turns
+
+- Replaced direct Realtime-model answers with one canonical path: Realtime transcribes, the ordinary Responses chat generates and enforces the selected persona, and OpenAI TTS reads that exact final text.
+- Javier voice now uses the same 3.2.3 runtime style gate as written chat, preserving the approved irreverent, unhinged-but-coherent, contrarian, subversive Cuban-sailor register and developed diatribes.
+- Removed the long transcription hint that could be hallucinated verbatim as user speech and added a hard client guard that refuses to send or save the known leaked instruction.
+- Disabled automatic Realtime responses and microphone interruption while Javier generates or speaks, preventing Android from truncating playback after the first sentences.
+- Long answers are divided at natural boundaries, synthesized, and played sequentially without dropping or reordering text.
+- Added a narrowly targeted startup repair that removes only known 3.2.4 prompt-leak user messages and their paired assistant responses from durable SQLite history.
+- Added an executable canonical voice-path regression using the exact input “Qué volá con el bloqueo,” a multi-chunk Javier response, and the captured leaked prompt.
+
 # Agent Díaz 3.2.4
 
 ## Android microphone reliability and Javier's old-school Cuban vocabulary

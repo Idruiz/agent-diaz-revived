@@ -3,6 +3,7 @@ import {
   ArtifactPlanSchema,
   CreateJobSchema,
   RealtimeTokenSchema,
+  SpeechSchema,
   StreamChatSchema,
   UpdateConversationSettingsSchema,
 } from "../../shared/contracts";
@@ -76,12 +77,33 @@ describe("contracts", () => {
     });
     expect(parsed).not.toHaveProperty("voice");
   });
+  it("bounds every TTS chunk so a long answer must be played completely in parts", () => {
+    expect(
+      SpeechSchema.safeParse({
+        conversationId: crypto.randomUUID(),
+        text: "A".repeat(4000),
+      }).success,
+    ).toBe(true);
+    expect(
+      SpeechSchema.safeParse({
+        conversationId: crypto.randomUUID(),
+        text: "A".repeat(4001),
+      }).success,
+    ).toBe(false);
+  });
   it("defines Javier as street-educated, unfiltered, and memory-safe", () => {
     const instructions = personaInstructions("javier");
     expect(instructions).toContain("CURRENT PERSONA: Javier");
     expect(instructions).toContain("street-educated, street-smart Cuban rebel");
     expect(instructions).toContain("Swear naturally throughout almost every answer");
     expect(instructions).toContain("Default to a flowing rant or diatribe");
+    expect(instructions).toContain(
+      "irreverent, unhinged-but-coherent, contrarian, and subversive",
+    );
+    expect(instructions).toContain("Swear like a Cuban sailor");
+    expect(instructions).toContain(
+      "Never shorten the reasoning merely because the user is speaking",
+    );
     expect(instructions).toContain(
       "Do not reflexively \"balance both sides,\"",
     );

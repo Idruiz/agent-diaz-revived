@@ -162,15 +162,14 @@ describe("agent production paths", () => {
           input: {
             transcription: {
               model: "gpt-4o-mini-transcribe",
-              prompt: expect.stringContaining("hijadeputá"),
             },
             turn_detection: {
               type: "server_vad",
               threshold: 0.35,
               prefix_padding_ms: 500,
               silence_duration_ms: 700,
-              create_response: true,
-              interrupt_response: true,
+              create_response: false,
+              interrupt_response: false,
             },
           },
           output: { voice: "echo" },
@@ -192,7 +191,40 @@ describe("agent production paths", () => {
     expect(options.headers["OpenAI-Safety-Identifier"]).toBe(
       "agent-diaz-owner",
     );
+    expect(JSON.stringify(body.session.audio.input.transcription)).not.toContain(
+      "Preserve Cuban words",
+    );
     expect(JSON.stringify(token)).not.toContain(config.OPENAI_API_KEY);
+    db.close();
+  });
+
+  it("renders the canonical Javier text verbatim through non-interruptible TTS", async () => {
+    const { config, db } = harness(),
+      conversation = db.createConversation(crypto.randomUUID(), "Javier speech");
+    db.setConversationSettings(conversation.id, { persona: "javier" });
+    const audioBytes = new TextEncoder().encode("complete-mp3"),
+      create = vi.fn(async () => ({
+        arrayBuffer: async () => audioBytes.buffer,
+      })),
+      runner = new AgentRunner(config, db);
+    (runner as any).client = { audio: { speech: { create } } };
+    const text =
+      "Asere, esto es una morronga y esa hijadeputá se va pa casa del carajo.";
+    const audio = await runner.createSpeech(conversation.id, text),
+      [body, options] = create.mock.calls[0]! as any;
+    expect(audio.toString()).toBe("complete-mp3");
+    expect(body).toMatchObject({
+      model: "gpt-4o-mini-tts",
+      voice: "echo",
+      input: text,
+      response_format: "mp3",
+    });
+    expect(body.instructions).toContain("Read the supplied text completely and verbatim");
+    expect(body.instructions).toContain("irreverent, volatile, subversive");
+    expect(body.instructions).toContain("Do not summarize, soften, censor, omit");
+    expect(options.headers["OpenAI-Safety-Identifier"]).toBe(
+      "agent-diaz-owner",
+    );
     db.close();
   });
 

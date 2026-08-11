@@ -18,7 +18,7 @@ This repository is the complete application source. It does not contain credenti
 - Hosted web search for research and fact-grounded artifacts.
 - Message-level image and document inputs, with visible upload/read failures instead of silent attachment loss.
 - Automatic Code Interpreter routing for spreadsheets plus explicit analytical jobs.
-- Android-safe browser-to-OpenAI WebRTC voice conversations using short-lived server-minted credentials and `gpt-realtime-2.1-mini`. Tuned server VAD sends turns after a pause; a visible Send control can manually commit a turn; partial transcripts and failures are surfaced instead of disappearing. OpenAI audio is used end-to-end and browser speech synthesis is never used.
+- Android-safe voice turns use short-lived WebRTC credentials and `gpt-realtime-2.1-mini` for transcription only. The exact transcript then enters the same persona-enforced Responses chat used by typed messages, and OpenAI TTS reads the complete canonical answer in ordered chunks. Tuned server VAD sends after a pause; a visible Send control can manually commit; partial transcripts and failures are surfaced instead of disappearing. Browser speech synthesis is never used.
 - Server-owned persona voices: Díaz/Cedar, Javier/Echo, Vega/Sage, Mara/Ash, Luz/Coral, and Salcedo/Marin.
 - Visual PPTX files with editable tables, charts, diagrams, notes, sources, and licensed photography when requested.
 - Visual DOCX files with editable tables, rendered charts/diagrams, structured prose, sources, and licensed photography when requested.
@@ -36,7 +36,7 @@ This repository is the complete application source. It does not contain credenti
 - The application does not implement OAuth. If the selected MCP server requires authorization, supply and rotate its token securely through the deployment environment.
 - Approval continuation is implemented, but the selected MCP server and its exact tools must be integration-tested with your account before consequential production use.
 - Research and analysis artifacts are DOCX. Native XLSX/PDF export, infographic/video generation, image generation, and automatic website publishing are not included.
-- Voice turns persist complete text transcript pairs in Díaz memory. Raw microphone audio is never stored by this application, and client lifecycle logs omit transcript contents.
+- Voice turns persist through the same canonical job/message path as typed chat. Raw microphone audio is never stored by this application, and client lifecycle logs omit transcript contents.
 - This is single-owner software. Multi-user use requires identity-provider login and per-resource authorization.
 
 ## Requirements
