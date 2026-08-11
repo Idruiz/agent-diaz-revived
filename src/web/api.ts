@@ -86,7 +86,7 @@ export const api = {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "audio/mpeg",
+        Accept: "audio/wav",
       },
       body: JSON.stringify({ conversationId, text }),
       signal,
@@ -95,9 +95,19 @@ export const api = {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || `Speech failed (${response.status})`);
     }
-    const audio = await response.blob();
-    if (!audio.size) throw new Error("Díaz received empty speech audio");
-    return audio;
+    const contentType = response.headers.get("content-type") || "",
+      bytes = await response.arrayBuffer(),
+      header = new TextDecoder("ascii").decode(bytes.slice(0, 12));
+    if (
+      bytes.byteLength < 44 ||
+      !contentType.toLowerCase().startsWith("audio/wav") ||
+      !header.startsWith("RIFF") ||
+      header.slice(8, 12) !== "WAVE"
+    )
+      throw new Error(
+        `Díaz received invalid speech audio (${contentType || "missing MIME"}, ${bytes.byteLength} bytes)`,
+      );
+    return new Blob([bytes], { type: "audio/wav" });
   },
   saveVoiceTurn: (
     conversationId: string,

@@ -3,7 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDatabase } from "../db";
-import { AgentRunner, modelProfileFor } from "../openai-agent";
+import {
+  AgentRunner,
+  assertProviderRequestCompatible,
+  isValidWav,
+  modelProfileFor,
+} from "../openai-agent";
 import { inspectJavierStyle } from "../javier-style";
 import type { Config } from "../config";
 const roots: string[] = [];
@@ -202,8 +207,20 @@ describe("agent production paths", () => {
     const { config, db } = harness(),
       conversation = db.createConversation(crypto.randomUUID(), "Javier speech");
     db.setConversationSettings(conversation.id, { persona: "javier" });
-    const audioBytes = new TextEncoder().encode("complete-mp3"),
-      create = vi.fn(async () => ({
+    const audioBytes = Buffer.alloc(48);
+    audioBytes.write("RIFF", 0, "ascii");
+    audioBytes.writeUInt32LE(40, 4);
+    audioBytes.write("WAVEfmt ", 8, "ascii");
+    audioBytes.writeUInt32LE(16, 16);
+    audioBytes.writeUInt16LE(1, 20);
+    audioBytes.writeUInt16LE(1, 22);
+    audioBytes.writeUInt32LE(24_000, 24);
+    audioBytes.writeUInt32LE(48_000, 28);
+    audioBytes.writeUInt16LE(2, 32);
+    audioBytes.writeUInt16LE(16, 34);
+    audioBytes.write("data", 36, "ascii");
+    audioBytes.writeUInt32LE(4, 40);
+    const create = vi.fn(async () => ({
         arrayBuffer: async () => audioBytes.buffer,
       })),
       runner = new AgentRunner(config, db);
@@ -212,18 +229,168 @@ describe("agent production paths", () => {
       "Asere, esto es una morronga y esa hijadeputá se va pa casa del carajo.";
     const audio = await runner.createSpeech(conversation.id, text),
       [body, options] = create.mock.calls[0]! as any;
-    expect(audio.toString()).toBe("complete-mp3");
+    expect(isValidWav(audio)).toBe(true);
     expect(body).toMatchObject({
       model: "gpt-4o-mini-tts",
       voice: "echo",
       input: text,
-      response_format: "mp3",
+      response_format: "wav",
     });
     expect(body.instructions).toContain("Read the supplied text completely and verbatim");
     expect(body.instructions).toContain("irreverent, volatile, subversive");
     expect(body.instructions).toContain("Do not summarize, soften, censor, omit");
     expect(options.headers["OpenAI-Safety-Identifier"]).toBe(
       "agent-diaz-owner",
+    );
+    db.close();
+  });
+
+  it("rejects the exact tool plus JSON provider contract that broke every artifact route", () => {
+    expect(() =>
+      assertProviderRequestCompatible({
+        tools: [{ type: "web_search" }],
+        text: { format: { type: "json_object" } },
+      }),
+    ).toThrow("tool-enabled requests cannot use JSON response mode");
+    expect(() =>
+      assertProviderRequestCompatible({
+        tools: [{ type: "code_interpreter" }],
+        text: { format: { type: "json_schema" } },
+      }),
+    ).toThrow("tool-enabled requests cannot use JSON response mode");
+    expect(() =>
+      assertProviderRequestCompatible({ tools: [{ type: "web_search" }] }),
+    ).not.toThrow();
+    expect(() =>
+      assertProviderRequestCompatible({
+        text: { format: { type: "json_object" } },
+      }),
+    ).not.toThrow();
+  });
+
+  it("runs artifact evidence and JSON structuring as two incompatible-safe provider phases", async () => {
+    const { config, db } = harness(),
+      conversation = db.createConversation(
+        crypto.randomUUID(),
+        "Artifact pipeline",
+      );
+    fs.mkdirSync(config.artifactDir, { recursive: true });
+    const profile = modelProfileFor("balanced"),
+      staleJob = db.createJob({
+        id: crypto.randomUUID(),
+        kind: "presentation",
+        prompt: "STALE REQUEST: build unrelated slides",
+        conversationId: conversation.id,
+        fileIds: [],
+        ...profile,
+      });
+    db.updateJob(staleJob.id, {
+      status: "failed",
+      message: "Failed",
+      error: "Old failure",
+    });
+    const job = db.createJob({
+        id: crypto.randomUUID(),
+        kind: "research",
+        prompt: "Research a verified three-step workflow",
+        conversationId: conversation.id,
+        fileIds: [],
+        ...profile,
+      }),
+      plan = {
+        title: "Verified workflow",
+        subtitle: "Two-phase provider integration",
+        sections: [
+          {
+            heading: "Evidence",
+            body: "The evidence phase gathers source material before structuring.",
+            bullets: ["Search first", "Preserve exact sources"],
+            speakerNotes: "",
+            table: {
+              title: "Provider phases",
+              headers: ["Phase", "Mode"],
+              rows: [
+                ["Evidence", "Tools"],
+                ["Structure", "JSON"],
+              ],
+            },
+          },
+          {
+            heading: "Separation",
+            body: "Tool execution and JSON mode never share one request.",
+            bullets: [],
+            speakerNotes: "",
+            diagram: {
+              title: "Safe pipeline",
+              nodes: ["Evidence", "Structure", "Build"],
+              caption: "Each phase has one responsibility.",
+            },
+          },
+          {
+            heading: "Validation",
+            body: "The deterministic builder validates and writes the file.",
+            bullets: [],
+            speakerNotes: "",
+          },
+        ],
+        sources: [
+          {
+            title: "OpenAI web search documentation",
+            url: "https://developers.openai.com/api/docs/guides/tools-web-search",
+          },
+        ],
+      },
+      create = vi.fn(async (request: any) =>
+        request.tools?.length
+          ? {
+              id: "resp_evidence",
+              status: "completed",
+              output_text:
+                "Verified evidence dossier with exact source URLs and findings.",
+              output: [],
+            }
+          : {
+              id: "resp_structure",
+              status: "completed",
+              output_text: JSON.stringify(plan),
+              output: [],
+            },
+      ),
+      runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: { create, retrieve: vi.fn() },
+    };
+
+    await (runner as any).run(job.id);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    const evidenceRequest = create.mock.calls[0]![0] as any,
+      structureRequest = create.mock.calls[1]![0] as any;
+    expect(evidenceRequest.tools).toEqual([{ type: "web_search" }]);
+    expect(evidenceRequest.text).toBeUndefined();
+    expect(evidenceRequest.instructions).toContain("Do not return JSON");
+    expect(evidenceRequest.instructions).toContain(
+      "STALE REQUEST: build unrelated slides",
+    );
+    expect(JSON.stringify(evidenceRequest.input)).not.toContain(
+      "STALE REQUEST: build unrelated slides",
+    );
+    expect(JSON.stringify(evidenceRequest.input)).toContain(
+      "Research a verified three-step workflow",
+    );
+    expect(structureRequest.tools).toBeUndefined();
+    expect(structureRequest.text).toEqual({
+      format: { type: "json_object" },
+    });
+    expect(structureRequest.input).toContain("Verified evidence dossier");
+    expect(db.getJob(job.id)).toMatchObject({
+      status: "completed",
+      error: null,
+    });
+    const artifacts = db.listArtifacts(job.id);
+    expect(artifacts).toHaveLength(1);
+    expect(fs.existsSync(path.join(config.artifactDir, artifacts[0]!.name))).toBe(
+      true,
     );
     db.close();
   });

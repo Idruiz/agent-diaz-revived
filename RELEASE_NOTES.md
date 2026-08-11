@@ -1,3 +1,16 @@
+# Agent Díaz 3.2.6
+
+## Separate artifact routes and make voice playback device-neutral
+
+- Rebuilt every artifact job as two explicit provider phases: tool-enabled evidence gathering first, tool-free JSON structuring second. Web Search or Code Interpreter can no longer be combined with JSON mode in one request.
+- Added an always-on provider-contract guard that rejects any future tool-plus-JSON artifact request before it reaches OpenAI.
+- Isolated the current artifact prompt and attachments from older failed artifact requests. Previous conversation content remains labeled reference context instead of becoming additional active orders.
+- Preserved durable restart and retry behavior across evidence and structure phases with explicit phase progress and provider IDs.
+- Switched canonical TTS output from MP3 to validated WAV, including RIFF/WAVE header and MIME checks on both server and browser boundaries.
+- Separated generated-speech playback from the WebRTC audio element so a Realtime track cannot overwrite or corrupt TTS playback.
+- Replaced hard-coded Android errors with truthful browser/device-neutral diagnostics that report MIME, byte count, and media decoder code without exposing user content.
+- Added an end-to-end artifact regression that performs both provider phases and builds a real DOCX, plus exact contract and stale-route contamination tests.
+
 # Agent Díaz 3.2.5
 
 ## Restore canonical Javier voice and repair contaminated turns

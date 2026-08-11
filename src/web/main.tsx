@@ -259,20 +259,20 @@ function App() {
   const playSpeechBlob = (blob: Blob, signal: AbortSignal) =>
     new Promise<void>((resolve, reject) => {
       const url = URL.createObjectURL(blob),
-        audio = voiceAudioRef.current;
-      if (!audio) {
-        URL.revokeObjectURL(url);
-        reject(new Error("Voice playback element is unavailable."));
-        return;
-      }
-      audio.srcObject = null;
+        audio = document.createElement("audio");
+      audio.preload = "auto";
+      audio.autoplay = false;
+      audio.setAttribute("playsinline", "true");
+      audio.setAttribute("aria-hidden", "true");
       audio.src = url;
+      document.body.appendChild(audio);
       voicePlaybackRef.current = audio;
       const cleanup = () => {
         signal.removeEventListener("abort", onAbort);
         audio.removeEventListener("ended", onEnded);
         audio.removeEventListener("error", onError);
         URL.revokeObjectURL(url);
+        audio.remove();
         if (voicePlaybackRef.current === audio)
           voicePlaybackRef.current = null;
       };
@@ -287,17 +287,24 @@ function App() {
         resolve();
       };
       const onError = () => {
+        const mediaCode = audio.error?.code ?? 0,
+          mediaMessage = audio.error?.message || "decoder rejected the audio";
         cleanup();
-        reject(new Error("Android could not play the generated speech audio."));
+        reject(
+          new Error(
+            `This browser could not decode the generated speech (${blob.type || "unknown MIME"}, ${blob.size} bytes, media error ${mediaCode}: ${mediaMessage}).`,
+          ),
+        );
       };
       audio.addEventListener("ended", onEnded, { once: true });
       audio.addEventListener("error", onError, { once: true });
       signal.addEventListener("abort", onAbort, { once: true });
+      audio.load();
       void audio.play().catch((error) => {
         cleanup();
         reject(
           new Error(
-            `Android blocked speech playback: ${error instanceof Error ? error.message : "unknown playback error"}`,
+            `This browser blocked speech playback: ${error instanceof Error ? error.message : "unknown playback error"}`,
           ),
         );
       });
@@ -501,11 +508,11 @@ function App() {
       voiceMediaRef.current = media;
       const microphone = media.getAudioTracks()[0];
       if (!microphone || microphone.readyState !== "live")
-        throw new Error("Android did not provide a live microphone track.");
+        throw new Error("This browser did not provide a live microphone track.");
       microphone.enabled = true;
       microphone.addEventListener("mute", () => {
         console.warn("voice.microphone_muted");
-        setErr("Android muted the microphone. Check the site microphone permission and try again.");
+        setErr("The browser muted the microphone. Check the site microphone permission and try again.");
       });
       microphone.addEventListener("ended", () => {
         console.warn("voice.microphone_ended");

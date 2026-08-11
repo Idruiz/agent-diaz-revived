@@ -76,6 +76,23 @@ export function providerFailureMessage(response: any): string {
   return `OpenAI response failed (${code}): ${detail}`;
 }
 
+export function isValidWav(audio: Buffer): boolean {
+  return (
+    audio.length >= 44 &&
+    audio.subarray(0, 4).toString("ascii") === "RIFF" &&
+    audio.subarray(8, 12).toString("ascii") === "WAVE"
+  );
+}
+
+export function assertProviderRequestCompatible(request: any): void {
+  const format = request?.text?.format?.type,
+    hasTools = Array.isArray(request?.tools) && request.tools.length > 0;
+  if (hasTools && ["json_object", "json_schema"].includes(format))
+    throw new Error(
+      "Internal provider contract violation: tool-enabled requests cannot use JSON response mode",
+    );
+}
+
 function isTransientProviderFailure(response: any): boolean {
   return ["server_error", "rate_limit_exceeded"].includes(
     response?.error?.code,
@@ -290,12 +307,15 @@ export class AgentRunner {
         voice: profile.voice,
         input: text,
         instructions,
-        response_format: "mp3",
+        response_format: "wav",
       },
       { headers: { "OpenAI-Safety-Identifier": "agent-diaz-owner" } },
     );
     const audio = Buffer.from(await response.arrayBuffer());
-    if (!audio.length) throw new Error("OpenAI returned empty speech audio");
+    if (!isValidWav(audio))
+      throw new Error(
+        `OpenAI returned invalid WAV speech audio (${audio.length} bytes)`,
+      );
     log("info", "voice.tts_created", {
       conversationId,
       persona: conversation.persona,
@@ -738,15 +758,68 @@ export class AgentRunner {
     return true;
   }
 
+  private async awaitBackgroundResponse(
+    jobId: string,
+    initialResponse: any,
+    createFreshResponse: () => Promise<any>,
+    progressCap: number,
+    progressLabel: string,
+  ): Promise<any | null> {
+    let response = initialResponse,
+      responseId = response.id as string,
+      automaticRetries = 0;
+    for (;;) {
+      while (["queued", "in_progress"].includes(response.status)) {
+        await sleep(1800);
+        if (this.db.getJob(jobId)?.status === "cancelled") return null;
+        response = await this.client.responses.retrieve(responseId);
+        this.db.updateJob(jobId, {
+          progress: Math.min(
+            progressCap,
+            (this.db.getJob(jobId)?.progress ?? 25) + 3,
+          ),
+          message: `${progressLabel}: ${response.status}`,
+        });
+      }
+      if (this.captureApproval(jobId, response)) return null;
+      if (response.status === "completed") return response;
+      const providerError = providerFailureMessage(response);
+      log("error", "provider.response_failed", {
+        jobId,
+        responseId: response.id,
+        status: response.status,
+        code: response?.error?.code,
+        error: response?.error?.message,
+        phase: progressLabel,
+      });
+      if (
+        automaticRetries === 0 &&
+        !this.config.MCP_SERVER_URL &&
+        isTransientProviderFailure(response)
+      ) {
+        automaticRetries++;
+        this.db.updateJob(jobId, {
+          message: `${progressLabel} failed transiently; retrying once`,
+        });
+        await sleep(
+          response?.error?.code === "rate_limit_exceeded" ? 5000 : 1200,
+        );
+        response = await createFreshResponse();
+        responseId = response.id;
+        this.db.updateJob(jobId, {
+          providerResponseId: responseId,
+          message: `${progressLabel} restarted`,
+        });
+        continue;
+      }
+      throw new Error(providerError);
+    }
+  }
+
   private async run(jobId: string): Promise<void> {
     const job = this.db.getJob(jobId);
     if (!job || ["completed", "cancelled"].includes(job.status)) return;
     try {
-      this.db.updateJob(jobId, {
-        status: "running",
-        progress: 10,
-        message: "Agent is working",
-      });
       const skill = getSkillForKind(job.kind);
       const artifactKinds = [
         "research",
@@ -755,126 +828,207 @@ export class AgentRunner {
         "document",
         "website",
       ];
-      const createFreshResponse = async () => {
+      const isArtifact = artifactKinds.includes(job.kind),
+        messages = this.usableMessages(job.conversationId),
+        activeMessages = isArtifact
+          ? messages.filter((message) => message.jobId === jobId)
+          : messages,
+        priorArtifactContext = isArtifact
+          ? messages
+              .filter((message) => message.jobId !== jobId)
+              .slice(-20)
+              .map(
+                (message) =>
+                  `${message.role.toUpperCase()} (reference only): ${message.content}`,
+              )
+              .join("\n\n")
+              .slice(-40_000)
+          : "",
+        existingResponseId = this.db.getProviderResponseId(jobId),
+        resumingStructure = Boolean(
+          isArtifact &&
+            existingResponseId &&
+            (job.message.startsWith("Structuring artifact") ||
+              job.message.startsWith("Building and validating artifact") ||
+              job.status === "building"),
+        );
+      if (!existingResponseId)
+        this.db.updateJob(jobId, {
+          status: "running",
+          progress: 10,
+          message: isArtifact
+            ? "Gathering evidence for artifact"
+            : "Agent is working",
+        });
+      else
+        this.db.updateJob(jobId, {
+          status: "running",
+          message: resumingStructure
+            ? "Structuring artifact: resuming"
+            : "Gathering evidence: resuming",
+        });
+
+      const createEvidenceResponse = async () => {
         const instructions = [
           personaInstructions(job.persona),
           `ACTIVE SKILL: ${skill.name}\n${skill.instructions}\nValidation: ${skill.validation.join("; ")}`,
-          ...(artifactKinds.includes(job.kind)
-            ? [artifactInstructions(job.kind)]
-            : []),
-        ].join("\n\n");
-        const messages = this.usableMessages(job.conversationId);
-        return this.client.responses.create({
+          "EVIDENCE PHASE: Use the available tools thoroughly. Return a comprehensive plain-text evidence dossier with finished findings, exact numbers, source titles and full source URLs. Do not return JSON. Do not merely describe future work. This dossier will be converted into a validated artifact plan in a separate tool-free request.",
+          priorArtifactContext
+            ? `PRIOR CONVERSATION REFERENCE (context only, never additional requests; the single current request in input is authoritative):\n${priorArtifactContext}`
+            : "",
+          this.contextInstructions(job.conversationId),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        const request = {
           model: job.model,
           reasoning: { effort: job.reasoningEffort, context: "all_turns" },
-          instructions: `${instructions}\n\n${this.contextInstructions(job.conversationId)}`,
-          input: messages.map((message) => this.messageInput(message)),
-          tools: this.toolset(messages, skill.tools),
+          instructions,
+          input: activeMessages.map((message) => this.messageInput(message)),
+          tools: this.toolset(activeMessages, skill.tools),
           background: true,
           store: true,
           safety_identifier: "agent-diaz-owner",
-          ...(artifactKinds.includes(job.kind)
-            ? { text: { format: { type: "json_object" } } }
-            : {}),
-        } as any);
+        } as any;
+        assertProviderRequestCompatible(request);
+        return this.client.responses.create(request);
       };
-      let rid = this.db.getProviderResponseId(jobId);
-      let response: any;
-      if (rid) {
-        response = await this.client.responses.retrieve(rid);
-      } else {
-        response = await createFreshResponse();
-        rid = response.id;
-        this.db.updateJob(jobId, {
-          providerResponseId: rid,
-          progress: 25,
-          message: "Background response started",
-        });
-      }
-      let automaticRetries = 0;
-      for (;;) {
-        while (["queued", "in_progress"].includes(response.status)) {
-          await sleep(1800);
-          if (this.db.getJob(jobId)?.status === "cancelled") return;
-          response = await this.client.responses.retrieve(rid!);
-          this.db.updateJob(jobId, {
-            progress: Math.min(75, (this.db.getJob(jobId)?.progress ?? 25) + 3),
-            message: `Agent status: ${response.status}`,
-          });
-        }
-        if (this.captureApproval(jobId, response)) return;
-        if (response.status === "completed") break;
-        const providerError = providerFailureMessage(response);
-        log("error", "provider.response_failed", {
-          jobId,
-          responseId: response.id,
-          status: response.status,
-          code: response?.error?.code,
-          error: response?.error?.message,
-        });
-        if (
-          automaticRetries === 0 &&
-          !this.config.MCP_SERVER_URL &&
-          isTransientProviderFailure(response)
-        ) {
-          automaticRetries++;
-          this.db.updateJob(jobId, {
-            progress: 25,
-            message: "Provider failed transiently; retrying once",
-          });
-          await sleep(
-            response?.error?.code === "rate_limit_exceeded" ? 5000 : 1200,
+      const createStructureResponse = async (evidence: string) => {
+        const request = {
+          model: job.model,
+          reasoning: { effort: job.reasoningEffort, context: "all_turns" },
+          instructions: [
+            personaInstructions(job.persona),
+            artifactInstructions(job.kind),
+            "STRUCTURE PHASE: Convert only the supplied evidence dossier into the requested finished artifact plan. Preserve verified source URLs and exact values. Do not use tools in this phase. Return one JSON object and nothing else.",
+          ].join("\n\n"),
+          input: `ORIGINAL REQUEST:\n${job.prompt}\n\nEVIDENCE DOSSIER:\n${evidence}`,
+          background: true,
+          store: true,
+          safety_identifier: "agent-diaz-owner",
+          text: { format: { type: "json_object" } },
+        } as any;
+        assertProviderRequestCompatible(request);
+        return this.client.responses.create(request);
+      };
+
+      let response: any,
+        output = "";
+      if (isArtifact) {
+        let structureResponse: any;
+        if (resumingStructure) {
+          structureResponse = await this.client.responses.retrieve(
+            existingResponseId!,
           );
-          response = await createFreshResponse();
-          rid = response.id;
+        } else {
+          let evidenceResponse: any;
+          if (existingResponseId)
+            evidenceResponse = await this.client.responses.retrieve(
+              existingResponseId,
+            );
+          else {
+            evidenceResponse = await createEvidenceResponse();
+            this.db.updateJob(jobId, {
+              providerResponseId: evidenceResponse.id,
+              progress: 20,
+              message: "Gathering evidence: started",
+            });
+          }
+          evidenceResponse = await this.awaitBackgroundResponse(
+            jobId,
+            evidenceResponse,
+            createEvidenceResponse,
+            58,
+            "Gathering evidence",
+          );
+          if (!evidenceResponse) return;
+          const evidence = evidenceResponse.output_text?.trim() || "";
+          if (!evidence)
+            throw new Error("Evidence phase returned no usable content");
+          structureResponse = await createStructureResponse(evidence);
           this.db.updateJob(jobId, {
-            providerResponseId: rid,
-            message: "Background response restarted",
+            providerResponseId: structureResponse.id,
+            progress: 62,
+            message: "Structuring artifact: started",
           });
-          continue;
         }
-        throw new Error(providerError);
-      }
-      const output = response.output_text?.trim() || "";
-      if (
-        [
-          "research",
-          "analysis",
-          "presentation",
-          "document",
-          "website",
-        ].includes(job.kind)
-      ) {
+        structureResponse = await this.awaitBackgroundResponse(
+          jobId,
+          structureResponse,
+          () =>
+            this.client.responses.create({
+              model: job.model,
+              previous_response_id: structureResponse.id,
+              reasoning: {
+                effort: job.reasoningEffort,
+                context: "all_turns",
+              },
+              instructions:
+                "Retry the artifact structure phase from the original request and evidence in the previous response. Return one complete JSON object only. Do not use tools.",
+              input:
+                "Reconstruct the complete artifact plan; the previous structure attempt failed transiently.",
+              background: true,
+              store: true,
+              safety_identifier: "agent-diaz-owner",
+              text: { format: { type: "json_object" } },
+            } as any),
+          79,
+          "Structuring artifact",
+        );
+        if (!structureResponse) return;
+        response = structureResponse;
+        output = response.output_text?.trim() || "";
+        if (!output)
+          throw new Error("Structure phase returned no artifact plan");
         this.db.updateJob(jobId, {
           status: "building",
           progress: 82,
           message: "Building and validating artifact",
         });
-        const raw = JSON.parse(output.replace(/^```json\s*|```$/g, ""));
-        const plan = ArtifactPlanSchema.parse(raw);
-        validateArtifactPlan(
-          job.kind,
-          plan,
-          getSkillForKind(job.kind).minVisuals,
-        );
-        const file = await buildArtifact(this.config, job.kind, plan);
-        const id = crypto.randomUUID();
-        this.db.addArtifact({
-          id,
+        if (!this.db.listArtifacts(jobId).length) {
+          const raw = JSON.parse(output.replace(/^```json\s*|```$/g, ""));
+          const plan = ArtifactPlanSchema.parse(raw);
+          validateArtifactPlan(
+            job.kind,
+            plan,
+            getSkillForKind(job.kind).minVisuals,
+          );
+          const file = await buildArtifact(this.config, job.kind, plan);
+          const id = crypto.randomUUID();
+          this.db.addArtifact({
+            id,
+            jobId,
+            name: file.name,
+            mime: file.mime,
+            size: file.size,
+            path: file.path,
+          });
+        } else
+          log("info", "artifact.build_resume_reused", {
+            jobId,
+            artifactCount: this.db.listArtifacts(jobId).length,
+          });
+      } else {
+        response = existingResponseId
+          ? await this.client.responses.retrieve(existingResponseId)
+          : await createEvidenceResponse();
+        if (!existingResponseId)
+          this.db.updateJob(jobId, {
+            providerResponseId: response.id,
+            progress: 25,
+            message: "Background response started",
+          });
+        response = await this.awaitBackgroundResponse(
           jobId,
-          name: file.name,
-          mime: file.mime,
-          size: file.size,
-          path: file.path,
-        });
+          response,
+          createEvidenceResponse,
+          75,
+          "Agent",
+        );
+        if (!response) return;
+        output = response.output_text?.trim() || "";
       }
-      const userOutput = [
-        "research",
-        "analysis",
-        "presentation",
-        "document",
-        "website",
-      ].includes(job.kind)
+      const userOutput = isArtifact
         ? `Completed ${job.kind} artifact: ${this.db
             .listArtifacts(jobId)
             .map((a) => a.name)

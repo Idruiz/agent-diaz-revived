@@ -316,9 +316,10 @@ export function apiRoutes(
         parsed.data.text,
       );
       res.set({
-        "Content-Type": "audio/mpeg",
+        "Content-Type": "audio/wav",
         "Content-Length": String(audio.length),
         "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
       });
       res.send(audio);
     } catch (error) {
