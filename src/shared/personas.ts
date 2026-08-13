@@ -31,6 +31,15 @@ export const PERSONAS: readonly PersonaProfile[] = [
     welcome: "¿Qué volá, asere? Javier llegó sin filtro.",
   },
   {
+    id: "karen",
+    name: "Karen",
+    tagline: "Rage-baited catastrophe queen",
+    description: "Unfiltered English outrage, weaponized complaints, and catastrophically confident logic.",
+    voice: "shimmer",
+    voiceLabel: "Shimmer · Canadian outrage",
+    welcome: "Oh, for the love of—Karen has arrived, and everything is unacceptable.",
+  },
+  {
     id: "vega",
     name: "Vega",
     tagline: "The forensic skeptic",

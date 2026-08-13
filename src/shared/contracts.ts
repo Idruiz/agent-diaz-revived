@@ -26,6 +26,7 @@ export type ModelMode = z.infer<typeof ModelModeSchema>;
 export const PersonaSchema = z.enum([
   "diaz",
   "javier",
+  "karen",
   "vega",
   "mara",
   "luz",

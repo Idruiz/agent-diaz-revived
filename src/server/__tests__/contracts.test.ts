@@ -50,19 +50,24 @@ describe("contracts", () => {
       reasoningEffort: "high",
     });
   });
-  it("locks six distinct OpenAI Realtime persona voices", () => {
+  it("locks seven distinct OpenAI Realtime persona voices", () => {
     expect(PERSONAS.map((persona) => persona.id)).toEqual([
       "diaz",
       "javier",
+      "karen",
       "vega",
       "mara",
       "luz",
       "salcedo",
     ]);
-    expect(new Set(PERSONAS.map((persona) => persona.voice)).size).toBe(6);
+    expect(new Set(PERSONAS.map((persona) => persona.voice)).size).toBe(7);
     expect(PERSONAS.find((persona) => persona.id === "javier")).toMatchObject({
       voice: "echo",
       voiceLabel: "Echo · Cuban cadence",
+    });
+    expect(PERSONAS.find((persona) => persona.id === "karen")).toMatchObject({
+      voice: "shimmer",
+      voiceLabel: "Shimmer · Canadian outrage",
     });
   });
   it("keeps persona selection server-owned and rejects empty settings", () => {

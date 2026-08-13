@@ -22,6 +22,13 @@ import {
   javierChatInstructions,
   javierRewriteInstructions,
 } from "./javier-style.js";
+import {
+  clearsKarenRewriteFloor,
+  inspectKarenStyle,
+  karenStyleScore,
+  karenChatInstructions,
+  karenRewriteInstructions,
+} from "./karen-style.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -359,7 +366,9 @@ export class AgentRunner {
           instructions:
             conversation.persona === "javier"
               ? javierChatInstructions(realtimeInstructions)
-              : realtimeInstructions,
+              : conversation.persona === "karen"
+                ? karenChatInstructions(realtimeInstructions)
+                : realtimeInstructions,
           audio: {
             input: {
               transcription: {
@@ -405,7 +414,9 @@ export class AgentRunner {
     const instructions =
       conversation.persona === "javier"
         ? "Read the supplied text completely and verbatim. Use a lively adult Cuban cadence rooted in Cuba of the 1980s and 1990s: irreverent, volatile, subversive, fast-changing, street-level, and naturally profane. Do not summarize, soften, censor, omit, or replace any word."
-        : `Read the supplied text completely and verbatim in the ${profile.voiceLabel} delivery assigned to this persona. Do not summarize, omit, or replace any word.`;
+        : conversation.persona === "karen"
+          ? "Read the supplied text completely and verbatim. Use explosive Canadian English outrage: rage-baited, sarcastic, volatile, overreactive, fast-changing, street-level, and naturally profane. Do not summarize, soften, censor, omit, or replace any word."
+          : `Read the supplied text completely and verbatim in the ${profile.voiceLabel} delivery assigned to this persona. Do not summarize, omit, or replace any word.`;
     const response = await this.client.audio.speech.create(
       {
         model: "gpt-4o-mini-tts",
@@ -546,8 +557,10 @@ export class AgentRunner {
       const instructions =
         job.persona === "javier"
           ? javierChatInstructions(baseInstructions)
-          : baseInstructions;
-      bufferForStyleGate = job.persona === "javier";
+          : job.persona === "karen"
+            ? karenChatInstructions(baseInstructions)
+            : baseInstructions;
+      bufferForStyleGate = job.persona === "javier" || job.persona === "karen";
       const stream = await this.client.responses.create(
         {
           model: job.model,
@@ -635,7 +648,7 @@ export class AgentRunner {
       }
       if (!output.trim())
         throw new Error("OpenAI completed without returning text");
-      if (bufferForStyleGate) {
+      if (job.persona === "javier") {
         const firstReport = inspectJavierStyle(output);
         if (!firstReport.passes) {
           log("warn", "javier.style_gate_rewrite", {
@@ -705,6 +718,37 @@ export class AgentRunner {
             profanityVariety: firstReport.profanityVariety,
             cubanTexture: firstReport.cubanTexture,
           });
+        }
+        handlers.onDelta?.(output);
+      }
+      if (job.persona === "karen") {
+        const firstReport = inspectKarenStyle(output);
+        if (!firstReport.passes) {
+          log("warn", "karen.style_gate_rewrite", { jobId, failures: firstReport.failures });
+          this.db.updateJob(jobId, { progress: 80, message: "Karen is rejecting the polite draft" });
+          const rewritten = await this.client.responses.create({
+            model: job.model,
+            reasoning: { effort: job.reasoningEffort },
+            instructions: karenRewriteInstructions(firstReport),
+            input: `DRAFT TO REWRITE:\n${output}`,
+            store: false,
+            safety_identifier: "agent-diaz-owner",
+          } as any, { signal: controller.signal });
+          const candidate = rewritten.output_text?.trim() ?? "";
+          if (!candidate) throw new Error("Karen style rewrite returned no text");
+          const finalReport = inspectKarenStyle(candidate);
+          if (!finalReport.passes) {
+            const clearsFloor = clearsKarenRewriteFloor(finalReport);
+            const firstScore = karenStyleScore(firstReport);
+            const rewriteScore = karenStyleScore(finalReport);
+            output = rewriteScore >= firstScore ? candidate : output;
+            log(clearsFloor ? "warn" : "error", "karen.style_gate_degraded", { jobId, clearsFloor, selected: rewriteScore >= firstScore ? "rewrite" : "original", failures: finalReport.failures });
+          } else {
+            output = candidate;
+            log("info", "karen.style_gate_passed_after_rewrite", { jobId, words: finalReport.words, profanityHits: finalReport.profanityHits, profanityVariety: finalReport.profanityVariety, canadianTexture: finalReport.canadianTexture });
+          }
+        } else {
+          log("info", "karen.style_gate_passed", { jobId, words: firstReport.words, profanityHits: firstReport.profanityHits, profanityVariety: firstReport.profanityVariety, canadianTexture: firstReport.canadianTexture });
         }
         handlers.onDelta?.(output);
       }

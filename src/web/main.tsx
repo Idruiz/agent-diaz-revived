@@ -338,7 +338,7 @@ function App() {
     setVoiceDraft(null);
     setSending(true);
     setErr("");
-    setVoiceStatus("Javier is thinking…");
+    setVoiceStatus(`${personaProfile(voicePersonaRef.current).name} is thinking…`);
     setMessages((items) => [
       ...items,
       {
