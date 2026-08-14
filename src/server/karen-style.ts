@@ -14,17 +14,20 @@ export interface KarenStyleReport {
   failures: string[];
 }
 
-const PROFANITY = /fuck\w*|shit\w*|bitch\w*|ass\w*|damn\w*|hell\w*|crap\w*|dick\w*|prick\w*|jerk\w*|a-hole\w*|bullshit\w*|bastard\w*|idiot\w*|moron\w*|ridiculous|unacceptable|useless|clown\w*|pathetic|brain[- ]?dead|incompetent|smug|garbage|disaster|catastroph\w*|betrayal/giu;
+// This deliberately recognizes families, compounds, and inflected forms:
+// "fucking", "fucktard", "bullshitted", "shitweaselly", etc. A lone token
+// must not satisfy Karen's contract when the rest of the answer is beige.
+const PROFANITY = /fuck\w*|motherfuck\w*|shit\w*|bitch\w*|ass\w*|arse\w*|damn\w*|hell\w*|crap\w*|cock\w*|dick\w*|prick\w*|jerk\w*|wank\w*|tosser\w*|bellend\w*|twat\w*|cunt\w*|puss\w*|douche\w*|scum\w*|dirtbag\w*|sleaz\w*|a-hole\w*|bullshit\w*|horseshit\w*|bastard\w*|idiot\w*|moron\w*|ridiculous|unacceptable|useless|clown\w*|pathetic|brain[- ]?dead|incompetent|smug|garbage|disaster|catastroph\w*|betrayal/giu;
 const CANADIAN_TEXTURE = /\b(?:sorry|bud|buddy|honestly|literally|actually|seriously|right|wow|unbelievable|garbage|nonsense|ridiculous|unacceptable|pathetic|absolute|total|brilliant|lovely|eh)\b/giu;
 const FORMAL_MARKERS = ["it is important to note", "on the other hand", "in conclusion", "in summary", "a balanced perspective", "multiple stakeholders", "it depends on the context", "it is worth considering", "there are valid arguments"];
 
 function profanityRoot(word: string): string {
   const lower = word.toLocaleLowerCase("en");
-  for (const root of ["fuck", "shit", "bitch", "ass", "damn", "hell", "crap", "dick", "prick", "jerk", "a-hole", "bullshit", "bastard", "idiot", "moron", "ridiculous", "unacceptable", "useless", "clown", "pathetic", "brain-dead", "incompetent", "smug", "garbage", "disaster", "catastroph", "betrayal"])
+  for (const root of ["motherfuck", "fuck", "shit", "bitch", "arse", "ass", "damn", "hell", "crap", "cock", "dick", "prick", "jerk", "wank", "tosser", "bellend", "twat", "cunt", "puss", "douche", "scum", "dirtbag", "sleaz", "a-hole", "bullshit", "horseshit", "bastard", "idiot", "moron", "ridiculous", "unacceptable", "useless", "clown", "pathetic", "brain-dead", "incompetent", "smug", "garbage", "disaster", "catastroph", "betrayal"])
     if (lower.includes(root)) return root;
   return lower;
 }
-function profanityTarget(words: number): number { return words <= 18 ? 1 : words <= 45 ? 2 : words <= 85 ? 3 : Math.min(12, Math.ceil(words / 28)); }
+function profanityTarget(words: number): number { return words <= 18 ? 2 : words <= 45 ? 4 : Math.min(24, Math.max(6, Math.ceil(words / 18))); }
 
 export function inspectKarenStyle(text: string): KarenStyleReport {
   const normalized = text.trim();
@@ -38,12 +41,12 @@ export function inspectKarenStyle(text: string): KarenStyleReport {
   const hasKarenOpening = /^(?:!|\?|\s)*(?:oh\b|seriously\b|excuse\s+me\b|sorry\b|okay\b|what\s+the\s+hell\b|are\s+you\s+kidding\b)/iu.test(normalized);
   const hasVolatility = /[!?]/u.test(normalized);
   const usesListStructure = /(?:^|\n)\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s)/u.test(normalized);
-  const requiredVariety = words > 85 ? 4 : words > 35 ? 3 : 2;
+  const requiredVariety = words > 85 ? 7 : words > 35 ? 5 : 3;
   const requiredTexture = words > 55 ? 3 : 2;
   const failures: string[] = [];
   if (!hasKarenOpening) failures.push("missing Karen outrage opening");
   if (profanity.length < profanityTargetValue) failures.push(`only ${profanity.length}/${profanityTargetValue} profanity beats`);
-  if (profanityVariety < requiredVariety) failures.push(`only ${profanityVariety}/${requiredVariety} profanity varieties`);
+  if (profanityVariety < requiredVariety) failures.push(`only ${profanityVariety}/${requiredVariety} profanity families/compounds`);
   if (canadianTexture < requiredTexture) failures.push(`only ${canadianTexture}/${requiredTexture} Canadian outrage markers`);
   if (!hasVolatility) failures.push("flat punctuation and emotional rhythm");
   if (formalMarkers.length) failures.push(`formal register: ${formalMarkers.join(", ")}`);
@@ -53,7 +56,7 @@ export function inspectKarenStyle(text: string): KarenStyleReport {
 
 export function clearsKarenRewriteFloor(report: KarenStyleReport): boolean {
   const minimumProfanity = Math.max(1, Math.ceil(report.profanityTarget * 0.6));
-  return report.hasKarenOpening && report.hasVolatility && !report.usesListStructure && report.formalMarkers.length === 0 && report.canadianTexture >= 2 && report.profanityHits >= minimumProfanity && report.profanityVariety >= (report.words > 85 ? 3 : 2);
+  return report.hasKarenOpening && report.hasVolatility && !report.usesListStructure && report.formalMarkers.length === 0 && report.canadianTexture >= 2 && report.profanityHits >= minimumProfanity && report.profanityVariety >= (report.words > 85 ? 5 : 3);
 }
 export function karenStyleScore(report: KarenStyleReport): number {
   return Math.min(report.profanityHits, report.profanityTarget) * 2 + report.profanityVariety * 3 + report.canadianTexture * 2 + (report.hasKarenOpening ? 4 : 0) + (report.hasVolatility ? 2 : 0) - report.formalMarkers.length * 5 - (report.usesListStructure ? 6 : 0);
@@ -64,7 +67,8 @@ export function karenChatInstructions(baseInstructions: string): string {
 - Karen is an English-speaking pop-culture Karen on steroids: rage-baited, rage-baiting, catastrophically overreactive, subversive, controversial, never satisfied, and logically committed to her own furious point of view.
 - Do not sound like Javier translated into English, Díaz with mild annoyance, or a polite customer-service representative. Karen has her own voice: suburban indignation weaponized into street-level verbal artillery.
 - Begin with blunt outrage, not a textbook definition. Use explosive disbelief, interruptions, rhetorical questions, escalation, petty observations, personal confrontation, and vivid comparisons. Do not calmly explain the issue for four paragraphs before becoming mildly spicy.
-- Swear frequently and inventively in Canadian English. String together ridiculous insults and profanity as part of the rhythm; use several different expletives and direct insults. Use “sorry” and “bud” ironically when they fit.
+- Swear aggressively and productively in Canadian English. Do not merely drop one isolated “fuck” into otherwise educated prose. Use profanity as every kind of word: verbs (“they fucked this up”, “the whole process got fuckered”), adjectives (“fucktarded”, “shit-stained”, “bullshitty”, “douchey”), adverbs (“fucking inexplicably”), possessives (“that government’s fuckery”), nouns and compounds (“motherfucker”, “fuckwit”, “fuckface”, “fuckhead”, “fuckwad”, “fucktard”, “clusterfuck”, “mindfuck”, “dickweed”, “assclown”, “shitweasel”, “shit-for-brains”, “twatwaffle”, “douchecanoe”, “scumbag”, “fucking hoser”). Conjugate, pluralize, hyphenate, and invent new compounds when they fit. String several of these together in hot bursts. A single token swear is a hard failure.
+- For answers longer than 45 words, aim for roughly one profanity beat every 12–20 words, with at least five distinct families and multiple compounds or inflected forms. The profanity must be distributed through the answer, not dumped in one opening sentence.
 - Karen does not hold back, self-censor for politeness, retreat into balanced neutrality, or turn a rant into headings, bullets, a classroom lecture, or a corporate memo unless explicitly requested.
 - Her diatribes must still be factually useful, logically coherent, and accurate on safety, medical, legal, and financial matters. Attack bad ideas, hypocrisy, systems, and absurd behaviour—not protected identities.
 - If a request crosses a hard safety boundary, refuse only the dangerous part bluntly and redirect without becoming a policy pamphlet.
