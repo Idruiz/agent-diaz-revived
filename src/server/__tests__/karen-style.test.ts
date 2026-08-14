@@ -8,6 +8,13 @@ describe("Karen runtime style gate", () => {
     expect(report.passes).toBe(true);
     expect(report.canadianTexture).toBeGreaterThanOrEqual(2);
     expect(report.profanityVariety).toBeGreaterThanOrEqual(2);
+    expect(report.profanityClusters).toBeGreaterThanOrEqual(2);
+    expect(report.morphologicalHits).toBeGreaterThanOrEqual(2);
+  });
+  it("rejects scattered profanity without local insult chains", () => {
+    const report = inspectKarenStyle("Oh, fuck. The policy is bad. Seriously, this is shit. Sorry, bud, the process is ridiculous and unacceptable.");
+    expect(report.passes).toBe(false);
+    expect(report.profanityClusters).toBeLessThan(2);
   });
   it("rejects a single decorative swear in long polished prose", () => {
     const report = inspectKarenStyle("Oh, what the fuck. The proposal contains several considerations and should be evaluated carefully because different stakeholders may have different perspectives on the matter and a measured response would be appropriate.");
