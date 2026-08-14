@@ -4,10 +4,15 @@ import { personaInstructions } from "../personas";
 
 describe("Karen runtime style gate", () => {
   it("recognizes explosive Canadian-English outrage", () => {
-    const report = inspectKarenStyle("Oh, seriously, what the fuck is this garbage? Sorry, bud, but this ridiculous crap is unacceptable! Somebody thought this was a good idea? What a pathetic mess.");
+    const report = inspectKarenStyle("Oh, seriously, what the fucking fuck is this garbage? Sorry, bud, this bullshitty clusterfuck got fuckered by some shitweasel, and now the whole thing is a mindfucking, dickweed-built disaster! What a pathetic mess, eh?");
     expect(report.passes).toBe(true);
     expect(report.canadianTexture).toBeGreaterThanOrEqual(2);
     expect(report.profanityVariety).toBeGreaterThanOrEqual(2);
+  });
+  it("rejects a single decorative swear in long polished prose", () => {
+    const report = inspectKarenStyle("Oh, what the fuck. The proposal contains several considerations and should be evaluated carefully because different stakeholders may have different perspectives on the matter and a measured response would be appropriate.");
+    expect(report.passes).toBe(false);
+    expect(report.profanityVariety).toBeLessThan(3);
   });
   it("rejects a beige institutional answer", () => {
     const report = inspectKarenStyle("It is important to note that there are valid arguments on the other hand. In conclusion, it depends on the context.");
