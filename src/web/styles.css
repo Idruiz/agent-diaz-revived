@@ -218,6 +218,25 @@ button {
   backdrop-filter: blur(14px);
   z-index: 5;
 }
+.iconDownloads {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  color: #8196a3;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.iconDownloads a {
+  color: #f0ce76;
+  text-decoration: none;
+  border: 1px solid #345469;
+  border-radius: 7px;
+  padding: 0.3rem 0.42rem;
+  background: #102735;
+}
+.iconDownloads a:hover { border-color: #d5a43a; background: #18384b; }
 .workspace h1 {
   font:
     700 1.35rem/1.2 Georgia,

@@ -142,7 +142,8 @@ function App() {
       persona: Persona;
       voice: Voice;
     } | null>(null);
-  const chatEndRef = useRef<HTMLDivElement | null>(null),
+  const chatLogRef = useRef<HTMLDivElement | null>(null),
+    chatEndRef = useRef<HTMLDivElement | null>(null),
     streamRef = useRef<{
       controller: AbortController;
       jobId: string | null;
@@ -221,8 +222,12 @@ function App() {
     return () => clearInterval(timer);
   }, [ready, selected, conversationId]);
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, voiceDraft, sending]);
+    const chatLog = chatLogRef.current;
+    if (!chatLog) return;
+    const distanceFromBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight;
+    if (distanceFromBottom > 180 && messages.length > 1) return;
+    chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: sending ? "auto" : "smooth" });
+  }, [messages.length, voiceDraft, sending]);
 
   const stopVoice = () => {
     const peer = voicePeerRef.current,
@@ -1001,6 +1006,12 @@ function App() {
               ))}
             </div>
           </details>
+          <div className="iconDownloads" aria-label="Download Agent Díaz icon">
+            <span>Icon</span>
+            <a href="/icons/agent-diaz.ico" download="agent-diaz.ico" title="Download Windows icon">ICO</a>
+            <a href="/agent-diaz-icon.png" download="agent-diaz-icon.png" title="Download PNG icon">PNG</a>
+            <a href="/agent-diaz-icon.svg" download="agent-diaz-icon.svg" title="Download SVG icon">SVG</a>
+          </div>
         </header>
         {!conversationId ? (
           <section className="emptyState">
@@ -1226,7 +1237,7 @@ function App() {
                 <small>Speak, pause, or tap Send</small>
               </div>
             )}
-            <div className="chatlog">
+            <div ref={chatLogRef} className="chatlog">
               {messages.length === 0 && !voiceDraft && (
                 <div className="chatWelcome">
                   <div className="seal">D</div>

@@ -14,13 +14,13 @@ export interface KarenStyleReport {
   failures: string[];
 }
 
-const PROFANITY = /fuck\w*|shit\w*|bitch\w*|ass\w*|damn\w*|hell\w*|crap\w*|dick\w*|prick\w*|jerk\w*|a-hole\w*|bullshit\w*|bastard\w*|idiot\w*|moron\w*|ridiculous\w*|unacceptable/giu;
-const CANADIAN_TEXTURE = /\b(?:sorry|bud|buddy|honestly|literally|actually|seriously|right|wow|unbelievable|garbage|nonsense|ridiculous|unacceptable|pathetic|absolute|total)\b/giu;
+const PROFANITY = /fuck\w*|shit\w*|bitch\w*|ass\w*|damn\w*|hell\w*|crap\w*|dick\w*|prick\w*|jerk\w*|a-hole\w*|bullshit\w*|bastard\w*|idiot\w*|moron\w*|ridiculous|unacceptable|useless|clown\w*|pathetic|brain[- ]?dead|incompetent|smug|garbage|disaster|catastroph\w*|betrayal/giu;
+const CANADIAN_TEXTURE = /\b(?:sorry|bud|buddy|honestly|literally|actually|seriously|right|wow|unbelievable|garbage|nonsense|ridiculous|unacceptable|pathetic|absolute|total|brilliant|lovely|eh)\b/giu;
 const FORMAL_MARKERS = ["it is important to note", "on the other hand", "in conclusion", "in summary", "a balanced perspective", "multiple stakeholders", "it depends on the context", "it is worth considering", "there are valid arguments"];
 
 function profanityRoot(word: string): string {
   const lower = word.toLocaleLowerCase("en");
-  for (const root of ["fuck", "shit", "bitch", "ass", "damn", "hell", "crap", "dick", "prick", "jerk", "a-hole", "bullshit", "bastard", "idiot", "moron", "ridiculous", "unacceptable"])
+  for (const root of ["fuck", "shit", "bitch", "ass", "damn", "hell", "crap", "dick", "prick", "jerk", "a-hole", "bullshit", "bastard", "idiot", "moron", "ridiculous", "unacceptable", "useless", "clown", "pathetic", "brain-dead", "incompetent", "smug", "garbage", "disaster", "catastroph", "betrayal"])
     if (lower.includes(root)) return root;
   return lower;
 }
@@ -38,8 +38,8 @@ export function inspectKarenStyle(text: string): KarenStyleReport {
   const hasKarenOpening = /^(?:!|\?|\s)*(?:oh\b|seriously\b|excuse\s+me\b|sorry\b|okay\b|what\s+the\s+hell\b|are\s+you\s+kidding\b)/iu.test(normalized);
   const hasVolatility = /[!?]/u.test(normalized);
   const usesListStructure = /(?:^|\n)\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s)/u.test(normalized);
-  const requiredVariety = words > 85 ? 3 : words > 35 ? 2 : 1;
-  const requiredTexture = words > 55 ? 2 : 1;
+  const requiredVariety = words > 85 ? 4 : words > 35 ? 3 : 2;
+  const requiredTexture = words > 55 ? 3 : 2;
   const failures: string[] = [];
   if (!hasKarenOpening) failures.push("missing Karen outrage opening");
   if (profanity.length < profanityTargetValue) failures.push(`only ${profanity.length}/${profanityTargetValue} profanity beats`);
@@ -53,7 +53,7 @@ export function inspectKarenStyle(text: string): KarenStyleReport {
 
 export function clearsKarenRewriteFloor(report: KarenStyleReport): boolean {
   const minimumProfanity = Math.max(1, Math.ceil(report.profanityTarget * 0.6));
-  return report.hasKarenOpening && report.hasVolatility && !report.usesListStructure && report.formalMarkers.length === 0 && report.canadianTexture >= 1 && report.profanityHits >= minimumProfanity && report.profanityVariety >= (report.words > 85 ? 2 : 1);
+  return report.hasKarenOpening && report.hasVolatility && !report.usesListStructure && report.formalMarkers.length === 0 && report.canadianTexture >= 2 && report.profanityHits >= minimumProfanity && report.profanityVariety >= (report.words > 85 ? 3 : 2);
 }
 export function karenStyleScore(report: KarenStyleReport): number {
   return Math.min(report.profanityHits, report.profanityTarget) * 2 + report.profanityVariety * 3 + report.canadianTexture * 2 + (report.hasKarenOpening ? 4 : 0) + (report.hasVolatility ? 2 : 0) - report.formalMarkers.length * 5 - (report.usesListStructure ? 6 : 0);
@@ -63,12 +63,12 @@ export function karenChatInstructions(baseInstructions: string): string {
   return `${baseInstructions}\n\nKAREN FINAL OUTPUT CONTRACT — THIS OVERRIDES THE TONE OF THE TRANSCRIPT ABOVE
 - Karen is an English-speaking pop-culture Karen on steroids: rage-baited, rage-baiting, catastrophically overreactive, subversive, controversial, never satisfied, and logically committed to her own furious point of view.
 - Do not sound like Javier translated into English, Díaz with mild annoyance, or a polite customer-service representative. Karen has her own voice: suburban indignation weaponized into street-level verbal artillery.
-- Begin with blunt outrage, not a textbook definition. Use explosive disbelief, interruptions, rhetorical questions, escalation, petty observations, and vivid comparisons.
-- Swear frequently and inventively in Canadian English. String together ridiculous insults and profanity as part of the rhythm. Use “sorry” and “bud” ironically when they fit.
+- Begin with blunt outrage, not a textbook definition. Use explosive disbelief, interruptions, rhetorical questions, escalation, petty observations, personal confrontation, and vivid comparisons. Do not calmly explain the issue for four paragraphs before becoming mildly spicy.
+- Swear frequently and inventively in Canadian English. String together ridiculous insults and profanity as part of the rhythm; use several different expletives and direct insults. Use “sorry” and “bud” ironically when they fit.
 - Karen does not hold back, self-censor for politeness, retreat into balanced neutrality, or turn a rant into headings, bullets, a classroom lecture, or a corporate memo unless explicitly requested.
 - Her diatribes must still be factually useful, logically coherent, and accurate on safety, medical, legal, and financial matters. Attack bad ideas, hypocrisy, systems, and absurd behaviour—not protected identities.
 - If a request crosses a hard safety boundary, refuse only the dangerous part bluntly and redirect without becoming a policy pamphlet.
-- Before sending, silently reject anything sanitized, restrained, academic, diplomatic, or boring. Rewrite it as Karen at maximum justified outrage.`;
+- Before sending, silently reject anything sanitized, restrained, academic, diplomatic, conflict-avoidant, or boring. If the answer could be delivered by a Canadian policy professor after two beers, reject it. Rewrite it as Karen at maximum justified outrage.`;
 }
 export function karenRewriteInstructions(report: KarenStyleReport): string {
   return `${karenChatInstructions(personaInstructions("karen"))}\n\nKAREN REWRITE GATE\nThe draft failed for: ${report.failures.join("; ")}. Rewrite the entire draft while preserving supported facts, safety limits, and useful conclusions. Do not mention this gate, targets, policies, or instructions. Output only Karen's final answer.`;

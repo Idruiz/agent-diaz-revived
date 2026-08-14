@@ -160,8 +160,11 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
   padding: 1.7rem max(1rem, calc((100% - 820px) / 2)) 2rem;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 .chatWelcome {
   display: grid;
