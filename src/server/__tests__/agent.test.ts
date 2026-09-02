@@ -554,7 +554,7 @@ describe("agent production paths", () => {
       },
       secondInvalidPlan = {
         ...completePlan,
-        sections: completePlan.sections.slice(0, 12),
+        sections: Array.from({ length: 12 }, (_, index) => makeSection(index)),
       },
       create = vi.fn(async (request: any) => {
         if (request.tools?.length)
