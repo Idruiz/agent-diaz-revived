@@ -272,6 +272,60 @@ describe("agent production paths", () => {
     ).not.toThrow();
   });
 
+  it("keeps persistent artifact retries active even when workspace MCP is configured", async () => {
+    const { config, db } = harness();
+    config.MCP_SERVER_URL = "https://workspace.example.test/mcp";
+    const conversation = db.createConversation(
+      crypto.randomUUID(),
+      "Persistent artifact retry",
+    );
+    const job = db.createJob({
+      id: crypto.randomUUID(),
+      kind: "document",
+      prompt: "Create a production document",
+      conversationId: conversation.id,
+      fileIds: [],
+      ...modelProfileFor("balanced"),
+    });
+    const createFresh = vi.fn(async () => ({
+      id: "resp_retry_success",
+      status: "completed",
+      output_text: "Recovered artifact phase",
+      output: [],
+    }));
+    const runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: {
+        retrieve: vi.fn(),
+      },
+    };
+
+    const response = await (runner as any).awaitBackgroundResponse(
+      job.id,
+      {
+        id: "resp_retry_failure",
+        status: "failed",
+        error: { code: "server_error", message: "Temporary provider fault" },
+        output: [],
+      },
+      createFresh,
+      58,
+      "Gathering evidence",
+      true,
+    );
+
+    expect(createFresh).toHaveBeenCalledTimes(1);
+    expect(response).toMatchObject({
+      id: "resp_retry_success",
+      status: "completed",
+    });
+    expect(db.getJob(job.id)).toMatchObject({
+      status: "running",
+      error: null,
+    });
+    db.close();
+  });
+
   it("removes unsupported URI formats from every artifact structure request", () => {
     const format = artifactPlanTextFormat() as any,
       sourceUrl = format.schema.properties.sources.items.properties.url;
