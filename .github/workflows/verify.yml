@@ -32,6 +32,16 @@ jobs:
         run: npm ci
       - name: Verify application
         run: npm run verify
+      - name: Build containerized exact-prompt regression environment
+        run: docker build --target regression --tag agent-diaz-regression:${{ github.sha }} .
+      - name: Reproduce exact presentation route inside container
+        run: |
+          docker run --rm \
+            -e CI=1 \
+            -e GITHUB_SHA=${{ github.sha }} \
+            agent-diaz-regression:${{ github.sha }} \
+            npx vitest run --root . src/server/__tests__/agent.test.ts \
+              -t "completes every artifact route through evidence, structure, build, validation, and persistence"
       - name: Build production container
         run: docker build --tag agent-diaz-verify:${{ github.sha }} .
       - name: Preserve exact-prompt regression artifact
