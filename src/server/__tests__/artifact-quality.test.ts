@@ -176,7 +176,7 @@ describe("artifact quality gates", () => {
 
   it("repairs PptxGenJS 4.0.1 textless shapes and normalizes the invalid notes master", () => {
     const zip = new AdmZip();
-    zip.addFile("ppt/slides/slide1.xml", Buffer.from('<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:nvSpPr/><p:spPr/></p:sp></p:sld>'));
+    zip.addFile("ppt/slides/slide1.xml", Buffer.from('<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:nvSpPr/><p:spPr><a:xfrm><a:off x="NaN" y="0"/></a:xfrm></p:spPr></p:sp></p:sld>'));
     zip.addFile("ppt/notesMasters/notesMaster1.xml", Buffer.from('<p:notesMaster xmlns:p="p" xmlns:a="a"><p:spTree><p:nvGrpSpPr/><p:grpSpPr/><p:sp><p:nvSpPr/></p:sp></p:spTree></p:notesMaster>'));
     zip.addFile("ppt/presentation.xml", Buffer.from('<p:presentation xmlns:p="p"><p:sldMasterIdLst/><p:sldIdLst/><p:sldSz cx="1" cy="1"/><p:notesSz cx="1" cy="1"/><p:notesMasterIdLst><p:notesMasterId/></p:notesMasterIdLst></p:presentation>'));
     zip.addFile("[Content_Types].xml", Buffer.from('<Types><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="master"/><Override PartName="/ppt/slideMasters/slideMaster2.xml" ContentType="master"/></Types>'));
@@ -186,6 +186,8 @@ describe("artifact quality gates", () => {
     const slide = output.getEntry("ppt/slides/slide1.xml")!.getData().toString("utf8");
     const notes = output.getEntry("ppt/notesMasters/notesMaster1.xml")!.getData().toString("utf8");
     expect(slide).toContain("<p:txBody>");
+    expect(slide).toContain('x="0"');
+    expect(slide).not.toContain('x="NaN"');
     expect(notes).not.toMatch(/<p:sp(?=[\s>])/);
     const presentation = output.getEntry("ppt/presentation.xml")!.getData().toString("utf8");
     const contentTypes = output.getEntry("[Content_Types].xml")!.getData().toString("utf8");
@@ -196,6 +198,7 @@ describe("artifact quality gates", () => {
       notesMastersNormalized: 1,
       notesMasterLinksReordered: 1,
       orphanContentTypesRemoved: 1,
+      invalidSerializedValuesNormalized: 1,
     });
   });
 
