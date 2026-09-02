@@ -8,6 +8,7 @@ import {
   assertWebsitePackage,
   repairDocumentBuffer,
   repairPresentationBuffer,
+  validateBuiltArtifact,
 } from "../artifact-quality";
 import type { ArtifactPlan } from "../../shared/contracts";
 import type { Config } from "../config";
@@ -210,6 +211,21 @@ describe("artifact quality gates", () => {
     expect(xml).toContain('id="1" name="A"');
     expect(xml).toContain('id="2" name="B"');
     expect(repaired.stats.drawingIdsReassigned).toBe(2);
+  });
+
+  it("keeps validation as a repair signal and never quarantines an invalid artifact", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-retriable-artifact-"));
+    const target = path.join(root, "invalid.pptx");
+    const zip = new AdmZip();
+    zip.addFile("[Content_Types].xml", Buffer.from("<Types/>"));
+    zip.writeZip(target);
+
+    await expect(
+      validateBuiltArtifact("presentation", exactPrompt, frenchTeachingPlan(), target),
+    ).rejects.toThrow(/requires regeneration/);
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.existsSync(path.join(root, "_quarantine"))).toBe(false);
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it("rejects a packaged website with a broken internal link", () => {
