@@ -103,20 +103,23 @@ export function assertProviderRequestCompatible(request: any): void {
 }
 
 const artifactSectionSchema = ArtifactPlanSchema.shape.sections.element;
-const artifactPlanProviderSchema = ArtifactPlanSchema.extend({
-  sections: z
-    .array(
-      artifactSectionSchema.extend({
-        table: artifactSectionSchema.shape.table.unwrap().nullable(),
-        chart: artifactSectionSchema.shape.chart.unwrap().nullable(),
-        diagram: artifactSectionSchema.shape.diagram.unwrap().nullable(),
-        imageQuery: artifactSectionSchema.shape.imageQuery.unwrap().nullable(),
-      }),
-    )
-    .min(1)
-    .max(30),
-  pages: ArtifactPlanSchema.shape.pages.unwrap().nullable(),
+const artifactProviderSectionSchema = artifactSectionSchema.extend({
+  table: artifactSectionSchema.shape.table.unwrap().nullable(),
+  chart: artifactSectionSchema.shape.chart.unwrap().nullable(),
+  diagram: artifactSectionSchema.shape.diagram.unwrap().nullable(),
+  imageQuery: artifactSectionSchema.shape.imageQuery.unwrap().nullable(),
 });
+
+function artifactPlanProviderSchema(kind?: JobKind) {
+  const sections =
+    kind === "presentation"
+      ? z.array(artifactProviderSectionSchema).min(7).max(11)
+      : z.array(artifactProviderSectionSchema).min(1).max(30);
+  return ArtifactPlanSchema.extend({
+    sections,
+    pages: ArtifactPlanSchema.shape.pages.unwrap().nullable(),
+  });
+}
 
 const supportedStructuredOutputStringFormats = new Set([
   "date-time",
@@ -145,8 +148,11 @@ export function sanitizeStructuredOutputSchema(value: unknown): unknown {
   );
 }
 
-export function artifactPlanTextFormat() {
-  const format = zodTextFormat(artifactPlanProviderSchema, "artifact_plan");
+export function artifactPlanTextFormat(kind?: JobKind) {
+  const format = zodTextFormat(
+    artifactPlanProviderSchema(kind),
+    "artifact_plan",
+  );
   return {
     ...format,
     schema: sanitizeStructuredOutputSchema(format.schema),
@@ -181,7 +187,7 @@ function artifactInstructions(kind: JobKind): string {
   return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, sections[{heading,body,bullets,speakerNotes,imageQuery,table{title,headers,rows},chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote},diagram{title,nodes,caption}}], pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Use null for imageQuery, table, chart, diagram, or pages when that field does not apply. Every material factual claim must be supported. Never invent numbers. Body and bullets must contain finished audience-facing content, not directions, placeholders, production notes, or visual descriptions.${visualPolicy}`;
 }
 
-function validateArtifactPlan(
+export function validateArtifactPlan(
   kind: JobKind,
   plan: any,
   minVisuals: number,
@@ -243,6 +249,32 @@ function validateArtifactPlan(
       throw new Error(
         "Website plan validation failed: at least four documentary photo queries are required",
       );
+  }
+}
+
+function parseArtifactPlan(
+  kind: JobKind,
+  output: string,
+  minVisuals: number,
+) {
+  const raw = omitNullObjectFields(
+    JSON.parse(output.replace(/^```json\s*|```$/g, "")),
+  );
+  const plan = ArtifactPlanSchema.parse(raw);
+  validateArtifactPlan(kind, plan, minVisuals);
+  return plan;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown artifact plan error";
+}
+
+function planSectionCount(output: string): number | null {
+  try {
+    const parsed = JSON.parse(output.replace(/^```json\s*|```$/g, ""));
+    return Array.isArray(parsed?.sections) ? parsed.sections.length : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1055,7 +1087,29 @@ export class AgentRunner {
           background: true,
           store: true,
           safety_identifier: "agent-diaz-owner",
-          text: { format: artifactPlanTextFormat() },
+          text: { format: artifactPlanTextFormat(job.kind) },
+        } as any;
+        assertProviderRequestCompatible(request);
+        return this.client.responses.create(request);
+      };
+      const createPlanRepairResponse = async (
+        previousResponseId: string,
+        validationError: string,
+      ) => {
+        const request = {
+          model: job.model,
+          previous_response_id: previousResponseId,
+          reasoning: { effort: job.reasoningEffort, context: "all_turns" },
+          instructions: [
+            personaInstructions(job.persona),
+            artifactInstructions(job.kind),
+            "ARTIFACT PLAN REPAIR PHASE: The previous complete plan failed deterministic validation. Correct the entire plan using the original request and evidence already present in the response chain. Preserve verified facts, exact values, source URLs, and all valid content. Do not research again, do not use tools, and do not explain the correction. Return one corrected complete JSON artifact plan and nothing else.",
+          ].join("\n\n"),
+          input: `DETERMINISTIC VALIDATION ERROR:\n${validationError}\n\nReturn a corrected complete plan that satisfies every stated structural and visual requirement.`,
+          background: true,
+          store: true,
+          safety_identifier: "agent-diaz-owner",
+          text: { format: artifactPlanTextFormat(job.kind) },
         } as any;
         assertProviderRequestCompatible(request);
         return this.client.responses.create(request);
@@ -1119,7 +1173,7 @@ export class AgentRunner {
               background: true,
               store: true,
               safety_identifier: "agent-diaz-owner",
-              text: { format: artifactPlanTextFormat() },
+              text: { format: artifactPlanTextFormat(job.kind) },
             } as any),
           79,
           "Structuring artifact",
@@ -1135,15 +1189,74 @@ export class AgentRunner {
           message: "Building and validating artifact",
         });
         if (!this.db.listArtifacts(jobId).length) {
-          const raw = omitNullObjectFields(
-            JSON.parse(output.replace(/^```json\s*|```$/g, "")),
-          );
-          const plan = ArtifactPlanSchema.parse(raw);
-          validateArtifactPlan(
-            job.kind,
-            plan,
-            getSkillForKind(job.kind).minVisuals,
-          );
+          const minVisuals = getSkillForKind(job.kind).minVisuals;
+          let plan;
+          try {
+            plan = parseArtifactPlan(job.kind, output, minVisuals);
+          } catch (initialError) {
+            const validationError = errorMessage(initialError);
+            log("warn", "artifact.plan_validation_failed", {
+              jobId,
+              kind: job.kind,
+              attempt: 1,
+              sectionCount: planSectionCount(output),
+              error: validationError,
+            });
+            this.db.updateJob(jobId, {
+              status: "running",
+              progress: 84,
+              message: "Structuring artifact: repairing invalid plan",
+            });
+            let repairResponse = await createPlanRepairResponse(
+              structureResponse.id,
+              validationError,
+            );
+            this.db.updateJob(jobId, {
+              providerResponseId: repairResponse.id,
+              message: "Structuring artifact: repair started",
+            });
+            repairResponse = await this.awaitBackgroundResponse(
+              jobId,
+              repairResponse,
+              () =>
+                createPlanRepairResponse(
+                  structureResponse.id,
+                  validationError,
+                ),
+              89,
+              "Structuring artifact: repair",
+            );
+            if (!repairResponse) return;
+            response = repairResponse;
+            output = repairResponse.output_text?.trim() || "";
+            if (!output)
+              throw new Error("Artifact plan repair returned no usable plan");
+            try {
+              plan = parseArtifactPlan(job.kind, output, minVisuals);
+            } catch (repairError) {
+              const repairedValidationError = errorMessage(repairError);
+              log("error", "artifact.plan_repair_failed", {
+                jobId,
+                kind: job.kind,
+                attempt: 2,
+                sectionCount: planSectionCount(output),
+                error: repairedValidationError,
+              });
+              throw new Error(
+                `Artifact plan remained invalid after automatic repair: ${repairedValidationError}`,
+              );
+            }
+            log("info", "artifact.plan_repaired", {
+              jobId,
+              kind: job.kind,
+              sectionCount: plan.sections.length,
+            });
+            this.db.updateJob(jobId, {
+              status: "building",
+              progress: 90,
+              message: "Building repaired artifact",
+            });
+          }
           const file = await buildArtifact(this.config, job.kind, plan);
           const id = crypto.randomUUID();
           this.db.addArtifact({

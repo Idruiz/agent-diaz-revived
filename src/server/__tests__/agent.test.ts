@@ -11,6 +11,7 @@ import {
   isValidWav,
   modelProfileFor,
   sanitizeStructuredOutputSchema,
+  validateArtifactPlan,
 } from "../openai-agent";
 import { inspectJavierStyle } from "../javier-style";
 import type { Config } from "../config";
@@ -292,6 +293,38 @@ describe("agent production paths", () => {
     });
   });
 
+  it("enforces the presentation section boundary in both provider and deterministic validation", () => {
+    const format = artifactPlanTextFormat("presentation") as any;
+    expect(format.schema.properties.sections).toMatchObject({
+      minItems: 7,
+      maxItems: 11,
+    });
+    const planWithSections = (count: number) => ({
+      title: "Presentation boundary",
+      subtitle: "Exact section contract",
+      sections: Array.from({ length: count }, (_, index) => ({
+        heading: `Section ${index + 1}`,
+        body: `Finished content for section ${index + 1}.`,
+        bullets: [],
+        speakerNotes: "",
+        imageQuery: `documentary classroom scene ${index + 1}`,
+      })),
+      sources: [],
+    });
+    expect(() =>
+      validateArtifactPlan("presentation", planWithSections(6), 5),
+    ).toThrow("expected 7-11 content sections");
+    expect(() =>
+      validateArtifactPlan("presentation", planWithSections(7), 5),
+    ).not.toThrow();
+    expect(() =>
+      validateArtifactPlan("presentation", planWithSections(11), 5),
+    ).not.toThrow();
+    expect(() =>
+      validateArtifactPlan("presentation", planWithSections(12), 5),
+    ).toThrow("expected 7-11 content sections");
+  });
+
   it("runs artifact evidence and JSON structuring as two incompatible-safe provider phases", async () => {
     const { config, db } = harness(),
       conversation = db.createConversation(
@@ -459,6 +492,154 @@ describe("agent production paths", () => {
     expect(fs.existsSync(path.join(config.artifactDir, artifacts[0]!.name))).toBe(
       true,
     );
+    db.close();
+  });
+
+  it("repairs an invalid presentation plan without repeating the evidence phase", async () => {
+    const { config, db } = harness(),
+      conversation = db.createConversation(
+        crypto.randomUUID(),
+        "Presentation repair",
+      );
+    fs.mkdirSync(config.artifactDir, { recursive: true });
+    const job = db.createJob({
+        id: crypto.randomUUID(),
+        kind: "presentation",
+        prompt: "Build a seven-section visual presentation",
+        conversationId: conversation.id,
+        fileIds: [],
+        ...modelProfileFor("balanced"),
+      }),
+      makeSection = (index: number) => ({
+        heading: `Section ${index + 1}`,
+        body: `Finished audience-facing content for section ${index + 1}.`,
+        bullets: [`Evidence point ${index + 1}`],
+        speakerNotes: `Explain section ${index + 1}.`,
+        table: null,
+        chart: null,
+        diagram:
+          index === 3 || index === 4
+            ? {
+                title: `Process ${index + 1}`,
+                nodes: ["Evidence", "Decision", "Result"],
+                caption: "A verified progression.",
+              }
+            : null,
+        imageQuery:
+          index < 3 ? `documentary classroom scene ${index + 1}` : null,
+      }),
+      completePlan = {
+        title: "Recovered presentation",
+        subtitle: "Automatic plan repair",
+        sections: Array.from({ length: 7 }, (_, index) => makeSection(index)),
+        pages: null,
+        sources: [
+          {
+            title: "Verified source",
+            url: "https://example.com/verified-source",
+          },
+        ],
+      },
+      invalidPlan = {
+        ...completePlan,
+        sections: completePlan.sections.slice(0, 6),
+      },
+      create = vi.fn(async (request: any) => {
+        if (request.tools?.length)
+          return {
+            id: "resp_repair_evidence",
+            status: "completed",
+            output_text: "Verified evidence with a complete source URL.",
+            output: [],
+          };
+        const repair = request.previous_response_id === "resp_invalid_plan";
+        return {
+          id: repair ? "resp_repaired_plan" : "resp_invalid_plan",
+          status: "completed",
+          output_text: JSON.stringify(repair ? completePlan : invalidPlan),
+          output: [],
+        };
+      }),
+      runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: { create, retrieve: vi.fn() },
+    };
+
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#17324d",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php"))
+          return new Response(
+            JSON.stringify({
+              query: {
+                pages: {
+                  1: {
+                    title: "Classroom",
+                    imageinfo: [
+                      {
+                        thumburl: "https://images.example.test/classroom.jpg",
+                        descriptionurl:
+                          "https://commons.wikimedia.org/wiki/File:Classroom.jpg",
+                        width: 1200,
+                        height: 800,
+                        extmetadata: {
+                          ObjectName: { value: "Classroom" },
+                          Artist: { value: "Test photographer" },
+                          LicenseShortName: { value: "CC BY 4.0" },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        if (url === "https://images.example.test/classroom.jpg")
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(`Unexpected fetch in repair test: ${url}`);
+      });
+
+    try {
+      await (runner as any).run(job.id);
+    } finally {
+      imageFetch.mockRestore();
+    }
+
+    expect(create).toHaveBeenCalledTimes(3);
+    const repairRequest = create.mock.calls[2]![0] as any;
+    expect(repairRequest.tools).toBeUndefined();
+    expect(repairRequest.previous_response_id).toBe("resp_invalid_plan");
+    expect(repairRequest.input).toContain(
+      "Presentation plan validation failed: expected 7-11 content sections",
+    );
+    expect(repairRequest.instructions).toContain(
+      "Do not research again, do not use tools",
+    );
+    expect(repairRequest.text.format.schema.properties.sections).toMatchObject({
+      minItems: 7,
+      maxItems: 11,
+    });
+    expect(db.getJob(job.id)).toMatchObject({
+      status: "completed",
+      error: null,
+    });
+    expect(db.getProviderResponseId(job.id)).toBe("resp_repaired_plan");
+    expect(db.listArtifacts(job.id)).toHaveLength(1);
     db.close();
   });
 
