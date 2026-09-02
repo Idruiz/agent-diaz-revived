@@ -890,7 +890,9 @@ describe("agent production paths", () => {
         const artifacts = db.listArtifacts(job.id);
         expect(artifacts).toHaveLength(1);
         expect(artifacts[0]!.name.endsWith(expectedExtension[kind])).toBe(true);
-        expect(fs.existsSync(artifacts[0]!.path)).toBe(true);
+        expect(
+          fs.existsSync(path.join(config.artifactDir, artifacts[0]!.name)),
+        ).toBe(true);
         expect(completed?.outputText).toContain(`Completed ${kind} artifact`);
         db.close();
       }
