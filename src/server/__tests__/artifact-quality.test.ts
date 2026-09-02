@@ -122,7 +122,7 @@ describe("artifact quality gates", () => {
     const zip = new AdmZip();
     zip.addFile("ppt/slides/slide1.xml", Buffer.from('<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:nvSpPr/><p:spPr/></p:sp></p:sld>'));
     zip.addFile("ppt/notesMasters/notesMaster1.xml", Buffer.from('<p:notesMaster xmlns:p="p" xmlns:a="a"><p:spTree><p:nvGrpSpPr/><p:grpSpPr/><p:sp><p:nvSpPr/></p:sp></p:spTree></p:notesMaster>'));
-    zip.addFile("ppt/presentation.xml", Buffer.from('<p:presentation xmlns:p="p"><p:sldIdLst/><p:notesSz cx="1" cy="1"/><p:notesMasterIdLst><p:notesMasterId/></p:notesMasterIdLst></p:presentation>'));
+    zip.addFile("ppt/presentation.xml", Buffer.from('<p:presentation xmlns:p="p"><p:sldMasterIdLst/><p:sldIdLst/><p:sldSz cx="1" cy="1"/><p:notesSz cx="1" cy="1"/><p:notesMasterIdLst><p:notesMasterId/></p:notesMasterIdLst></p:presentation>'));
     zip.addFile("[Content_Types].xml", Buffer.from('<Types><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="master"/><Override PartName="/ppt/slideMasters/slideMaster2.xml" ContentType="master"/></Types>'));
     zip.addFile("ppt/slideMasters/slideMaster1.xml", Buffer.from('<p:sldMaster xmlns:p="p"/>'));
     const repaired = repairPresentationBuffer(zip.toBuffer());
@@ -133,7 +133,7 @@ describe("artifact quality gates", () => {
     expect(notes).not.toMatch(/<p:sp(?=[\s>])/);
     const presentation = output.getEntry("ppt/presentation.xml")!.getData().toString("utf8");
     const contentTypes = output.getEntry("[Content_Types].xml")!.getData().toString("utf8");
-    expect(presentation.indexOf("<p:notesMasterIdLst>")).toBeLessThan(presentation.indexOf("<p:notesSz"));
+    expect(presentation.indexOf("<p:notesMasterIdLst>")).toBeLessThan(presentation.indexOf("<p:sldIdLst"));
     expect(contentTypes).not.toContain("slideMaster2.xml");
     expect(repaired.stats).toEqual({
       textBodiesAdded: 1,
