@@ -10,6 +10,7 @@ import { atomicWrite, safeJoin } from "./files.js";
 import { chartPng, chartSvg, diagramPng, diagramSvg } from "./visuals.js";
 import { fetchCommonsImage, type RealImage } from "./real-images.js";
 import { log } from "./log.js";
+import { repairPresentationBuffer, validateBuiltArtifact } from "./artifact-quality.js";
 
 const PptxGenJS=((PptxGenModule as any).default??PptxGenModule) as typeof PptxGenModule;
 
@@ -56,7 +57,7 @@ function noteBlock(notes:string|undefined,sources:string[]):string{
     .join("\n\n");
 }
 
-async function pptx(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
+async function pptx(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const images=await collectImages({...plan,sections:contentSections},10);
   const requestedImages=contentSections.filter(section=>section.imageQuery).length;
@@ -124,6 +125,33 @@ async function pptx(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
     slide.addText(short(table.title,120),{x:.78,y:1.4,w:11.6,h:.36,fontSize:17,bold:true,color:navy,margin:0,fit:"shrink"});
     slide.addTable([headers,...rows],{x:.78,y:1.88,w:11.78,h:4.86,border:{type:"solid",color:"CCD4D9",pt:.7},fontFace:"Aptos",fontSize:11,rowH:.32,margin:.06,valign:"middle",autoFit:false});
   };
+  const addActivitySlide=(slide:any,section:ArtifactPlan["sections"][number])=>{
+    const activity=section.activity!;
+    if(activity.type==="four_corners"){
+      slide.addText(short(section.body,260),{x:.88,y:1.38,w:11.55,h:.54,fontSize:19,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
+      const labels=activity.cornerLabels.slice(0,4),colors=["F1E5C5","E7EEF2","E4EFE6","F3E4DF"];
+      labels.forEach((label,index)=>{
+        const column=index%2,row=Math.floor(index/2),x=.92+column*6.02,y=2.08+row*1.54;
+        slide.addText(label,{x,y,w:5.5,h:1.14,shape:p.ShapeType.roundRect,rectRadius:.06,fill:{color:colors[index]!},line:{color:index%2?blue:gold,pt:1.4},fontSize:22,bold:true,color:navy,align:"center",valign:"mid",margin:.16,fit:"shrink"});
+      });
+      slide.addText(activity.directions.map((text,index)=>({text:`${index+1}. ${short(text,130)}`,options:{breakLine:index<activity.directions.length-1}})),{x:.92,y:5.22,w:7.35,h:.82,fontSize:13,color:ink,margin:.12,fit:"shrink"});
+      slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,130),options:{bullet:{indent:14},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:8.52,y:5.12,w:3.8,h:1.03,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:13,bold:true,color:white,margin:.18,fit:"shrink"});
+      return;
+    }
+    if(activity.type==="speed_dating"){
+      slide.addText(`${activity.durationMinutes} MIN\nROTATIONS`,{x:.88,y:1.46,w:2.15,h:1.08,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:20,bold:true,color:white,align:"center",valign:"mid",margin:.12});
+      slide.addText(activity.directions.slice(0,5).map((text,index)=>({text:`${index+1}. ${short(text,115)}`,options:{breakLine:index<Math.min(5,activity.directions.length)-1}})),{x:.92,y:2.72,w:2.86,h:2.35,fontSize:14,color:ink,margin:.08,fit:"shrink"});
+      activity.prompts.slice(0,6).forEach((text,index)=>{
+        const column=index%2,row=Math.floor(index/2),x=4.02+column*4.25,y=1.48+row*1.28;
+        slide.addText([{text:String(index+1).padStart(2,"0"),options:{bold:true,color:gold,breakLine:true}},{text:short(text,150),options:{bold:true,color:navy}}],{x,y,w:3.86,h:1.02,shape:p.ShapeType.roundRect,fill:{color:index%2?"EEF3F5":"F7EED7"},line:{color:index%2?blue:gold,pt:1},fontSize:14,margin:.14,fit:"shrink"});
+      });
+      slide.addText(activity.sentenceFrames.slice(0,4).map((text,index)=>({text:short(text,140),options:{bullet:{indent:14},breakLine:index<Math.min(4,activity.sentenceFrames.length)-1}})),{x:4.02,y:5.46,w:8.1,h:.74,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:13,bold:true,color:white,margin:.14,fit:"shrink"});
+      return;
+    }
+    slide.addText(short(section.body,320),{x:.92,y:1.5,w:11.4,h:.62,fontSize:20,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
+    slide.addText(activity.directions.slice(0,6).map((text,index)=>({text:`${index+1}. ${short(text,160)}`,options:{breakLine:index<Math.min(6,activity.directions.length)-1}})),{x:1.02,y:2.32,w:5.35,h:3.3,shape:p.ShapeType.roundRect,fill:{color:pale},line:{color:blue,pt:1},fontSize:16,color:ink,margin:.22,fit:"shrink"});
+    slide.addText(activity.prompts.slice(0,8).map((text,index)=>({text:short(text,150),options:{bullet:{indent:16},breakLine:index<Math.min(8,activity.prompts.length)-1}})),{x:6.72,y:2.32,w:5.35,h:3.3,shape:p.ShapeType.roundRect,fill:{color:"F7EED7"},line:{color:gold,pt:1},fontSize:16,color:ink,margin:.22,fit:"shrink"});
+  };
   const title=p.addSlide(); title.background={color:navy};
   title.addShape(p.ShapeType.rect,{x:0,y:0,w:.18,h:7.5,fill:{color:gold},line:{color:gold}});
   title.addShape(p.ShapeType.arc,{x:9.15,y:.35,w:3.65,h:3.65,rotate:18,fill:{color:gold,transparency:78},line:{color:gold,transparency:100}});
@@ -137,7 +165,8 @@ async function pptx(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
     slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:.1,fill:{color:gold},line:{color:gold}});
     addHeading(slide,section.heading,`Part ${String(index+1).padStart(2,"0")}`);
     const image=section.imageQuery?images.get(section.imageQuery):undefined;
-    if(section.chart)addNativeChart(slide,section);
+    if(section.activity)addActivitySlide(slide,section);
+    else if(section.chart)addNativeChart(slide,section);
     else if(section.table)addNativeTable(slide,section);
     else if(section.diagram)addNativeDiagram(slide,section);
     else if(image){
@@ -170,11 +199,15 @@ async function pptx(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
     addFooter(slide,slideNumber);slide.addNotes(noteBlock("",chunk.map(source=>source.url)));
   }
   const name=`${slug(plan.title)}.pptx`, target=safeJoin(config.artifactDir,name);
-  const buf=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer); if(buf.length<5000)throw new Error("PPTX validation failed: output too small"); atomicWrite(target,buf);
+  const raw=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer); if(raw.length<5000)throw new Error("PPTX validation failed: output too small");
+  const repaired=repairPresentationBuffer(raw),buf=repaired.buffer;
+  log("info","artifact.presentation_ooxml_repaired",{name,textBodiesAdded:repaired.stats.textBodiesAdded,notesMastersNormalized:repaired.stats.notesMastersNormalized});
+  atomicWrite(target,buf);
+  await validateBuiltArtifact("presentation",prompt,plan,target);
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:buf.length};
 }
 
-async function docx(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
+async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document"):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const images=await collectImages({...plan,sections:contentSections},10);
   const requestedImages=contentSections.filter(section=>section.imageQuery).length;
@@ -242,10 +275,11 @@ async function docx(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
     sections:[{properties:{titlePage:true,page:{margin:{top:1440,right:1440,bottom:1440,left:1440,header:708,footer:708}}},headers:{first:new Header({children:[new Paragraph("")]}),default:new Header({children:[new Paragraph({border:{bottom:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:short(plan.title,85),bold:true,size:16,color:"5A6772",font:"Calibri"})]})]})},footers:{first:new Footer({children:[new Paragraph("")]}),default:new Footer({children:[new Paragraph({border:{top:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:"AGENT DÍAZ  ·  ",bold:true,size:14,color:"C99A2E",font:"Calibri"}),new TextRun({children:[PageNumber.CURRENT],size:14,color:"5A6772",font:"Calibri"})],alignment:AlignmentType.RIGHT})]})},children}],
   });
   const buf=await Packer.toBuffer(d); if(buf.length<3000)throw new Error("DOCX validation failed: output too small"); const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);
+  await validateBuiltArtifact(kind,prompt,plan,target);
   return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length};
 }
 
-async function website(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
+async function website(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
   const css=`:root{--ink:#17202a;--gold:#c99a2e;--paper:#f7f3ea;--navy:#17324d;--blue:#2f739c;--white:#fff;--muted:#5a6772}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,Aptos,system-ui,sans-serif;color:var(--ink);background:var(--paper);line-height:1.65}nav{position:sticky;top:0;z-index:5;display:flex;gap:1.35rem;align-items:center;padding:1rem 6vw;background:#101d29f7;color:white;box-shadow:0 3px 18px #0003;backdrop-filter:blur(12px)}nav strong{margin-right:auto;letter-spacing:.04em}nav a{color:white;text-decoration:none;font-weight:650}nav a[aria-current=page]{color:#f1c65b;border-bottom:2px solid}.hero{isolation:isolate;position:relative;overflow:hidden;background-color:var(--navy);background-position:center;background-size:cover;color:white;padding:clamp(5rem,10vw,8rem) 6vw;border-top:8px solid var(--gold)}.hero:before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,#10283df2 0%,#10283dc9 52%,#10283d52 100%)}.hero .eyebrow{text-transform:uppercase;letter-spacing:.18em;color:#f1c65b;font-size:.78rem;font-weight:800}.hero h1{font-size:clamp(2.8rem,6vw,5.7rem);letter-spacing:-.04em;line-height:.96;margin:.55rem 0 1rem;max-width:15ch}.hero p{font-size:clamp(1.05rem,2vw,1.3rem);max-width:56ch;color:#e0e9f0}main{max-width:1180px;margin:auto;padding:2rem 6vw 4rem}section{padding:clamp(3rem,6vw,5.5rem) 0;border-bottom:1px solid #d9d2c2}section.with-photo{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.92fr);gap:clamp(2rem,5vw,5rem);align-items:center}.with-photo.flip .copy{order:2}.with-photo.flip .photo{order:1}.copy{min-width:0}h2{color:var(--navy);font-size:clamp(2rem,4vw,3.25rem);letter-spacing:-.035em;line-height:1.05;margin:.2rem 0 1.3rem}p{font-size:1.08rem}li{margin:.55rem 0}a{color:#815e09}.photo{margin:0;background:white;padding:.65rem;border-radius:20px;box-shadow:0 18px 55px #12202b22;transform:rotate(.35deg)}.flip .photo{transform:rotate(-.35deg)}.photo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;border-radius:14px}.photo figcaption{font-size:.75rem;line-height:1.35;color:var(--muted);padding:.65rem .3rem .15rem}.viz,.table-wrap{grid-column:1/-1;margin:2rem 0 0}.viz svg{width:100%;height:auto;display:block;box-shadow:0 15px 45px #12202b1b;border-radius:18px}.table{overflow:auto;background:white;border-radius:14px;box-shadow:0 12px 35px #12202b14}table{border-collapse:collapse;width:100%;min-width:560px}th,td{padding:.9rem 1rem;border-bottom:1px solid #dbe2e6;text-align:left}th{background:var(--navy);color:white}footer{padding:2.4rem 6vw;background:#101d29;color:#ccd6df}footer a{color:#f1c65b}@media(max-width:760px){nav{align-items:flex-start;flex-wrap:wrap}.hero{padding-top:4rem}nav strong{width:100%}section.with-photo{display:block}.with-photo.flip .copy,.with-photo.flip .photo{order:initial}.photo{margin-top:2rem;transform:none!important}}`;
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const thirds=[0,1,2].map(i=>contentSections.filter((_,j)=>j%3===i));
@@ -266,9 +300,9 @@ async function website(config:Config,plan:ArtifactPlan):Promise<BuiltFile>{
   const refs=`<section><h2>Research sources</h2>${plan.sources.length?`<ol>${plan.sources.map(s=>`<li><a href="${escapeHtml(s.url)}" rel="noopener noreferrer">${escapeHtml(s.title)}</a></li>`).join("")}</ol>`:"<p>No external research sources were used.</p>"}</section><section><h2>Image credits</h2>${images.size?`<ol>${[...images.values()].map(i=>`<li>${escapeHtml(i.title)} — ${escapeHtml(i.creator)}, ${escapeHtml(i.license)}. <a href="${escapeHtml(i.sourceUrl)}">Wikimedia Commons source</a></li>`).join("")}</ol>`:"<p>No photographs were requested for this build.</p>"}</section>`;
   htmlPages.push({name:"attributions.html",html:shell("Sources & credits","Research references and licenses for every bundled photograph.","attributions",refs)});
   const home=htmlPages.find(p=>p.name==="index.html");if(home)htmlPages.push({name:"OPEN_ME_FIRST.html",html:home.html});
-  const stream=new PassThrough(),chunks:Buffer[]=[];stream.on("data",c=>chunks.push(Buffer.from(c)));const done=new Promise<Buffer>((resolve,reject)=>{stream.on("end",()=>resolve(Buffer.concat(chunks)));stream.on("error",reject)});const zip=archiver("zip",{zlib:{level:9}});zip.on("error",e=>stream.destroy(e));zip.pipe(stream);for(const p of htmlPages)zip.append(p.html,{name:p.name});await zip.finalize();const buf=await done;if(buf.length<1500)throw new Error("Website ZIP validation failed");const name=`${slug(plan.title)}_website.zip`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);return{name,mime:"application/zip",path:target,size:buf.length};
+  const stream=new PassThrough(),chunks:Buffer[]=[];stream.on("data",c=>chunks.push(Buffer.from(c)));const done=new Promise<Buffer>((resolve,reject)=>{stream.on("end",()=>resolve(Buffer.concat(chunks)));stream.on("error",reject)});const zip=archiver("zip",{zlib:{level:9}});zip.on("error",e=>stream.destroy(e));zip.pipe(stream);for(const p of htmlPages)zip.append(p.html,{name:p.name});await zip.finalize();const buf=await done;if(buf.length<1500)throw new Error("Website ZIP validation failed");const name=`${slug(plan.title)}_website.zip`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);await validateBuiltArtifact("website",prompt,plan,target);return{name,mime:"application/zip",path:target,size:buf.length};
 }
 
-export async function buildArtifact(config:Config,kind:JobKind,plan:ArtifactPlan):Promise<BuiltFile>{
-  if(kind==="presentation")return pptx(config,plan); if(kind==="document"||kind==="analysis"||kind==="research")return docx(config,plan); if(kind==="website")return website(config,plan); throw new Error(`No deterministic builder for ${kind}`);
+export async function buildArtifact(config:Config,kind:JobKind,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
+  if(kind==="presentation")return pptx(config,plan,prompt); if(kind==="document"||kind==="analysis"||kind==="research")return docx(config,plan,prompt,kind); if(kind==="website")return website(config,plan,prompt); throw new Error(`No deterministic builder for ${kind}`);
 }
