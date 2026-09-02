@@ -5,6 +5,7 @@ import AdmZip from "adm-zip";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   assertArtifactPlanQuality,
+  assertPresentationPackage,
   assertWebsitePackage,
   repairDocumentBuffer,
   repairPresentationBuffer,
@@ -172,6 +173,31 @@ describe("artifact quality gates", () => {
       },
     };
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).toThrow(/requires a Speed Dating activity slide/);
+  });
+
+  it("allows legitimate null-language in slide text but rejects corrupt XML attributes", () => {
+    const packageWithSlideXml = (slideXml: string) => {
+      const zip = new AdmZip();
+      zip.addFile("[Content_Types].xml", Buffer.from("<Types/>"));
+      zip.addFile("_rels/.rels", Buffer.from("<Relationships/>"));
+      zip.addFile("ppt/presentation.xml", Buffer.from("<p:presentation xmlns:p=\"p\"/>"));
+      zip.addFile("ppt/_rels/presentation.xml.rels", Buffer.from("<Relationships/>"));
+      zip.addFile("ppt/slides/slide1.xml", Buffer.from(slideXml));
+      zip.addFile(
+        "ppt/slides/slide2.xml",
+        Buffer.from('<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:txBody><a:p><a:r><a:t>Second slide</a:t></a:r></a:p></p:txBody></p:sp></p:sld>'),
+      );
+      return zip.toBuffer();
+    };
+    const legitimate = packageWithSlideXml(
+      '<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:txBody><a:p><a:r><a:t>French is not a null-subject language.</a:t></a:r></a:p></p:txBody></p:sp></p:sld>',
+    );
+    expect(() => assertPresentationPackage(legitimate)).not.toThrow();
+
+    const corrupt = packageWithSlideXml(
+      '<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:spPr><a:xfrm><a:off x="NaN" y="0"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:t>Visible text</a:t></a:r></a:p></p:txBody></p:sp></p:sld>',
+    );
+    expect(() => assertPresentationPackage(corrupt)).toThrow(/invalid serialized value 'NaN' in attribute x/);
   });
 
   it("repairs PptxGenJS 4.0.1 textless shapes and normalizes the invalid notes master", () => {
