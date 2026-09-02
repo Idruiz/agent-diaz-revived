@@ -137,9 +137,46 @@ export const ApprovalDecisionSchema = z.object({
   editedArguments: z.record(z.string(), z.unknown()).optional(),
 });
 
+export const ArtifactRequirementSchema = z.object({
+  id: z.string().regex(/^R[1-9][0-9]*$/).max(8),
+  text: z.string().min(2).max(400),
+  mandatory: z.boolean().default(true),
+});
+export const ArtifactActivitySchema = z.object({
+  type: z.enum([
+    "speed_dating",
+    "four_corners",
+    "guided_practice",
+    "independent_practice",
+    "discussion",
+    "exit_ticket",
+  ]),
+  durationMinutes: z.number().int().min(1).max(120),
+  directions: z.array(z.string().min(2).max(300)).min(2).max(8),
+  prompts: z.array(z.string().min(2).max(500)).min(1).max(16),
+  sentenceFrames: z.array(z.string().min(2).max(300)).max(12).default([]),
+  cornerLabels: z.array(z.string().min(1).max(120)).max(4).default([]),
+});
+export const ArtifactLayoutSchema = z.enum([
+  "auto",
+  "title",
+  "standard",
+  "comparison",
+  "process",
+  "timeline",
+  "gallery",
+  "data",
+  "conjugation",
+  "guided_practice",
+  "speed_dating",
+  "four_corners",
+  "exit_ticket",
+]);
+
 export const ArtifactPlanSchema = z.object({
   title: z.string().min(1).max(160),
   subtitle: z.string().max(240).optional().default(""),
+  requirements: z.array(ArtifactRequirementSchema).min(1).max(30).default([{ id: "R1", text: "Deliver the requested artifact", mandatory: true }]),
   sections: z
     .array(
       z.object({
@@ -147,6 +184,9 @@ export const ArtifactPlanSchema = z.object({
         body: z.string().min(1).max(8000),
         bullets: z.array(z.string().max(500)).max(12).default([]),
         speakerNotes: z.string().max(2000).optional().default(""),
+        requirementIds: z.array(z.string().regex(/^R[1-9][0-9]*$/).max(8)).max(30).default([]),
+        layout: ArtifactLayoutSchema.default("auto"),
+        activity: ArtifactActivitySchema.optional(),
         table: z
           .object({
             title: z.string().max(180),
