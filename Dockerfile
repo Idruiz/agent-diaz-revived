@@ -10,7 +10,7 @@ ENV NODE_ENV=production \
     STORAGE_DIR=/app/storage
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core fonts-liberation2 fonts-crosextra-carlito \
+    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core fonts-liberation2 fonts-crosextra-carlito libreoffice-impress-nogui libreoffice-writer-nogui \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system diaz && useradd --system --gid diaz --home-dir /app diaz
