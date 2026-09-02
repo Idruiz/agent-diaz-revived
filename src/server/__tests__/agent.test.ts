@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import AdmZip from "adm-zip";
 import sharp from "sharp";
 import { openDatabase } from "../db";
 import {
@@ -554,6 +555,8 @@ describe("agent production paths", () => {
   });
 
   it("completes every artifact route through evidence, structure, build, validation, and persistence", async () => {
+    const exactPresentationPrompt =
+      "create a taching presentation slide deck to teach the present tense in french, connect it to french culture and include slides to get the students to practice such as speed dating and 4 corners";
     const kinds = [
       "research",
       "analysis",
@@ -595,13 +598,21 @@ describe("agent production paths", () => {
     });
 
     const planFor = (kind: (typeof kinds)[number]) => {
-      const requirements = [
-        {
-          id: "R1",
-          text: `Create the requested production-ready ${kind} artifact`,
-          mandatory: true,
-        },
-      ];
+      const requirements =
+        kind === "presentation"
+          ? [
+              { id: "R1", text: "Teach the French present tense", mandatory: true },
+              { id: "R2", text: "Connect the lesson to French culture", mandatory: true },
+              { id: "R3", text: "Include Speed Dating student practice", mandatory: true },
+              { id: "R4", text: "Include Four Corners student practice", mandatory: true },
+            ]
+          : [
+              {
+                id: "R1",
+                text: `Create the requested production-ready ${kind} artifact`,
+                mandatory: true,
+              },
+            ];
       const sources = [
         {
           title: "Verified fixture source",
@@ -610,37 +621,113 @@ describe("agent production paths", () => {
       ];
 
       if (kind === "presentation") {
-        const sections = Array.from({ length: 7 }, (_, index) =>
-          makeSection(`Presentation section ${index + 1}`, index, {
-            ...(index < 3
-              ? { imageQuery: `documentary classroom route ${index + 1}` }
-              : {}),
-            ...(index === 3
-              ? {
-                  table: {
-                    title: "Route matrix",
-                    headers: ["Route", "Status"],
-                    rows: [
-                      ["Evidence", "Validated"],
-                      ["Build", "Validated"],
-                    ],
-                  },
-                }
-              : {}),
-            ...(index === 4
-              ? {
-                  diagram: {
-                    title: "Artifact pipeline",
-                    nodes: ["Evidence", "Structure", "Build", "Validate"],
-                    caption: "Every stage is exercised.",
-                  },
-                }
-              : {}),
+        const sections = [
+          makeSection("Aujourd’hui, je parle français", 0, {
+            body:
+              "Le présent aide à parler de soi, de ses habitudes et de ce qui se passe aujourd’hui.",
+            requirementIds: ["R1", "R2"],
+            imageQuery: "Paris cafe French daily life",
           }),
-        );
+          makeSection("Le français, c’est mondial", 1, {
+            body:
+              "French is used across diverse communities, giving the grammar lesson a concrete cultural frame.",
+            requirementIds: ["R1", "R2"],
+            imageQuery: "Francophone community daily life",
+          }),
+          makeSection("Je parle, tu parles, nous parlons", 2, {
+            requirementIds: ["R1"],
+            imageQuery: "French students conversation",
+            table: {
+              title: "Le modèle régulier en -er",
+              headers: ["Sujet", "Terminaison", "parler"],
+              rows: [
+                ["je", "-e", "je parle"],
+                ["tu", "-es", "tu parles"],
+                ["nous", "-ons", "nous parlons"],
+                ["vous", "-ez", "vous parlez"],
+              ],
+            },
+          }),
+          makeSection("Les verbes essentiels", 3, {
+            requirementIds: ["R1"],
+            diagram: {
+              title: "Quatre verbes à forte utilité",
+              nodes: ["être", "avoir", "aller", "faire"],
+              caption: "High-frequency present-tense forms support conversation.",
+            },
+          }),
+          makeSection("Speed Dating en français", 4, {
+            requirementIds: ["R1", "R3"],
+            layout: "speed_dating",
+            activity: {
+              type: "speed_dating",
+              durationMinutes: 15,
+              directions: [
+                "Face one partner.",
+                "Ask and answer at least two questions.",
+                "Rotate when the teacher gives the signal.",
+                "Record one fact about each partner.",
+              ],
+              prompts: [
+                "Comment tu t’appelles ?",
+                "Tu aimes quoi ?",
+                "Tu fais du sport ?",
+                "Tu vas où après l’école ?",
+                "Qu’est-ce que tu fais le week-end ?",
+              ],
+              sentenceFrames: [
+                "Je m’appelle ___.",
+                "J’aime ___ / Je n’aime pas ___.",
+                "Je fais ___.",
+                "Je vais à ___.",
+              ],
+              cornerLabels: [],
+            },
+          }),
+          makeSection("Four Corners : Qu’est-ce que tu préfères ?", 5, {
+            requirementIds: ["R1", "R2", "R4"],
+            layout: "four_corners",
+            activity: {
+              type: "four_corners",
+              durationMinutes: 8,
+              directions: [
+                "Move to the corner matching your choice.",
+                "Prepare one reason with your group.",
+                "Share one complete sentence from each corner.",
+              ],
+              prompts: [
+                "Quel lieu préfères-tu pour passer du temps avec tes amis ?",
+              ],
+              sentenceFrames: [
+                "Je préfère ___ parce que j’aime ___.",
+                "Avec mes amis, je ___.",
+              ],
+              cornerLabels: ["le café", "le marché", "le musée", "le parc"],
+            },
+          }),
+          makeSection("Ticket de sortie : Aujourd’hui, je peux…", 6, {
+            requirementIds: ["R1", "R2"],
+            layout: "exit_ticket",
+            activity: {
+              type: "exit_ticket",
+              durationMinutes: 4,
+              directions: [
+                "Work independently.",
+                "Write three complete true sentences.",
+                "Check the subject and verb ending.",
+              ],
+              prompts: [
+                "Écris trois phrases vraies au présent.",
+                "Pose une question à un camarade.",
+              ],
+              sentenceFrames: [],
+              cornerLabels: [],
+            },
+          }),
+        ];
         return {
-          title: "Presentation route validation",
-          subtitle: "End-to-end production path",
+          title: "Aujourd’hui, je parle français",
+          subtitle: "Le présent : qui je suis, ce que je fais, où je vais",
           requirements,
           sections,
           sources,
@@ -834,7 +921,10 @@ describe("agent production paths", () => {
         const job = db.createJob({
           id: crypto.randomUUID(),
           kind,
-          prompt: `Create the requested production-ready ${kind} artifact`,
+          prompt:
+            kind === "presentation"
+              ? exactPresentationPrompt
+              : `Create the requested production-ready ${kind} artifact`,
           conversationId: conversation.id,
           fileIds,
           ...modelProfileFor("balanced"),
@@ -890,9 +980,66 @@ describe("agent production paths", () => {
         const artifacts = db.listArtifacts(job.id);
         expect(artifacts).toHaveLength(1);
         expect(artifacts[0]!.name.endsWith(expectedExtension[kind])).toBe(true);
-        expect(
-          fs.existsSync(path.join(config.artifactDir, artifacts[0]!.name)),
-        ).toBe(true);
+        const artifactPath = path.join(
+          config.artifactDir,
+          artifacts[0]!.name,
+        );
+        expect(fs.existsSync(artifactPath)).toBe(true);
+        expect(artifacts[0]!.receipt?.buildSha).toBeTruthy();
+        expect(artifacts[0]!.receipt?.artifactSha256).toMatch(/^[a-f0-9]{64}$/);
+        if (kind === "presentation") {
+          expect(artifacts[0]!.receipt).toMatchObject({
+            schemaValidator:
+              "Open XML SDK 3.5.1 (via @xarsh/ooxml-validator 0.3.0)",
+            powerPointDesktopValidated: false,
+            generatorVersion: "pptxgenjs 4.0.1",
+          });
+          expect(artifacts[0]!.receipt?.knownBenignFindings).toHaveLength(1);
+          const zip = new AdmZip(artifactPath);
+          const presentationXml = zip
+            .getEntry("ppt/presentation.xml")!
+            .getData()
+            .toString("utf8");
+          const slideText = zip
+            .getEntries()
+            .filter((entry) =>
+              /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName),
+            )
+            .map((entry) => entry.getData().toString("utf8"))
+            .join("\n");
+          const notesText = zip
+            .getEntries()
+            .filter((entry) =>
+              /^ppt\/notesSlides\/notesSlide\d+\.xml$/.test(entry.entryName),
+            )
+            .flatMap((entry) =>
+              [
+                ...entry
+                  .getData()
+                  .toString("utf8")
+                  .matchAll(/<a:t>([\s\S]*?)<\/a:t>/g),
+              ].map((match) => match[1]),
+            )
+            .join("\n");
+          expect(presentationXml).toMatch(
+            /<\/p:sldIdLst>\s*<p:notesMasterIdLst\b/,
+          );
+          expect(presentationXml).not.toMatch(
+            /<\/p:sldMasterIdLst>\s*<p:notesMasterIdLst\b/,
+          );
+          expect(slideText).toMatch(/Speed Dating/i);
+          expect(slideText).toMatch(/Four Corners/i);
+          expect(slideText).toMatch(/culture|français|French/i);
+          expect(notesText).toContain("[Sources]");
+          expect(notesText).toContain(
+            "https://commons.wikimedia.org/wiki/File:Route_validation.jpg",
+          );
+          expect(
+            zip
+              .getEntries()
+              .filter((entry) => /^ppt\/media\//.test(entry.entryName)).length,
+          ).toBeGreaterThanOrEqual(1);
+        }
         expect(completed?.outputText).toContain(`Completed ${kind} artifact`);
         db.close();
       }
