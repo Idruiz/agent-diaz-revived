@@ -99,7 +99,7 @@ describe("artifact builders", () => {
       expect(out.size).toBeGreaterThan(kind === "website" ? 1500 : 8000);
       expect(path.dirname(out.path)).toBe(config.artifactDir);
     });
-  it("keeps PowerPoint charts and diagrams editable and avoids raster-label failures", async () => {
+  it("uses schema-safe rendered charts while keeping diagrams and text native", async () => {
     const out = await buildArtifact(config, "presentation", plan);
     const zip = new AdmZip(out.path),
       names = zip.getEntries().map((entry) => entry.entryName),
@@ -108,16 +108,8 @@ describe("artifact builders", () => {
         .map((name) => zip.getEntry(name)!.getData().toString("utf8"))
         .join("\n");
     expect(slideNames).toHaveLength(5);
-    expect(
-      names.some(
-        (name) => name.startsWith("ppt/charts/") && name.endsWith(".xml"),
-      ),
-    ).toBe(true);
-    expect(
-      names.filter(
-        (name) => name.startsWith("ppt/media/") && !name.endsWith("/"),
-      ),
-    ).toHaveLength(0);
+    expect(names.some((name) => name.startsWith("ppt/charts/") && name.endsWith(".xml"))).toBe(false);
+    expect(names.some((name) => name.startsWith("ppt/media/") && !name.endsWith("/"))).toBe(true);
     expect(slideText).not.toContain(" / 3");
     expect(slideText.match(/>Sources</g)).toHaveLength(1);
     expect(slideText).toContain("Validated workflow");
