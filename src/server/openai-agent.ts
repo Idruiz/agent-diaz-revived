@@ -983,9 +983,10 @@ export class AgentRunner {
         persistentRetry,
       });
       const mayRetry =
-        !this.config.MCP_SERVER_URL &&
-        (persistentRetry ||
-          (automaticRetries === 1 && isTransientProviderFailure(response)));
+        persistentRetry ||
+        (!this.config.MCP_SERVER_URL &&
+          automaticRetries === 1 &&
+          isTransientProviderFailure(response));
       if (!mayRetry) throw new Error(providerError);
       const delayMs = persistentRetry
         ? Math.min(30_000, 1200 * 2 ** Math.min(automaticRetries - 1, 5))
@@ -1043,8 +1044,13 @@ export class AgentRunner {
         resumingStructure = Boolean(
           isArtifact &&
             existingResponseId &&
-            (job.message.startsWith("Structuring artifact") ||
-              job.message.startsWith("Building and validating artifact") ||
+            ([
+              "Structuring artifact",
+              "Building and validating artifact",
+              "Artifact validation",
+              "Artifact regeneration",
+              "Rebuilding artifact",
+            ].some((prefix) => job.message.startsWith(prefix)) ||
               job.status === "building"),
         );
       if (!existingResponseId)
@@ -1437,11 +1443,15 @@ export class AgentRunner {
         current.status !== "cancelled" &&
         artifactKinds.includes(current.kind)
       ) {
+        const restartEvidencePhase =
+          current.message.startsWith("Gathering evidence") ||
+          (!this.db.getProviderResponseId(jobId) && current.progress < 62);
         this.db.updateJob(jobId, {
           status: "running",
           progress: Math.max(10, Math.min(95, current.progress)),
-          message:
-            "Structuring artifact: unexpected pipeline error; restarting automatically",
+          message: restartEvidencePhase
+            ? "Gathering evidence: unexpected pipeline error; restarting automatically"
+            : "Structuring artifact: unexpected pipeline error; restarting automatically",
           error: null,
         });
         const existing = this.db.raw
