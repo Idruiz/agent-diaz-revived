@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import PptxGenModule from "pptxgenjs";
-import { Document, Packer, Paragraph, HeadingLevel, TextRun, Footer, Header, PageNumber, AlignmentType, Table, TableRow, TableCell, WidthType, ImageRun, ShadingType, BorderStyle, VerticalAlign, TableLayoutType, LevelFormat } from "docx";
+import { Document, Packer, Paragraph, TextRun, Footer, Header, PageNumber, AlignmentType, Table, TableRow, TableCell, WidthType, ImageRun, ShadingType, BorderStyle, VerticalAlign, TableLayoutType, LevelFormat } from "docx";
 import archiver from "archiver";
 import type { ArtifactPlan, JobKind } from "../shared/contracts.js";
 import type { Config } from "./config.js";
@@ -10,7 +10,7 @@ import { atomicWrite, safeJoin } from "./files.js";
 import { chartPng, chartSvg, diagramPng, diagramSvg } from "./visuals.js";
 import { fetchCommonsImage, type RealImage } from "./real-images.js";
 import { log } from "./log.js";
-import { repairPresentationBuffer, validateBuiltArtifact } from "./artifact-quality.js";
+import { repairDocumentBuffer, repairPresentationBuffer, validateBuiltArtifact } from "./artifact-quality.js";
 
 const PptxGenJS=((PptxGenModule as any).default??PptxGenModule) as typeof PptxGenModule;
 
@@ -86,24 +86,10 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile
     slide.addShape(p.ShapeType.roundRect,{x:box.x-.04,y:box.y-.04,w:box.w+.08,h:box.h+.08,rectRadius:.08,fill:{color:white},line:{color:white},shadow:{type:"outer",color:"000000",opacity:.16,blur:2,angle:45,distance:1}});
     slide.addImage({data:imageDataUri(image),x:box.x,y:box.y,w:box.w,h:box.h,sizing:{type:"cover",w:box.w,h:box.h},altText:image.title});
   };
-  const addNativeChart=(slide:any,section:ArtifactPlan["sections"][number])=>{
-    const chart=section.chart!,type=chart.type==="donut"?"doughnut":chart.type;
+  const addRenderedChart=async(slide:any,section:ArtifactPlan["sections"][number])=>{
+    const chart=section.chart!,png=await chartPng(chart);
     slide.addText(short(chart.title,120),{x:.82,y:1.42,w:11.4,h:.36,fontSize:17,bold:true,color:navy,margin:0,fit:"shrink"});
-    slide.addChart(type,chart.series.map(series=>({name:series.name,labels:chart.labels,values:series.values})),{
-      x:.82,y:1.92,w:8.65,h:4.72,
-      chartColors:[gold,blue,"70A37F","C8664F","8067A8"],
-      showLegend:chart.series.length>1||["pie","donut"].includes(chart.type),
-      legendPos:"b",legendFontFace:"Aptos",legendFontSize:11,
-      showValue:true,showPercent:["pie","donut"].includes(chart.type),
-      dataLabelPosition:["pie","donut"].includes(chart.type)?"bestFit":"outEnd",
-      dataLabelColor:navy,dataLabelFontFace:"Aptos",dataLabelFontSize:11,dataLabelFontBold:true,
-      catAxisLabelFontFace:"Aptos",catAxisLabelFontSize:12,catAxisLabelColor:navy,
-      valAxisLabelFontFace:"Aptos",valAxisLabelFontSize:10,valAxisLabelColor:muted,
-      valGridLine:{color:"DCE2E6",size:.7},catAxisLineColor:"BAC4CA",valAxisLineColor:"BAC4CA",
-      chartArea:{fill:{color:bg,transparency:100},border:{color:bg,transparency:100}},
-      plotArea:{fill:{color:white,transparency:100},border:{color:white,transparency:100}},
-      showTitle:false,
-    });
+    slide.addImage({data:`data:image/png;base64,${png.toString("base64")}`,x:.82,y:1.92,w:8.65,h:4.72,altText:chart.title});
     slide.addShape(p.ShapeType.roundRect,{x:9.72,y:2.06,w:2.82,h:2.15,rectRadius:.06,fill:{color:pale},line:{color:pale}});
     slide.addText(short(section.body,260),{x:9.98,y:2.34,w:2.3,h:1.55,fontSize:16,bold:true,color:navy,margin:0,fit:"shrink",valign:"mid"});
     if(chart.sourceNote)slide.addText(short(chart.sourceNote,180),{x:.84,y:6.62,w:8.7,h:.22,fontSize:8,color:muted,margin:0,fit:"shrink"});
@@ -166,7 +152,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile
     addHeading(slide,section.heading,`Part ${String(index+1).padStart(2,"0")}`);
     const image=section.imageQuery?images.get(section.imageQuery):undefined;
     if(section.activity)addActivitySlide(slide,section);
-    else if(section.chart)addNativeChart(slide,section);
+    else if(section.chart)await addRenderedChart(slide,section);
     else if(section.table)addNativeTable(slide,section);
     else if(section.diagram)addNativeDiagram(slide,section);
     else if(image){
@@ -231,7 +217,7 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
   for(const [index,section] of contentSections.entries()){
     const imageStartsPage=index>0&&!!section.imageQuery&&images.has(section.imageQuery);
     children.push(
-      new Paragraph({pageBreakBefore:imageStartsPage,heading:HeadingLevel.HEADING_1,keepNext:true,border:{bottom:{style:BorderStyle.SINGLE,size:8,color:"C99A2E",space:6}},children:[new TextRun({text:section.heading,bold:true,color:"2E74B5",size:32,font:"Calibri"})]}),
+      new Paragraph({pageBreakBefore:imageStartsPage,style:"DiazHeading1",keepNext:true,border:{bottom:{style:BorderStyle.SINGLE,size:8,color:"C99A2E",space:6}},children:[new TextRun({text:section.heading,bold:true,color:"2E74B5",size:32,font:"Calibri"})]}),
       new Paragraph({keepNext:true,children:[new TextRun({text:section.body,size:22,color:"17202A",font:"Calibri"})]}),
     );
     for(const bullet of section.bullets.slice(0,10))children.push(new Paragraph({text:bullet,numbering:{reference:"artifact-bullets",level:0},style:"BodyText"}));
@@ -258,7 +244,7 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     }
   }
   if(plan.sources.length){
-    children.push(new Paragraph({pageBreakBefore:true,heading:HeadingLevel.HEADING_1,children:[new TextRun({text:"Sources",bold:true,color:"17324D",size:34})]}));
+    children.push(new Paragraph({pageBreakBefore:true,style:"DiazHeading1",children:[new TextRun({text:"Sources",bold:true,color:"17324D",size:34})]}));
     plan.sources.forEach((source,index)=>children.push(new Paragraph({spacing:{after:110},indent:{left:360,hanging:360},children:[new TextRun({text:`${index+1}. ${source.title}. `,bold:true,size:17,color:"17324D"}),new TextRun({text:source.url,size:16,color:"2F739C"})]})));
   }
   const d=new Document({
@@ -266,15 +252,18 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     styles:{
       default:{document:{run:{font:"Calibri",size:22,color:"17202A"},paragraph:{spacing:{after:120,line:264}}}},
       paragraphStyles:[
-        {id:"Heading1",name:"Heading 1",basedOn:"Normal",next:"Normal",quickFormat:true,run:{font:"Calibri",size:32,bold:true,color:"2E74B5"},paragraph:{spacing:{before:320,after:160},outlineLevel:0,keepNext:true}},
-        {id:"Heading2",name:"Heading 2",basedOn:"Normal",next:"Normal",quickFormat:true,run:{font:"Calibri",size:26,bold:true,color:"2E74B5"},paragraph:{spacing:{before:240,after:120},outlineLevel:1,keepNext:true}},
+        {id:"DiazHeading1",name:"Diaz Heading 1",basedOn:"Normal",next:"Normal",quickFormat:true,run:{font:"Calibri",size:32,bold:true,color:"2E74B5"},paragraph:{spacing:{before:320,after:160},outlineLevel:0,keepNext:true}},
         {id:"BodyText",name:"Body Text",basedOn:"Normal",quickFormat:true,run:{font:"Calibri",size:22,color:"17202A"},paragraph:{spacing:{after:160,line:280}}},
       ],
     },
     numbering:{config:[{reference:"artifact-bullets",levels:[{level:0,format:LevelFormat.BULLET,text:"•",alignment:AlignmentType.LEFT,style:{paragraph:{indent:{left:720,hanging:360},spacing:{after:160,line:280}},run:{font:"Calibri",size:22,color:"17202A"}}}]}]},
     sections:[{properties:{titlePage:true,page:{margin:{top:1440,right:1440,bottom:1440,left:1440,header:708,footer:708}}},headers:{first:new Header({children:[new Paragraph("")]}),default:new Header({children:[new Paragraph({border:{bottom:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:short(plan.title,85),bold:true,size:16,color:"5A6772",font:"Calibri"})]})]})},footers:{first:new Footer({children:[new Paragraph("")]}),default:new Footer({children:[new Paragraph({border:{top:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:"AGENT DÍAZ  ·  ",bold:true,size:14,color:"C99A2E",font:"Calibri"}),new TextRun({children:[PageNumber.CURRENT],size:14,color:"5A6772",font:"Calibri"})],alignment:AlignmentType.RIGHT})]})},children}],
   });
-  const buf=await Packer.toBuffer(d); if(buf.length<3000)throw new Error("DOCX validation failed: output too small"); const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);
+  const raw=await Packer.toBuffer(d); if(raw.length<3000)throw new Error("DOCX validation failed: output too small");
+  const repaired=repairDocumentBuffer(raw),buf=repaired.buffer;
+  const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);
+  log("info","artifact.document_ooxml_repaired",{name,drawingIdsReassigned:repaired.stats.drawingIdsReassigned});
+  atomicWrite(target,buf);
   await validateBuiltArtifact(kind,prompt,plan,target);
   return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length};
 }
