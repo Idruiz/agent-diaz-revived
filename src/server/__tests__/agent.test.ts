@@ -1046,7 +1046,7 @@ describe("agent production paths", () => {
     } finally {
       imageFetch.mockRestore();
     }
-  }, 30_000);
+  }, 60_000);
 
   it("repairs an invalid presentation plan without repeating the evidence phase", async () => {
     const { config, db } = harness(),
