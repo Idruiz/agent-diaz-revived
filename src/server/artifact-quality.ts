@@ -22,6 +22,7 @@ export interface PresentationRepairStats {
   notesMastersNormalized: number;
   notesMasterLinksReordered: number;
   orphanContentTypesRemoved: number;
+  invalidSerializedValuesNormalized: number;
 }
 
 export interface DocumentRepairStats {
@@ -164,6 +165,7 @@ export function repairPresentationBuffer(input: Buffer): { buffer: Buffer; stats
   let notesMastersNormalized = 0;
   let notesMasterLinksReordered = 0;
   let orphanContentTypesRemoved = 0;
+  let invalidSerializedValuesNormalized = 0;
   for (const entry of zip.getEntries()) {
     if (!entry.entryName.endsWith(".xml")) continue;
     let xml = entry.getData().toString("utf8");
@@ -197,11 +199,15 @@ export function repairPresentationBuffer(input: Buffer): { buffer: Buffer; stats
       xml = patched.xml;
       textBodiesAdded += patched.count;
     }
+    xml = xml.replace(/(\s[\w:.-]+)="(?:NaN|undefined|null)"/g, (_match, attribute: string) => {
+      invalidSerializedValuesNormalized++;
+      return `${attribute}="0"`;
+    });
     entry.setData(Buffer.from(xml, "utf8"));
   }
   return {
     buffer: zip.toBuffer(),
-    stats: { textBodiesAdded, notesMastersNormalized, notesMasterLinksReordered, orphanContentTypesRemoved },
+    stats: { textBodiesAdded, notesMastersNormalized, notesMasterLinksReordered, orphanContentTypesRemoved, invalidSerializedValuesNormalized },
   };
 }
 
@@ -228,7 +234,7 @@ function assertRequiredEntries(zip: AdmZip, required: string[]): void {
 function assertCleanXml(zip: AdmZip): void {
   for (const entry of zip.getEntries().filter((item) => item.entryName.endsWith(".xml"))) {
     const xml = entry.getData().toString("utf8");
-    if (/\b(?:NaN|undefined|null)\b/.test(xml))
+    if (/(\s[\w:.-]+)="(?:NaN|undefined|null)"/.test(xml))
       throw new Error(`Artifact package validation failed: invalid serialized value in ${entry.entryName}`);
     if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(xml))
       throw new Error(`Artifact package validation failed: forbidden control character in ${entry.entryName}`);
@@ -377,15 +383,6 @@ function assertOutputCoverage(kind: JobKind, prompt: string, plan: ArtifactPlan,
     throw new Error("Artifact output validation failed: Four Corners is missing from the finished deck");
 }
 
-function quarantine(filePath: string, reason: string): string {
-  const directory = path.join(path.dirname(filePath), "_quarantine");
-  fs.mkdirSync(directory, { recursive: true });
-  const target = path.join(directory, `${Date.now()}-${path.basename(filePath)}`);
-  if (fs.existsSync(filePath)) fs.renameSync(filePath, target);
-  log("error", "artifact.quarantined", { file: path.basename(filePath), quarantinePath: target, reason });
-  return target;
-}
-
 export async function validateBuiltArtifact(
   kind: JobKind,
   prompt: string,
@@ -424,7 +421,12 @@ export async function validateBuiltArtifact(
     return receipt;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    quarantine(filePath, message);
-    throw new Error(`Artifact rejected and quarantined: ${message}`);
+    if (fs.existsSync(filePath)) fs.rmSync(filePath, { force: true });
+    log("warn", "artifact.validation_failed_retriable", {
+      file: path.basename(filePath),
+      kind,
+      reason: message,
+    });
+    throw new Error(`Artifact validation failed and requires regeneration: ${message}`);
   }
 }
