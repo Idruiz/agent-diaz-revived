@@ -338,9 +338,7 @@ describe("artifact quality gates", () => {
       "utf8",
     );
     expect(buildersSource).not.toContain("repairPresentationBuffer");
-    expect(qualitySource).not.toMatch(
-      /ppt\/presentation\.xml[\s\S]{0,1200}\.replace\(/,
-    );
+    expect(qualitySource).not.toContain("presentationXml.replace(");
     expect(qualitySource).not.toContain("notesMasterLinksReordered");
   });
 
