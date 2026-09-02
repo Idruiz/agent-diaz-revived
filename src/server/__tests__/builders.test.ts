@@ -33,12 +33,15 @@ fs.mkdirSync(config.artifactDir, { recursive: true });
 const plan = {
   title: "Validation artifact",
   subtitle: "Builder smoke test",
+  requirements: [{ id: "R1", text: "Build a validated visual artifact", mandatory: true }],
   sections: [
     {
       heading: "Evidence chart",
       body: "This section visualizes executed values.",
       bullets: ["One verified point", "A second verified point"],
       speakerNotes: "Presenter note",
+      requirementIds: ["R1"],
+      layout: "data" as const,
       chart: {
         title: "Quarterly result",
         type: "bar" as const,
@@ -53,6 +56,8 @@ const plan = {
       body: "The same evidence is available as an exact table.",
       bullets: [],
       speakerNotes: "",
+      requirementIds: ["R1"],
+      layout: "data" as const,
       table: {
         title: "Exact results",
         headers: ["Period", "Score"],
@@ -68,6 +73,8 @@ const plan = {
       body: "The workflow is made explicit.",
       bullets: [],
       speakerNotes: "",
+      requirementIds: ["R1"],
+      layout: "process" as const,
       diagram: {
         title: "Validated workflow",
         nodes: ["Evidence", "Analysis", "Artifact"],
