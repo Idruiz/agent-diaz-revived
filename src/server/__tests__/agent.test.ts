@@ -656,7 +656,13 @@ describe("agent production paths", () => {
               caption: "High-frequency present-tense forms support conversation.",
             },
           }),
-          makeSection("Speed Dating en français", 4, {
+          makeSection("Au marché : on choisit et on parle", 4, {
+            body:
+              "A French market context gives students another concrete setting for present-tense communication.",
+            requirementIds: ["R1", "R2"],
+            imageQuery: "French market conversation",
+          }),
+          makeSection("Speed Dating en français", 5, {
             requirementIds: ["R1", "R3"],
             layout: "speed_dating",
             activity: {
@@ -684,7 +690,7 @@ describe("agent production paths", () => {
               cornerLabels: [],
             },
           }),
-          makeSection("Four Corners : Qu’est-ce que tu préfères ?", 5, {
+          makeSection("Four Corners : Qu’est-ce que tu préfères ?", 6, {
             requirementIds: ["R1", "R2", "R4"],
             layout: "four_corners",
             activity: {
@@ -705,7 +711,7 @@ describe("agent production paths", () => {
               cornerLabels: ["le café", "le marché", "le musée", "le parc"],
             },
           }),
-          makeSection("Ticket de sortie : Aujourd’hui, je peux…", 6, {
+          makeSection("Ticket de sortie : Aujourd’hui, je peux…", 7, {
             requirementIds: ["R1", "R2"],
             layout: "exit_ticket",
             activity: {
