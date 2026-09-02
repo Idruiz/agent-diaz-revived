@@ -14,28 +14,75 @@ const SPEED_DATING_RE = /speed[\s-]*dating/i;
 const FOUR_CORNERS_RE = /(?:four|4)[\s-]*corners/i;
 const TEACHING_RE = /\b(?:teach|teaching|lesson|students?|classroom|practice)\b/i;
 const CULTURE_RE = /\b(?:culture|cultural|francophone|France|French society|French-speaking)\b/i;
-const XML_TEXT_BODY = '<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang="en-US"/></a:p></p:txBody>';
-const MINIMAL_NOTES_SP_TREE = '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree>';
-
-export interface PresentationRepairStats {
-  textBodiesAdded: number;
-  notesMastersNormalized: number;
-  notesMasterLinksReordered: number;
-  orphanContentTypesRemoved: number;
-  invalidSerializedValuesNormalized: number;
-}
+const SCHEMA_VALIDATOR = "Open XML SDK 3.5.1 (via @xarsh/ooxml-validator 0.3.0)";
+const PPTX_GENERATOR = "pptxgenjs 4.0.1";
+const DOCX_GENERATOR = "docx 9.5.1";
+const PPTX_NOTES_MASTER_INCIDENT = "2026-09-02 PowerPoint notesMasterIdLst ordering incident";
+const KNOWN_BENIGN_NOTES_MASTER_FINDING = {
+  id: "Sch_UnexpectedElementContentExpectingComplex",
+  path: "/ppt/presentation.xml",
+  xPath: "/p:presentation[1]",
+  descriptionIncludes: "notesMasterIdLst",
+} as const;
 
 export interface DocumentRepairStats {
   drawingIdsReassigned: number;
 }
 
+export interface ArtifactValidationFinding {
+  id?: string;
+  path?: string;
+  xPath?: string;
+  description?: string;
+  errorType?: string;
+  reason: string;
+  incident: string;
+}
+
 export interface ArtifactValidationReceipt {
   kind: JobKind;
-  sha256: string;
+  artifactSha256: string;
   bytes: number;
   requirements: number;
-  rendered: boolean;
-  validator: string;
+  schemaValidator: string | null;
+  renderValidator: string | null;
+  powerPointDesktopValidated: boolean;
+  buildSha: string;
+  generatorVersion: string;
+  knownBenignFindings: ArtifactValidationFinding[];
+}
+
+function currentBuildSha(): string {
+  return (
+    process.env.RENDER_GIT_COMMIT?.trim() ||
+    process.env.GITHUB_SHA?.trim() ||
+    "unknown"
+  );
+}
+
+function isKnownBenignFinding(error: any): boolean {
+  const xPath = error?.xPath ?? error?.xpath;
+  return (
+    error?.id === KNOWN_BENIGN_NOTES_MASTER_FINDING.id &&
+    error?.path === KNOWN_BENIGN_NOTES_MASTER_FINDING.path &&
+    xPath === KNOWN_BENIGN_NOTES_MASTER_FINDING.xPath &&
+    String(error?.description ?? "").includes(
+      KNOWN_BENIGN_NOTES_MASTER_FINDING.descriptionIncludes,
+    )
+  );
+}
+
+function benignFindingReceipt(error: any): ArtifactValidationFinding {
+  return {
+    id: error?.id,
+    path: error?.path,
+    xPath: error?.xPath ?? error?.xpath,
+    description: error?.description,
+    errorType: error?.errorType,
+    reason:
+      "Raw PptxGenJS notesMasterIdLst ordering is accepted by PowerPoint Desktop; reordering it caused PowerPoint to reject the artifact.",
+    incident: PPTX_NOTES_MASTER_INCIDENT,
+  };
 }
 
 function allPlanText(plan: ArtifactPlan): string {
@@ -148,69 +195,6 @@ export function assertArtifactPlanQuality(kind: JobKind, prompt: string, plan: A
   }
 }
 
-function patchTextlessShapes(xml: string): { xml: string; count: number } {
-  let count = 0;
-  const patched = xml.replace(/<p:sp(?=[\s>])[\s\S]*?<\/p:sp>/g, (shape) => {
-    if (shape.includes("<p:txBody")) return shape;
-    count++;
-    return shape.replace("</p:sp>", `${XML_TEXT_BODY}</p:sp>`);
-  });
-  return { xml: patched, count };
-}
-
-export function repairPresentationBuffer(input: Buffer): { buffer: Buffer; stats: PresentationRepairStats } {
-  const zip = new AdmZip(input);
-  const packageEntries = new Set(zip.getEntries().map((entry) => entry.entryName));
-  let textBodiesAdded = 0;
-  let notesMastersNormalized = 0;
-  let notesMasterLinksReordered = 0;
-  let orphanContentTypesRemoved = 0;
-  let invalidSerializedValuesNormalized = 0;
-  for (const entry of zip.getEntries()) {
-    if (!entry.entryName.endsWith(".xml")) continue;
-    let xml = entry.getData().toString("utf8");
-    if (entry.entryName === "[Content_Types].xml") {
-      xml = xml.replace(/<Override\b[^>]*\bPartName="\/([^"]+)"[^>]*\/>/g, (override, partName: string) => {
-        if (packageEntries.has(partName)) return override;
-        orphanContentTypesRemoved++;
-        return "";
-      });
-    }
-    if (entry.entryName === "ppt/presentation.xml") {
-      const notesMasterList = xml.match(/<p:notesMasterIdLst>[\s\S]*?<\/p:notesMasterIdLst>/)?.[0];
-      if (notesMasterList) {
-        const withoutList = xml.replace(notesMasterList, "");
-        const reordered = withoutList.replace(/(?=<p:sldIdLst\b)/, notesMasterList);
-        if (reordered !== xml) {
-          xml = reordered;
-          notesMasterLinksReordered++;
-        }
-      }
-    }
-    if (/^ppt\/notesMasters\/notesMaster\d+\.xml$/.test(entry.entryName)) {
-      const normalized = xml.replace(/<p:spTree>[\s\S]*?<\/p:spTree>/, MINIMAL_NOTES_SP_TREE);
-      if (normalized !== xml) {
-        xml = normalized;
-        notesMastersNormalized++;
-      }
-    }
-    if (/^ppt\/(?:slides|slideLayouts|slideMasters)\//.test(entry.entryName)) {
-      const patched = patchTextlessShapes(xml);
-      xml = patched.xml;
-      textBodiesAdded += patched.count;
-    }
-    xml = xml.replace(/(\s[\w:.-]+)="(?:NaN|undefined|null)"/g, (_match, attribute: string) => {
-      invalidSerializedValuesNormalized++;
-      return `${attribute}="0"`;
-    });
-    entry.setData(Buffer.from(xml, "utf8"));
-  }
-  return {
-    buffer: zip.toBuffer(),
-    stats: { textBodiesAdded, notesMastersNormalized, notesMasterLinksReordered, orphanContentTypesRemoved, invalidSerializedValuesNormalized },
-  };
-}
-
 export function repairDocumentBuffer(input: Buffer): { buffer: Buffer; stats: DocumentRepairStats } {
   const zip = new AdmZip(input);
   const document = zip.getEntry("word/document.xml");
@@ -253,16 +237,23 @@ export function assertPresentationPackage(buffer: Buffer): void {
   const slides = zip.getEntries().filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName));
   if (slides.length < 2)
     throw new Error("Presentation package validation failed: fewer than two slides");
-  for (const entry of zip.getEntries().filter((item) => /^ppt\/(?:slides|slideLayouts|slideMasters)\/.*\.xml$/.test(item.entryName))) {
-    const xml = entry.getData().toString("utf8");
-    for (const match of xml.matchAll(/<p:sp(?=[\s>])[\s\S]*?<\/p:sp>/g))
-      if (!match[0].includes("<p:txBody"))
-        throw new Error(`Presentation package validation failed: textless shape remains in ${entry.entryName}`);
-  }
-  for (const entry of zip.getEntries().filter((item) => /^ppt\/notesMasters\/notesMaster\d+\.xml$/.test(item.entryName))) {
-    const xml = entry.getData().toString("utf8");
-    if (/<p:sp(?=[\s>])/.test(xml))
-      throw new Error(`Presentation package validation failed: invalid notes-master placeholder remains in ${entry.entryName}`);
+
+  const presentationXml = zip
+    .getEntry("ppt/presentation.xml")!
+    .getData()
+    .toString("utf8");
+  const hasNotes = zip.getEntries().some((entry) =>
+    /^ppt\/notesSlides\/notesSlide\d+\.xml$/.test(entry.entryName),
+  );
+  if (hasNotes) {
+    if (/<\/p:sldMasterIdLst>\s*<p:notesMasterIdLst\b/.test(presentationXml))
+      throw new Error(
+        "Presentation package validation failed: notesMasterIdLst was moved before sldIdLst; PowerPoint Desktop rejects this proven-bad form",
+      );
+    if (!/<\/p:sldIdLst>\s*<p:notesMasterIdLst\b/.test(presentationXml))
+      throw new Error(
+        "Presentation package validation failed: notesMasterIdLst is not in the proven PowerPoint-compatible native PptxGenJS position after sldIdLst",
+      );
   }
 }
 
@@ -342,15 +333,16 @@ async function runProcess(command: string, args: string[], timeoutMs: number): P
   });
 }
 
-async function renderOfficeArtifact(filePath: string): Promise<boolean> {
+async function renderOfficeArtifact(filePath: string): Promise<string | null> {
   const command = process.env.SOFFICE_PATH?.trim() || "soffice";
   const probe = await runProcess(command, ["--version"], 15_000).catch(() => null);
   if (!probe || probe.code !== 0) {
     if (process.env.NODE_ENV === "production")
       throw new Error("Artifact render validation failed: LibreOffice is unavailable in production");
     log("warn", "artifact.render_skipped", { filePath: path.basename(filePath), reason: "soffice unavailable outside production" });
-    return false;
+    return null;
   }
+  const version = (probe.stdout || probe.stderr).trim().split(/\r?\n/)[0] || "LibreOffice";
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-render-"));
   try {
     const profileUrl = pathToFileURL(path.join(tempDir, "profile")).href;
@@ -363,7 +355,7 @@ async function renderOfficeArtifact(filePath: string): Promise<boolean> {
     const pdf = fs.readFileSync(pdfPath);
     if (pdf.length < 5_000 || pdf.subarray(0, 5).toString("ascii") !== "%PDF-")
       throw new Error("LibreOffice render failed: output PDF is invalid or unexpectedly small");
-    return true;
+    return version;
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -395,27 +387,49 @@ export async function validateBuiltArtifact(
     else if (["document", "analysis", "research"].includes(kind)) assertDocumentPackage(buffer);
     else if (kind === "website") assertWebsitePackage(filePath);
 
-    let validator = "deterministic-package";
-    let rendered = false;
+    let schemaValidator: string | null = null;
+    let renderValidator: string | null = null;
+    const knownBenignFindings: ArtifactValidationFinding[] = [];
     if (kind === "presentation" || ["document", "analysis", "research"].includes(kind)) {
       const validation = await validateFile(filePath, { officeVersion: "Microsoft365" });
-      if (!validation.ok) {
-        const detail = validation.errors.slice(0, 8).map((error) => `${error.path ?? "package"}: ${error.description ?? error.id ?? "schema error"}`).join("; ");
-        throw new Error(`Microsoft 365 OOXML validation failed: ${detail || "unknown schema error"}`);
+      schemaValidator = SCHEMA_VALIDATOR;
+      const blockingErrors = [];
+      for (const error of validation.errors ?? []) {
+        if (kind === "presentation" && isKnownBenignFinding(error))
+          knownBenignFindings.push(benignFindingReceipt(error));
+        else blockingErrors.push(error);
       }
-      validator = "Microsoft Open XML SDK / Microsoft365";
-      rendered = await renderOfficeArtifact(filePath);
+      if (blockingErrors.length) {
+        const detail = blockingErrors
+          .map((error: any) =>
+            `${error.path ?? "package"}: ${error.description ?? error.id ?? "schema error"}`,
+          )
+          .join("; ");
+        throw new Error(
+          `Microsoft 365 OOXML validation failed: ${detail || "unknown schema error"}`,
+        );
+      }
+      renderValidator = await renderOfficeArtifact(filePath);
     }
 
     const visibleText = packageVisibleText(kind, filePath);
     assertOutputCoverage(kind, prompt, plan, visibleText);
     const receipt: ArtifactValidationReceipt = {
       kind,
-      sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+      artifactSha256: crypto.createHash("sha256").update(buffer).digest("hex"),
       bytes: buffer.length,
       requirements: plan.requirements?.length ?? 0,
-      rendered,
-      validator,
+      schemaValidator,
+      renderValidator,
+      powerPointDesktopValidated: false,
+      buildSha: currentBuildSha(),
+      generatorVersion:
+        kind === "presentation"
+          ? PPTX_GENERATOR
+          : ["document", "analysis", "research"].includes(kind)
+            ? DOCX_GENERATOR
+            : "Agent Díaz deterministic HTML ZIP",
+      knownBenignFindings,
     };
     log("info", "artifact.quality_passed", { ...receipt });
     return receipt;
