@@ -1,3 +1,13 @@
+FROM node:22-bookworm-slim AS regression
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core fonts-liberation2 fonts-crosextra-carlito libreoffice-impress-nogui libreoffice-writer-nogui \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
