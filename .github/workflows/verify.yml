@@ -44,10 +44,12 @@ jobs:
               -t "completes every artifact route through evidence, structure, build, validation, and persistence"
       - name: Build production container
         run: docker build --tag agent-diaz-verify:${{ github.sha }} .
-      - name: Preserve exact-prompt regression artifact
+      - name: Preserve exact-prompt regression artifacts
         uses: actions/upload-artifact@v4
         with:
           name: french-present-tense-regression
-          path: test-results/french-present-tense-regression.pptx
+          path: |
+            test-results/french-present-tense-regression.pptx
+            test-results/agent-runner-french-present-tense-regression.pptx
           if-no-files-found: error
           retention-days: 7
