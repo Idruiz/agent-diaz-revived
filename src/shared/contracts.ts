@@ -176,7 +176,7 @@ export const ArtifactLayoutSchema = z.enum([
 export const ArtifactPlanSchema = z.object({
   title: z.string().min(1).max(160),
   subtitle: z.string().max(240).optional().default(""),
-  requirements: z.array(ArtifactRequirementSchema).min(1).max(30).default([{ id: "R1", text: "Deliver the requested artifact", mandatory: true }]),
+  requirements: z.array(ArtifactRequirementSchema).min(1).max(30).default([{ id: "R1", text: "Deliver the requested artifact", mandatory: false }]),
   sections: z
     .array(
       z.object({
