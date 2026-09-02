@@ -92,12 +92,19 @@ function assertActivityQuality(section: ArtifactPlan["sections"][number]): void 
 }
 
 export function assertArtifactPlanQuality(kind: JobKind, prompt: string, plan: ArtifactPlan): void {
+  const requirements = plan.requirements ?? [];
+  if (prompt.trim() && (
+    requirements.length === 0 ||
+    requirements.every((item) => !item.mandatory) ||
+    requirements.some((item) => /^deliver the requested artifact$/i.test(item.text.trim()))
+  ))
+    throw new Error("Artifact quality validation failed: prompt-specific mandatory requirements were not extracted");
   const serialized = allPlanText(plan);
   if (PLACEHOLDER_RE.test(serialized))
     throw new Error("Artifact quality validation failed: unfinished placeholder language is present");
 
   const ids = new Set<string>();
-  for (const requirement of plan.requirements ?? []) {
+  for (const requirement of requirements) {
     if (ids.has(requirement.id))
       throw new Error(`Artifact quality validation failed: duplicate requirement id ${requirement.id}`);
     ids.add(requirement.id);
@@ -108,7 +115,7 @@ export function assertArtifactPlanQuality(kind: JobKind, prompt: string, plan: A
         throw new Error(`Artifact quality validation failed: section '${section.heading}' references unknown requirement ${id}`);
     assertActivityQuality(section);
   }
-  for (const requirement of (plan.requirements ?? []).filter((item) => item.mandatory)) {
+  for (const requirement of requirements.filter((item) => item.mandatory)) {
     const covered = plan.sections.some((section) => (section.requirementIds ?? []).includes(requirement.id));
     if (!covered)
       throw new Error(`Artifact quality validation failed: mandatory requirement ${requirement.id} is not covered: ${requirement.text}`);
