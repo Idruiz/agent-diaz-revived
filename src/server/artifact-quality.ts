@@ -368,7 +368,7 @@ export async function validateBuiltArtifact(
       rendered,
       validator,
     };
-    log("info", "artifact.quality_passed", receipt);
+    log("info", "artifact.quality_passed", { ...receipt });
     return receipt;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
