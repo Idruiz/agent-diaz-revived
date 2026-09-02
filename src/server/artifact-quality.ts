@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import AdmZip from "adm-zip";
 import { validateFile } from "@xarsh/ooxml-validator";
@@ -339,7 +340,8 @@ async function renderOfficeArtifact(filePath: string): Promise<boolean> {
   }
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-render-"));
   try {
-    const result = await runProcess(command, ["--headless", "--convert-to", "pdf", "--outdir", tempDir, filePath], 90_000);
+    const profileUrl = pathToFileURL(path.join(tempDir, "profile")).href;
+    const result = await runProcess(command, [`-env:UserInstallation=${profileUrl}`, "--headless", "--convert-to", "pdf", "--outdir", tempDir, filePath], 90_000);
     if (result.code !== 0)
       throw new Error(`LibreOffice render failed: ${result.stderr || result.stdout}`);
     const pdfPath = path.join(tempDir, `${path.parse(filePath).name}.pdf`);
