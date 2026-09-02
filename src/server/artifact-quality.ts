@@ -364,7 +364,7 @@ export async function validateBuiltArtifact(
       kind,
       sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
       bytes: buffer.length,
-      requirements: plan.requirements.length,
+      requirements: plan.requirements?.length ?? 0,
       rendered,
       validator,
     };
