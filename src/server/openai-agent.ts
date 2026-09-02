@@ -950,6 +950,7 @@ export class AgentRunner {
     createFreshResponse: () => Promise<any>,
     progressCap: number,
     progressLabel: string,
+    persistentRetry = false,
   ): Promise<any | null> {
     let response = initialResponse,
       responseId = response.id as string,
@@ -970,6 +971,7 @@ export class AgentRunner {
       if (this.captureApproval(jobId, response)) return null;
       if (response.status === "completed") return response;
       const providerError = providerFailureMessage(response);
+      automaticRetries++;
       log("error", "provider.response_failed", {
         jobId,
         responseId: response.id,
@@ -977,28 +979,35 @@ export class AgentRunner {
         code: response?.error?.code,
         error: response?.error?.message,
         phase: progressLabel,
+        automaticRetries,
+        persistentRetry,
       });
-      if (
-        automaticRetries === 0 &&
+      const mayRetry =
         !this.config.MCP_SERVER_URL &&
-        isTransientProviderFailure(response)
-      ) {
-        automaticRetries++;
-        this.db.updateJob(jobId, {
-          message: `${progressLabel} failed transiently; retrying once`,
-        });
-        await sleep(
-          response?.error?.code === "rate_limit_exceeded" ? 5000 : 1200,
-        );
-        response = await createFreshResponse();
-        responseId = response.id;
-        this.db.updateJob(jobId, {
-          providerResponseId: responseId,
-          message: `${progressLabel} restarted`,
-        });
-        continue;
-      }
-      throw new Error(providerError);
+        (persistentRetry ||
+          (automaticRetries === 1 && isTransientProviderFailure(response)));
+      if (!mayRetry) throw new Error(providerError);
+      const delayMs = persistentRetry
+        ? Math.min(30_000, 1200 * 2 ** Math.min(automaticRetries - 1, 5))
+        : response?.error?.code === "rate_limit_exceeded"
+          ? 5000
+          : 1200;
+      this.db.updateJob(jobId, {
+        status: "running",
+        error: null,
+        message: persistentRetry
+          ? `${progressLabel} hit an error; retrying automatically (attempt ${automaticRetries + 1})`
+          : `${progressLabel} failed transiently; retrying once`,
+      });
+      await sleep(delayMs);
+      if (this.db.getJob(jobId)?.status === "cancelled") return null;
+      response = await createFreshResponse();
+      responseId = response.id;
+      this.db.updateJob(jobId, {
+        providerResponseId: responseId,
+        error: null,
+        message: `${progressLabel} restarted`,
+      });
     }
   }
 
@@ -1148,6 +1157,7 @@ export class AgentRunner {
             createEvidenceResponse,
             58,
             "Gathering evidence",
+            true,
           );
           if (!evidenceResponse) return;
           const evidence = evidenceResponse.output_text?.trim() || "";
@@ -1182,6 +1192,7 @@ export class AgentRunner {
             } as any),
           79,
           "Structuring artifact",
+          true,
         );
         if (!structureResponse) return;
         response = structureResponse;
@@ -1230,6 +1241,7 @@ export class AgentRunner {
                 ),
               89,
               "Structuring artifact: repair",
+              true,
             );
             if (!repairResponse) return;
             response = repairResponse;
