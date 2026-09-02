@@ -499,6 +499,352 @@ describe("agent production paths", () => {
     db.close();
   });
 
+  it("completes every artifact route through evidence, structure, build, validation, and persistence", async () => {
+    const kinds = [
+      "research",
+      "analysis",
+      "presentation",
+      "document",
+      "website",
+    ] as const;
+    const expectedTool = {
+      research: "web_search",
+      analysis: "code_interpreter",
+      presentation: "web_search",
+      document: "web_search",
+      website: "web_search",
+    } as const;
+    const expectedExtension = {
+      research: ".docx",
+      analysis: ".docx",
+      presentation: ".pptx",
+      document: ".docx",
+      website: ".zip",
+    } as const;
+
+    const makeSection = (
+      heading: string,
+      index: number,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      heading,
+      body:
+        `Finished audience-facing content for ${heading}. This section contains enough concrete explanatory material to survive output coverage validation and remain useful in the finished artifact.`,
+      bullets: [
+        `Verified point ${index + 1}A with complete explanatory context.`,
+        `Verified point ${index + 1}B with complete explanatory context.`,
+      ],
+      speakerNotes: `Explain ${heading} with the evidence in this section.`,
+      requirementIds: ["R1"],
+      layout: "standard",
+      ...extra,
+    });
+
+    const planFor = (kind: (typeof kinds)[number]) => {
+      const requirements = [
+        {
+          id: "R1",
+          text: `Create the requested production-ready ${kind} artifact`,
+          mandatory: true,
+        },
+      ];
+      const sources = [
+        {
+          title: "Verified fixture source",
+          url: "https://example.com/verified-source",
+        },
+      ];
+
+      if (kind === "presentation") {
+        const sections = Array.from({ length: 7 }, (_, index) =>
+          makeSection(`Presentation section ${index + 1}`, index, {
+            ...(index < 3
+              ? { imageQuery: `documentary classroom route ${index + 1}` }
+              : {}),
+            ...(index === 3
+              ? {
+                  table: {
+                    title: "Route matrix",
+                    headers: ["Route", "Status"],
+                    rows: [
+                      ["Evidence", "Validated"],
+                      ["Build", "Validated"],
+                    ],
+                  },
+                }
+              : {}),
+            ...(index === 4
+              ? {
+                  diagram: {
+                    title: "Artifact pipeline",
+                    nodes: ["Evidence", "Structure", "Build", "Validate"],
+                    caption: "Every stage is exercised.",
+                  },
+                }
+              : {}),
+          }),
+        );
+        return {
+          title: "Presentation route validation",
+          subtitle: "End-to-end production path",
+          requirements,
+          sections,
+          sources,
+        };
+      }
+
+      if (kind === "website") {
+        const sections = Array.from({ length: 4 }, (_, index) =>
+          makeSection(`Website section ${index + 1}`, index, {
+            imageQuery: `documentary website route ${index + 1}`,
+          }),
+        );
+        return {
+          title: "Website route validation",
+          subtitle: "End-to-end production path",
+          requirements,
+          sections,
+          pages: [
+            {
+              slug: "index",
+              title: "Home",
+              description: "Primary route validation page",
+              sectionHeadings: ["Website section 1", "Website section 2"],
+            },
+            {
+              slug: "details",
+              title: "Details",
+              description: "Supporting route validation page",
+              sectionHeadings: ["Website section 3"],
+            },
+            {
+              slug: "resources",
+              title: "Resources",
+              description: "Final route validation page",
+              sectionHeadings: ["Website section 4"],
+            },
+          ],
+          sources,
+        };
+      }
+
+      if (kind === "analysis") {
+        return {
+          title: "Analysis route validation",
+          subtitle: "Executed-data production path",
+          requirements,
+          sections: [
+            makeSection("Method", 0),
+            makeSection("Executed findings", 1, {
+              chart: {
+                title: "Executed values",
+                type: "bar",
+                labels: ["A", "B", "C"],
+                series: [{ name: "Score", values: [10, 20, 30] }],
+                unit: "points",
+                sourceNote: "Executed fixture analysis",
+              },
+            }),
+            makeSection("Exact results", 2, {
+              table: {
+                title: "Executed result table",
+                headers: ["Item", "Score"],
+                rows: [
+                  ["A", "10"],
+                  ["B", "20"],
+                  ["C", "30"],
+                ],
+              },
+            }),
+            makeSection("Limitations", 3),
+            makeSection("Conclusion", 4),
+          ],
+          sources,
+        };
+      }
+
+      return {
+        title:
+          kind === "research"
+            ? "Research route validation"
+            : "Document route validation",
+        subtitle: "End-to-end production path",
+        requirements,
+        sections: [
+          makeSection("Executive summary", 0, {
+            imageQuery: `documentary ${kind} route photograph`,
+          }),
+          makeSection("Evidence", 1, {
+            table: {
+              title: "Evidence matrix",
+              headers: ["Stage", "Result"],
+              rows: [
+                ["Evidence", "Complete"],
+                ["Validation", "Complete"],
+              ],
+            },
+          }),
+          makeSection("Process", 2, {
+            diagram: {
+              title: "Validated workflow",
+              nodes: ["Request", "Evidence", "Build", "Validate"],
+              caption: "The route remains deterministic after structuring.",
+            },
+          }),
+          makeSection("Implications", 3),
+          makeSection("Conclusion", 4),
+        ],
+        sources,
+      };
+    };
+
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php"))
+          return new Response(
+            JSON.stringify({
+              query: {
+                pages: {
+                  1: {
+                    title: "Route validation image",
+                    imageinfo: [
+                      {
+                        thumburl:
+                          "https://images.example.test/route-validation.jpg",
+                        descriptionurl:
+                          "https://commons.wikimedia.org/wiki/File:Route_validation.jpg",
+                        width: 1200,
+                        height: 800,
+                        extmetadata: {
+                          ObjectName: { value: "Route validation image" },
+                          Artist: { value: "Test photographer" },
+                          LicenseShortName: { value: "CC BY 4.0" },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        if (url === "https://images.example.test/route-validation.jpg")
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(`Unexpected fetch in route matrix test: ${url}`);
+      });
+
+    try {
+      for (const kind of kinds) {
+        const { config, db } = harness();
+        fs.mkdirSync(config.artifactDir, { recursive: true });
+        const conversation = db.createConversation(
+          crypto.randomUUID(),
+          `${kind} route`,
+        );
+
+        let fileIds: string[] = [];
+        if (kind === "analysis") {
+          const uploadId = crypto.randomUUID();
+          const csvPath = path.join(config.uploadDir, "analysis-route.csv");
+          fs.writeFileSync(csvPath, "label,value\\nA,10\\nB,20\\nC,30\\n");
+          db.addUpload({
+            id: uploadId,
+            name: "analysis-route.csv",
+            mime: "text/csv",
+            size: fs.statSync(csvPath).size,
+            path: csvPath,
+            openaiFileId: "file_analysis_route",
+          });
+          fileIds = [uploadId];
+        }
+
+        const job = db.createJob({
+          id: crypto.randomUUID(),
+          kind,
+          prompt: `Create the requested production-ready ${kind} artifact`,
+          conversationId: conversation.id,
+          fileIds,
+          ...modelProfileFor("balanced"),
+        });
+        const plan = planFor(kind);
+        const create = vi.fn(async (request: any) => {
+          if (request.tools?.length)
+            return {
+              id: `resp_${kind}_evidence`,
+              status: "completed",
+              output_text:
+                "Verified evidence dossier with complete findings and https://example.com/verified-source.",
+              output: [],
+            };
+          return {
+            id: `resp_${kind}_structure`,
+            status: "completed",
+            output_text: JSON.stringify(plan),
+            output: [],
+          };
+        });
+        const runner = new AgentRunner(config, db);
+        (runner as any).client = {
+          responses: { create, retrieve: vi.fn() },
+        };
+
+        await (runner as any).run(job.id);
+
+        const evidenceRequest = create.mock.calls[0]![0] as any;
+        expect(evidenceRequest.tools).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: expectedTool[kind] }),
+          ]),
+        );
+        if (kind === "analysis")
+          expect(evidenceRequest.tools).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: "code_interpreter",
+                container: expect.objectContaining({
+                  file_ids: ["file_analysis_route"],
+                }),
+              }),
+            ]),
+          );
+
+        const completed = db.getJob(job.id);
+        expect(completed).toMatchObject({
+          status: "completed",
+          progress: 100,
+          error: null,
+        });
+        const artifacts = db.listArtifacts(job.id);
+        expect(artifacts).toHaveLength(1);
+        expect(artifacts[0]!.name.endsWith(expectedExtension[kind])).toBe(true);
+        expect(fs.existsSync(artifacts[0]!.path)).toBe(true);
+        expect(completed?.outputText).toContain(`Completed ${kind} artifact`);
+        db.close();
+      }
+    } finally {
+      imageFetch.mockRestore();
+    }
+  });
+
   it("repairs an invalid presentation plan without repeating the evidence phase", async () => {
     const { config, db } = harness(),
       conversation = db.createConversation(
