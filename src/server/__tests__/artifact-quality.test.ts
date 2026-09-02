@@ -130,6 +130,13 @@ describe("artifact quality gates", () => {
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).not.toThrow();
   });
 
+  it("rejects a generic manifest that does not extract the user's prompt", () => {
+    const plan = frenchTeachingPlan();
+    plan.requirements = [{ id: "R1", text: "Deliver the requested artifact", mandatory: false }];
+    for (const section of plan.sections) section.requirementIds = [];
+    expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).toThrow(/prompt-specific mandatory requirements/);
+  });
+
   it("builds and validates the complete PPTX for the exact user prompt", async () => {
     const plan = frenchTeachingPlan();
     for (const section of plan.sections) section.imageQuery = undefined;
