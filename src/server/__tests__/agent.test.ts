@@ -1045,6 +1045,17 @@ describe("agent production paths", () => {
               .getEntries()
               .filter((entry) => /^ppt\/media\//.test(entry.entryName)).length,
           ).toBeGreaterThanOrEqual(1);
+          if (process.env.CI) {
+            const reviewDir = path.join(process.cwd(), "test-results");
+            fs.mkdirSync(reviewDir, { recursive: true });
+            fs.copyFileSync(
+              artifactPath,
+              path.join(
+                reviewDir,
+                "agent-runner-french-present-tense-regression.pptx",
+              ),
+            );
+          }
         }
         expect(completed?.outputText).toContain(`Completed ${kind} artifact`);
         db.close();
