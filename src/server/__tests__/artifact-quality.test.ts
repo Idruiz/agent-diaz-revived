@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 import sharp from "sharp";
+import ts from "typescript";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   assertArtifactPlanQuality,
@@ -337,8 +338,40 @@ describe("artifact quality gates", () => {
       path.join(process.cwd(), "src/server/artifact-quality.ts"),
       "utf8",
     );
+    const rewriteOffenders = (
+      fileName: string,
+      sourceText: string,
+    ): string[] => {
+      const sourceFile = ts.createSourceFile(
+        fileName,
+        sourceText,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const offenders: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (ts.isFunctionLike(node)) {
+          const functionText = node.getText(sourceFile);
+          if (
+            functionText.includes("ppt/presentation.xml") &&
+            /\.replace\s*\(/.test(functionText)
+          )
+            offenders.push(
+              `${fileName}:${sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1}`,
+            );
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      return offenders;
+    };
+
     expect(buildersSource).not.toContain("repairPresentationBuffer");
-    expect(qualitySource).not.toContain("presentationXml.replace(");
+    expect([
+      ...rewriteOffenders("builders.ts", buildersSource),
+      ...rewriteOffenders("artifact-quality.ts", qualitySource),
+    ]).toEqual([]);
     expect(qualitySource).not.toContain("notesMasterLinksReordered");
   });
 
