@@ -33,12 +33,15 @@ fs.mkdirSync(config.artifactDir, { recursive: true });
 const plan = {
   title: "Validation artifact",
   subtitle: "Builder smoke test",
+  requirements: [{ id: "R1", text: "Build a validated visual artifact", mandatory: true }],
   sections: [
     {
       heading: "Evidence chart",
       body: "This section visualizes executed values.",
       bullets: ["One verified point", "A second verified point"],
       speakerNotes: "Presenter note",
+      requirementIds: ["R1"],
+      layout: "data" as const,
       chart: {
         title: "Quarterly result",
         type: "bar" as const,
@@ -53,6 +56,8 @@ const plan = {
       body: "The same evidence is available as an exact table.",
       bullets: [],
       speakerNotes: "",
+      requirementIds: ["R1"],
+      layout: "data" as const,
       table: {
         title: "Exact results",
         headers: ["Period", "Score"],
@@ -68,6 +73,8 @@ const plan = {
       body: "The workflow is made explicit.",
       bullets: [],
       speakerNotes: "",
+      requirementIds: ["R1"],
+      layout: "process" as const,
       diagram: {
         title: "Validated workflow",
         nodes: ["Evidence", "Analysis", "Artifact"],
@@ -92,7 +99,7 @@ describe("artifact builders", () => {
       expect(out.size).toBeGreaterThan(kind === "website" ? 1500 : 8000);
       expect(path.dirname(out.path)).toBe(config.artifactDir);
     });
-  it("keeps PowerPoint charts and diagrams editable and avoids raster-label failures", async () => {
+  it("uses schema-safe rendered charts while keeping diagrams and text native", async () => {
     const out = await buildArtifact(config, "presentation", plan);
     const zip = new AdmZip(out.path),
       names = zip.getEntries().map((entry) => entry.entryName),
@@ -101,16 +108,8 @@ describe("artifact builders", () => {
         .map((name) => zip.getEntry(name)!.getData().toString("utf8"))
         .join("\n");
     expect(slideNames).toHaveLength(5);
-    expect(
-      names.some(
-        (name) => name.startsWith("ppt/charts/") && name.endsWith(".xml"),
-      ),
-    ).toBe(true);
-    expect(
-      names.filter(
-        (name) => name.startsWith("ppt/media/") && !name.endsWith("/"),
-      ),
-    ).toHaveLength(0);
+    expect(names.some((name) => name.startsWith("ppt/charts/") && name.endsWith(".xml"))).toBe(false);
+    expect(names.some((name) => name.startsWith("ppt/media/") && !name.endsWith("/"))).toBe(true);
     expect(slideText).not.toContain(" / 3");
     expect(slideText.match(/>Sources</g)).toHaveLength(1);
     expect(slideText).toContain("Validated workflow");
