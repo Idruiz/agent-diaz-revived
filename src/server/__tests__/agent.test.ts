@@ -552,6 +552,10 @@ describe("agent production paths", () => {
         ...completePlan,
         sections: completePlan.sections.slice(0, 6),
       },
+      secondInvalidPlan = {
+        ...completePlan,
+        sections: completePlan.sections.slice(0, 12),
+      },
       create = vi.fn(async (request: any) => {
         if (request.tools?.length)
           return {
@@ -560,11 +564,24 @@ describe("agent production paths", () => {
             output_text: "Verified evidence with a complete source URL.",
             output: [],
           };
-        const repair = request.previous_response_id === "resp_invalid_plan";
+        if (!request.previous_response_id)
+          return {
+            id: "resp_invalid_plan",
+            status: "completed",
+            output_text: JSON.stringify(invalidPlan),
+            output: [],
+          };
+        if (request.previous_response_id === "resp_invalid_plan")
+          return {
+            id: "resp_still_invalid_plan",
+            status: "completed",
+            output_text: JSON.stringify(secondInvalidPlan),
+            output: [],
+          };
         return {
-          id: repair ? "resp_repaired_plan" : "resp_invalid_plan",
+          id: "resp_repaired_plan",
           status: "completed",
-          output_text: JSON.stringify(repair ? completePlan : invalidPlan),
+          output_text: JSON.stringify(completePlan),
           output: [],
         };
       }),
@@ -628,20 +645,28 @@ describe("agent production paths", () => {
       imageFetch.mockRestore();
     }
 
-    expect(create).toHaveBeenCalledTimes(3);
-    const repairRequest = create.mock.calls[2]![0] as any;
-    expect(repairRequest.tools).toBeUndefined();
-    expect(repairRequest.previous_response_id).toBe("resp_invalid_plan");
-    expect(repairRequest.input).toContain(
+    expect(create).toHaveBeenCalledTimes(4);
+    const firstRepairRequest = create.mock.calls[2]![0] as any;
+    const secondRepairRequest = create.mock.calls[3]![0] as any;
+    expect(firstRepairRequest.tools).toBeUndefined();
+    expect(firstRepairRequest.previous_response_id).toBe("resp_invalid_plan");
+    expect(firstRepairRequest.input).toContain(
       "Presentation plan validation failed: expected 7-11 content sections",
     );
-    expect(repairRequest.instructions).toContain(
+    expect(firstRepairRequest.instructions).toContain(
       "Do not research again, do not use tools",
     );
-    expect(repairRequest.text.format.schema.properties.sections).toMatchObject({
+    expect(firstRepairRequest.text.format.schema.properties.sections).toMatchObject({
       minItems: 7,
       maxItems: 11,
     });
+    expect(secondRepairRequest.tools).toBeUndefined();
+    expect(secondRepairRequest.previous_response_id).toBe(
+      "resp_still_invalid_plan",
+    );
+    expect(secondRepairRequest.input).toContain(
+      "Presentation plan validation failed: expected 7-11 content sections",
+    );
     expect(db.getJob(job.id)).toMatchObject({
       status: "completed",
       error: null,
