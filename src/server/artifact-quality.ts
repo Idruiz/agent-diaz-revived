@@ -228,8 +228,11 @@ function assertRequiredEntries(zip: AdmZip, required: string[]): void {
 function assertCleanXml(zip: AdmZip): void {
   for (const entry of zip.getEntries().filter((item) => item.entryName.endsWith(".xml"))) {
     const xml = entry.getData().toString("utf8");
-    if (/\b(?:NaN|undefined|null)\b/.test(xml))
-      throw new Error(`Artifact package validation failed: invalid serialized value in ${entry.entryName}`);
+    const invalidAttribute = xml.match(/\s([A-Za-z_][\w:.-]*)=(["'])(NaN|undefined|null)\2/);
+    if (invalidAttribute)
+      throw new Error(
+        `Artifact package validation failed: invalid serialized value '${invalidAttribute[3]}' in attribute ${invalidAttribute[1]} of ${entry.entryName}`,
+      );
     if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(xml))
       throw new Error(`Artifact package validation failed: forbidden control character in ${entry.entryName}`);
   }
