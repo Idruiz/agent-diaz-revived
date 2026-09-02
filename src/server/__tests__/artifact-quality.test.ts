@@ -1,13 +1,15 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
-import { afterAll, describe, expect, it } from "vitest";
+import sharp from "sharp";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   assertArtifactPlanQuality,
+  assertPresentationPackage,
   assertWebsitePackage,
   repairDocumentBuffer,
-  repairPresentationBuffer,
   validateBuiltArtifact,
 } from "../artifact-quality";
 import type { ArtifactPlan } from "../../shared/contracts";
@@ -138,26 +140,127 @@ describe("artifact quality gates", () => {
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).toThrow(/prompt-specific mandatory requirements/);
   });
 
-  it("builds and validates the complete PPTX for the exact user prompt", async () => {
+  it("builds the exact-prompt fixture with images, notes, native notesMaster ordering, and an auditable receipt", async () => {
     const plan = frenchTeachingPlan();
-    for (const section of plan.sections) section.imageQuery = undefined;
-    const out = await buildArtifact(config, "presentation", plan, exactPrompt);
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php"))
+          return new Response(
+            JSON.stringify({
+              query: {
+                pages: {
+                  1: {
+                    title: "French classroom culture",
+                    imageinfo: [
+                      {
+                        thumburl: "https://images.example.test/french-classroom.jpg",
+                        descriptionurl:
+                          "https://commons.wikimedia.org/wiki/File:French_classroom.jpg",
+                        width: 1200,
+                        height: 800,
+                        extmetadata: {
+                          ObjectName: { value: "French classroom culture" },
+                          Artist: { value: "Regression photographer" },
+                          LicenseShortName: { value: "CC BY 4.0" },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        if (url === "https://images.example.test/french-classroom.jpg")
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(`Unexpected fetch in exact-prompt builder test: ${url}`);
+      });
+
+    let out;
+    try {
+      out = await buildArtifact(config, "presentation", plan, exactPrompt);
+    } finally {
+      imageFetch.mockRestore();
+    }
+
     expect(fs.existsSync(out.path)).toBe(true);
     const zip = new AdmZip(out.path);
-    const text = zip.getEntries()
+    const slideText = zip
+      .getEntries()
       .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
       .map((entry) => entry.getData().toString("utf8"))
       .join("\n");
-    expect(text).toMatch(/Speed Dating/i);
-    expect(text).toMatch(/Four Corners/i);
-    expect(text).toMatch(/culture|francophone/i);
-    expect(zip.getEntries().filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))).toHaveLength(9);
+    const notesText = zip
+      .getEntries()
+      .filter((entry) => /^ppt\/notesSlides\/notesSlide\d+\.xml$/.test(entry.entryName))
+      .flatMap((entry) =>
+        [...entry.getData().toString("utf8").matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map(
+          (match) => match[1],
+        ),
+      )
+      .join("\n");
+    const presentationXml = zip
+      .getEntry("ppt/presentation.xml")!
+      .getData()
+      .toString("utf8");
+
+    expect(slideText).toMatch(/Speed Dating/i);
+    expect(slideText).toMatch(/Four Corners/i);
+    expect(slideText).toMatch(/culture|francophone/i);
+    expect(
+      zip.getEntries().filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName)),
+    ).toHaveLength(9);
+    expect(
+      zip.getEntries().filter((entry) => /^ppt\/media\//.test(entry.entryName)).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(presentationXml).toMatch(/<\/p:sldIdLst>\s*<p:notesMasterIdLst\b/);
+    expect(presentationXml).not.toMatch(
+      /<\/p:sldMasterIdLst>\s*<p:notesMasterIdLst\b/,
+    );
+    expect(notesText).toContain("[Sources]");
+    expect(notesText).toContain(
+      "https://commons.wikimedia.org/wiki/File:French_classroom.jpg",
+    );
+    expect(out.validationReceipt).toMatchObject({
+      kind: "presentation",
+      schemaValidator:
+        "Open XML SDK 3.5.1 (via @xarsh/ooxml-validator 0.3.0)",
+      powerPointDesktopValidated: false,
+      generatorVersion: "pptxgenjs 4.0.1",
+    });
+    expect(out.validationReceipt.knownBenignFindings).toHaveLength(1);
+    expect(out.validationReceipt.knownBenignFindings[0]).toMatchObject({
+      id: "Sch_UnexpectedElementContentExpectingComplex",
+      path: "/ppt/presentation.xml",
+      xPath: "/p:presentation[1]",
+    });
+    expect(out.validationReceipt.artifactSha256).toBe(
+      crypto.createHash("sha256").update(fs.readFileSync(out.path)).digest("hex"),
+    );
     if (process.env.CI) {
       const reviewDir = path.join(process.cwd(), "test-results");
       fs.mkdirSync(reviewDir, { recursive: true });
-      fs.copyFileSync(out.path, path.join(reviewDir, "french-present-tense-regression.pptx"));
+      fs.copyFileSync(
+        out.path,
+        path.join(reviewDir, "french-present-tense-regression.pptx"),
+      );
     }
-  });
+  }, 20_000);
 
   it("rejects a deck that merely mentions Speed Dating without implementing the activity", () => {
     const plan = frenchTeachingPlan();
@@ -175,32 +278,60 @@ describe("artifact quality gates", () => {
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).toThrow(/requires a Speed Dating activity slide/);
   });
 
-  it("repairs PptxGenJS 4.0.1 textless shapes and normalizes the invalid notes master", () => {
+  it("detects invalid serialized PPTX values instead of rewriting package XML", () => {
     const zip = new AdmZip();
-    zip.addFile("ppt/slides/slide1.xml", Buffer.from('<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:nvSpPr/><p:spPr><a:xfrm><a:off x="NaN" y="0"/></a:xfrm></p:spPr></p:sp></p:sld>'));
-    zip.addFile("ppt/notesMasters/notesMaster1.xml", Buffer.from('<p:notesMaster xmlns:p="p" xmlns:a="a"><p:spTree><p:nvGrpSpPr/><p:grpSpPr/><p:sp><p:nvSpPr/></p:sp></p:spTree></p:notesMaster>'));
-    zip.addFile("ppt/presentation.xml", Buffer.from('<p:presentation xmlns:p="p"><p:sldMasterIdLst/><p:sldIdLst/><p:sldSz cx="1" cy="1"/><p:notesSz cx="1" cy="1"/><p:notesMasterIdLst><p:notesMasterId/></p:notesMasterIdLst></p:presentation>'));
-    zip.addFile("[Content_Types].xml", Buffer.from('<Types><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="master"/><Override PartName="/ppt/slideMasters/slideMaster2.xml" ContentType="master"/></Types>'));
-    zip.addFile("ppt/slideMasters/slideMaster1.xml", Buffer.from('<p:sldMaster xmlns:p="p"/>'));
-    const repaired = repairPresentationBuffer(zip.toBuffer());
-    const output = new AdmZip(repaired.buffer);
-    const slide = output.getEntry("ppt/slides/slide1.xml")!.getData().toString("utf8");
-    const notes = output.getEntry("ppt/notesMasters/notesMaster1.xml")!.getData().toString("utf8");
-    expect(slide).toContain("<p:txBody>");
-    expect(slide).toContain('x="0"');
-    expect(slide).not.toContain('x="NaN"');
-    expect(notes).not.toMatch(/<p:sp(?=[\s>])/);
-    const presentation = output.getEntry("ppt/presentation.xml")!.getData().toString("utf8");
-    const contentTypes = output.getEntry("[Content_Types].xml")!.getData().toString("utf8");
-    expect(presentation.indexOf("<p:notesMasterIdLst>")).toBeLessThan(presentation.indexOf("<p:sldIdLst"));
-    expect(contentTypes).not.toContain("slideMaster2.xml");
-    expect(repaired.stats).toEqual({
-      textBodiesAdded: 1,
-      notesMastersNormalized: 1,
-      notesMasterLinksReordered: 1,
-      orphanContentTypesRemoved: 1,
-      invalidSerializedValuesNormalized: 1,
-    });
+    zip.addFile("[Content_Types].xml", Buffer.from("<Types/>"));
+    zip.addFile("_rels/.rels", Buffer.from("<Relationships/>"));
+    zip.addFile(
+      "ppt/_rels/presentation.xml.rels",
+      Buffer.from("<Relationships/>"),
+    );
+    zip.addFile(
+      "ppt/presentation.xml",
+      Buffer.from(
+        '<p:presentation xmlns:p="p"><p:sldMasterIdLst/><p:sldIdLst/></p:presentation>',
+      ),
+    );
+    zip.addFile(
+      "ppt/slides/slide1.xml",
+      Buffer.from('<p:sld xmlns:p="p" xmlns:a="a"><a:off x="NaN" y="0"/></p:sld>'),
+    );
+    zip.addFile(
+      "ppt/slides/slide2.xml",
+      Buffer.from('<p:sld xmlns:p="p"><p:cSld/></p:sld>'),
+    );
+    expect(() => assertPresentationPackage(zip.toBuffer())).toThrow(
+      /invalid serialized value in ppt\/slides\/slide1.xml/,
+    );
+  });
+
+  it("pins the proven PowerPoint-compatible PptxGenJS notesMasterIdLst position", () => {
+    const brokenPath = path.join(
+      process.cwd(),
+      "corpus",
+      "pptx",
+      "powerpoint-cant-read-notesmaster-reorder.pptx",
+    );
+    expect(fs.existsSync(brokenPath)).toBe(true);
+    expect(() => assertPresentationPackage(fs.readFileSync(brokenPath))).toThrow(
+      /notesMasterIdLst was moved before sldIdLst/,
+    );
+  });
+
+  it("prevents presentation.xml string-rewrite surgery from re-entering the build path", () => {
+    const buildersSource = fs.readFileSync(
+      path.join(process.cwd(), "src/server/builders.ts"),
+      "utf8",
+    );
+    const qualitySource = fs.readFileSync(
+      path.join(process.cwd(), "src/server/artifact-quality.ts"),
+      "utf8",
+    );
+    expect(buildersSource).not.toContain("repairPresentationBuffer");
+    expect(qualitySource).not.toMatch(
+      /ppt\/presentation\.xml[\s\S]{0,1200}\.replace\(/,
+    );
+    expect(qualitySource).not.toContain("notesMasterLinksReordered");
   });
 
   it("reassigns duplicate DOCX drawing identifiers deterministically", () => {
