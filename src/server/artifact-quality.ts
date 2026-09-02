@@ -170,7 +170,7 @@ export function repairPresentationBuffer(input: Buffer): { buffer: Buffer; stats
       const notesMasterList = xml.match(/<p:notesMasterIdLst>[\s\S]*?<\/p:notesMasterIdLst>/)?.[0];
       if (notesMasterList) {
         const withoutList = xml.replace(notesMasterList, "");
-        const reordered = withoutList.replace(/(?=<p:notesSz\b)/, notesMasterList);
+        const reordered = withoutList.replace(/(?=<p:sldIdLst\b)/, notesMasterList);
         if (reordered !== xml) {
           xml = reordered;
           notesMasterLinksReordered++;
