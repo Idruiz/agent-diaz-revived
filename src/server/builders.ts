@@ -10,11 +10,11 @@ import { atomicWrite, safeJoin } from "./files.js";
 import { chartPng, chartSvg, diagramPng, diagramSvg } from "./visuals.js";
 import { fetchCommonsImage, type RealImage } from "./real-images.js";
 import { log } from "./log.js";
-import { repairDocumentBuffer, repairPresentationBuffer, validateBuiltArtifact } from "./artifact-quality.js";
+import { repairDocumentBuffer, validateBuiltArtifact, type ArtifactValidationReceipt } from "./artifact-quality.js";
 
 const PptxGenJS=((PptxGenModule as any).default??PptxGenModule) as typeof PptxGenModule;
 
-export interface BuiltFile { name:string; mime:string; path:string; size:number; }
+export interface BuiltFile { name:string; mime:string; path:string; size:number; validationReceipt:ArtifactValidationReceipt; }
 const slug=(s:string)=>s.normalize("NFKD").replace(/[^a-zA-Z0-9]+/g,"_").replace(/^_|_$/g,"").slice(0,80)||"artifact";
 const escapeHtml=(s:string)=>s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
 const wait=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -186,18 +186,9 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile
   }
   const name=`${slug(plan.title)}.pptx`, target=safeJoin(config.artifactDir,name);
   const raw=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer); if(raw.length<5000)throw new Error("PPTX validation failed: output too small");
-  const repaired=repairPresentationBuffer(raw),buf=repaired.buffer;
-  log("info","artifact.presentation_ooxml_repaired",{
-    name,
-    textBodiesAdded:repaired.stats.textBodiesAdded,
-    notesMastersNormalized:repaired.stats.notesMastersNormalized,
-    notesMasterLinksReordered:repaired.stats.notesMasterLinksReordered,
-    orphanContentTypesRemoved:repaired.stats.orphanContentTypesRemoved,
-    invalidSerializedValuesNormalized:repaired.stats.invalidSerializedValuesNormalized,
-  });
-  atomicWrite(target,buf);
-  await validateBuiltArtifact("presentation",prompt,plan,target);
-  return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:buf.length};
+  atomicWrite(target,raw);
+  const validationReceipt=await validateBuiltArtifact("presentation",prompt,plan,target);
+  return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:raw.length,validationReceipt};
 }
 
 async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document"):Promise<BuiltFile>{
@@ -271,8 +262,8 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
   const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);
   log("info","artifact.document_ooxml_repaired",{name,drawingIdsReassigned:repaired.stats.drawingIdsReassigned});
   atomicWrite(target,buf);
-  await validateBuiltArtifact(kind,prompt,plan,target);
-  return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length};
+  const validationReceipt=await validateBuiltArtifact(kind,prompt,plan,target);
+  return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length,validationReceipt};
 }
 
 async function website(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
@@ -296,7 +287,7 @@ async function website(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltF
   const refs=`<section><h2>Research sources</h2>${plan.sources.length?`<ol>${plan.sources.map(s=>`<li><a href="${escapeHtml(s.url)}" rel="noopener noreferrer">${escapeHtml(s.title)}</a></li>`).join("")}</ol>`:"<p>No external research sources were used.</p>"}</section><section><h2>Image credits</h2>${images.size?`<ol>${[...images.values()].map(i=>`<li>${escapeHtml(i.title)} — ${escapeHtml(i.creator)}, ${escapeHtml(i.license)}. <a href="${escapeHtml(i.sourceUrl)}">Wikimedia Commons source</a></li>`).join("")}</ol>`:"<p>No photographs were requested for this build.</p>"}</section>`;
   htmlPages.push({name:"attributions.html",html:shell("Sources & credits","Research references and licenses for every bundled photograph.","attributions",refs)});
   const home=htmlPages.find(p=>p.name==="index.html");if(home)htmlPages.push({name:"OPEN_ME_FIRST.html",html:home.html});
-  const stream=new PassThrough(),chunks:Buffer[]=[];stream.on("data",c=>chunks.push(Buffer.from(c)));const done=new Promise<Buffer>((resolve,reject)=>{stream.on("end",()=>resolve(Buffer.concat(chunks)));stream.on("error",reject)});const zip=archiver("zip",{zlib:{level:9}});zip.on("error",e=>stream.destroy(e));zip.pipe(stream);for(const p of htmlPages)zip.append(p.html,{name:p.name});await zip.finalize();const buf=await done;if(buf.length<1500)throw new Error("Website ZIP validation failed");const name=`${slug(plan.title)}_website.zip`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);await validateBuiltArtifact("website",prompt,plan,target);return{name,mime:"application/zip",path:target,size:buf.length};
+  const stream=new PassThrough(),chunks:Buffer[]=[];stream.on("data",c=>chunks.push(Buffer.from(c)));const done=new Promise<Buffer>((resolve,reject)=>{stream.on("end",()=>resolve(Buffer.concat(chunks)));stream.on("error",reject)});const zip=archiver("zip",{zlib:{level:9}});zip.on("error",e=>stream.destroy(e));zip.pipe(stream);for(const p of htmlPages)zip.append(p.html,{name:p.name});await zip.finalize();const buf=await done;if(buf.length<1500)throw new Error("Website ZIP validation failed");const name=`${slug(plan.title)}_website.zip`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);const validationReceipt=await validateBuiltArtifact("website",prompt,plan,target);return{name,mime:"application/zip",path:target,size:buf.length,validationReceipt};
 }
 
 export async function buildArtifact(config:Config,kind:JobKind,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
