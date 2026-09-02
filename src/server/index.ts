@@ -17,6 +17,8 @@ ensureDirs(config.dataDir, config.artifactDir, config.uploadDir);
 const db = openDatabase(config);
 const auth = createAuth(config, db);
 const runner = new AgentRunner(config, db);
+const packageMeta = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")) as { version: string; dependencies?: Record<string, string> };
+const exactDependencyVersion = (name: string) => String(packageMeta.dependencies?.[name] ?? "unknown").replace(/^[^0-9]*/, "");
 const app = express();
 app.disable("x-powered-by");
 app.use((req, res, next) => {
@@ -56,6 +58,7 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
+app.get("/version", (_req, res) => res.json({ buildSha: process.env.RENDER_GIT_COMMIT?.trim() || "unknown", packageVersion: packageMeta.version, pptxgenjs: exactDependencyVersion("pptxgenjs"), validator: exactDependencyVersion("@xarsh/ooxml-validator") }));
 app.use("/api", apiRoutes(config, db, runner, auth));
 app.use((err: any, _req: any, res: any, _next: any) => {
   log("error", "http.error", {
