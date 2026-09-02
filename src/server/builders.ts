@@ -187,7 +187,14 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile
   const name=`${slug(plan.title)}.pptx`, target=safeJoin(config.artifactDir,name);
   const raw=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer); if(raw.length<5000)throw new Error("PPTX validation failed: output too small");
   const repaired=repairPresentationBuffer(raw),buf=repaired.buffer;
-  log("info","artifact.presentation_ooxml_repaired",{name,textBodiesAdded:repaired.stats.textBodiesAdded,notesMastersNormalized:repaired.stats.notesMastersNormalized});
+  log("info","artifact.presentation_ooxml_repaired",{
+    name,
+    textBodiesAdded:repaired.stats.textBodiesAdded,
+    notesMastersNormalized:repaired.stats.notesMastersNormalized,
+    notesMasterLinksReordered:repaired.stats.notesMasterLinksReordered,
+    orphanContentTypesRemoved:repaired.stats.orphanContentTypesRemoved,
+    invalidSerializedValuesNormalized:repaired.stats.invalidSerializedValuesNormalized,
+  });
   atomicWrite(target,buf);
   await validateBuiltArtifact("presentation",prompt,plan,target);
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:buf.length};
