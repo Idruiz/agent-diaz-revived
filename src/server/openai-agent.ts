@@ -1206,84 +1206,164 @@ export class AgentRunner {
         });
         if (!this.db.listArtifacts(jobId).length) {
           const minVisuals = getSkillForKind(job.kind).minVisuals;
-          let plan;
-          try {
-            plan = parseArtifactPlan(job.kind, output, minVisuals, job.prompt);
-          } catch (initialError) {
-            const validationError = errorMessage(initialError);
-            log("warn", "artifact.plan_validation_failed", {
-              jobId,
-              kind: job.kind,
-              attempt: 1,
-              sectionCount: planSectionCount(output),
-              error: validationError,
-            });
-            this.db.updateJob(jobId, {
-              status: "running",
-              progress: 84,
-              message: "Structuring artifact: repairing invalid plan",
-            });
-            let repairResponse = await createPlanRepairResponse(
-              structureResponse.id,
-              validationError,
-            );
-            this.db.updateJob(jobId, {
-              providerResponseId: repairResponse.id,
-              message: "Structuring artifact: repair started",
-            });
-            repairResponse = await this.awaitBackgroundResponse(
-              jobId,
-              repairResponse,
-              () =>
-                createPlanRepairResponse(
-                  structureResponse.id,
+          let plan: any;
+          let repairAttempt = 0;
+          let buildAttempt = 0;
+
+          for (;;) {
+            if (this.db.getJob(jobId)?.status === "cancelled") return;
+
+            for (;;) {
+              try {
+                plan = parseArtifactPlan(
+                  job.kind,
+                  output,
+                  minVisuals,
+                  job.prompt,
+                );
+                if (repairAttempt > 0)
+                  log("info", "artifact.plan_repaired", {
+                    jobId,
+                    kind: job.kind,
+                    attempt: repairAttempt,
+                    sectionCount: plan.sections.length,
+                  });
+                break;
+              } catch (planError) {
+                repairAttempt++;
+                const validationError = errorMessage(planError);
+                log("warn", "artifact.plan_validation_failed", {
+                  jobId,
+                  kind: job.kind,
+                  attempt: repairAttempt,
+                  sectionCount: planSectionCount(output),
+                  error: validationError,
+                });
+                this.db.updateJob(jobId, {
+                  status: "running",
+                  progress: Math.min(91, 83 + repairAttempt),
+                  error: null,
+                  message: `Structuring artifact: validation found an issue; repairing automatically (attempt ${repairAttempt})`,
+                });
+                const parentResponseId = response.id as string;
+                if (repairAttempt > 1)
+                  await sleep(Math.min(12_000, 800 * 2 ** Math.min(repairAttempt - 2, 4)));
+                if (this.db.getJob(jobId)?.status === "cancelled") return;
+                let repairResponse = await createPlanRepairResponse(
+                  parentResponseId,
                   validationError,
-                ),
-              89,
-              "Structuring artifact: repair",
-              true,
-            );
-            if (!repairResponse) return;
-            response = repairResponse;
-            output = repairResponse.output_text?.trim() || "";
-            if (!output)
-              throw new Error("Artifact plan repair returned no usable plan");
-            try {
-              plan = parseArtifactPlan(job.kind, output, minVisuals, job.prompt);
-            } catch (repairError) {
-              const repairedValidationError = errorMessage(repairError);
-              log("error", "artifact.plan_repair_failed", {
-                jobId,
-                kind: job.kind,
-                attempt: 2,
-                sectionCount: planSectionCount(output),
-                error: repairedValidationError,
-              });
-              throw new Error(
-                `Artifact plan remained invalid after automatic repair: ${repairedValidationError}`,
-              );
+                );
+                this.db.updateJob(jobId, {
+                  providerResponseId: repairResponse.id,
+                  error: null,
+                  message: `Structuring artifact: repair attempt ${repairAttempt} started`,
+                });
+                repairResponse = await this.awaitBackgroundResponse(
+                  jobId,
+                  repairResponse,
+                  () =>
+                    createPlanRepairResponse(
+                      parentResponseId,
+                      validationError,
+                    ),
+                  91,
+                  "Structuring artifact: repair",
+                  true,
+                );
+                if (!repairResponse) return;
+                response = repairResponse;
+                output = repairResponse.output_text?.trim() || "";
+                if (!output) {
+                  log("warn", "artifact.plan_repair_empty", {
+                    jobId,
+                    kind: job.kind,
+                    attempt: repairAttempt,
+                  });
+                  output = "{}";
+                }
+              }
             }
-            log("info", "artifact.plan_repaired", {
-              jobId,
-              kind: job.kind,
-              sectionCount: plan.sections.length,
-            });
+
             this.db.updateJob(jobId, {
               status: "building",
-              progress: 90,
-              message: "Building repaired artifact",
+              progress: Math.min(96, 90 + Math.min(buildAttempt, 6)),
+              error: null,
+              message:
+                buildAttempt === 0
+                  ? "Building and validating artifact"
+                  : `Rebuilding artifact after validation repair (attempt ${buildAttempt + 1})`,
             });
+
+            try {
+              const file = await buildArtifact(
+                this.config,
+                job.kind,
+                plan,
+                job.prompt,
+              );
+              const id = crypto.randomUUID();
+              this.db.addArtifact({
+                id,
+                jobId,
+                name: file.name,
+                mime: file.mime,
+                size: file.size,
+                path: file.path,
+              });
+              log("info", "artifact.build_validated", {
+                jobId,
+                kind: job.kind,
+                buildAttempt: buildAttempt + 1,
+                repairAttempt,
+                name: file.name,
+                size: file.size,
+              });
+              break;
+            } catch (buildError) {
+              buildAttempt++;
+              const validationError = errorMessage(buildError);
+              log("warn", "artifact.build_validation_failed_retriable", {
+                jobId,
+                kind: job.kind,
+                buildAttempt,
+                repairAttempt,
+                error: validationError,
+              });
+              this.db.updateJob(jobId, {
+                status: "running",
+                progress: Math.min(96, 91 + Math.min(buildAttempt, 5)),
+                error: null,
+                message: `Artifact validation found an issue; regenerating automatically (attempt ${buildAttempt + 1})`,
+              });
+              const parentResponseId = response.id as string;
+              await sleep(Math.min(15_000, 1000 * 2 ** Math.min(buildAttempt - 1, 4)));
+              if (this.db.getJob(jobId)?.status === "cancelled") return;
+              let repairResponse = await createPlanRepairResponse(
+                parentResponseId,
+                `BUILT ARTIFACT ERROR:\n${validationError}\n\nThe package was not published. Repair the plan so a fresh build avoids this error while preserving every user requirement and all verified evidence.`,
+              );
+              this.db.updateJob(jobId, {
+                providerResponseId: repairResponse.id,
+                error: null,
+                message: `Artifact regeneration: repair attempt ${buildAttempt} started`,
+              });
+              repairResponse = await this.awaitBackgroundResponse(
+                jobId,
+                repairResponse,
+                () =>
+                  createPlanRepairResponse(
+                    parentResponseId,
+                    `BUILT ARTIFACT ERROR:\n${validationError}\n\nRegenerate a corrected complete plan. Do not use tools or repeat research.`,
+                  ),
+                96,
+                "Artifact regeneration",
+                true,
+              );
+              if (!repairResponse) return;
+              response = repairResponse;
+              output = repairResponse.output_text?.trim() || "{}";
+            }
           }
-          const file = await buildArtifact(this.config, job.kind, plan, job.prompt);
-          const id = crypto.randomUUID();
-          this.db.addArtifact({
-            id,
-            jobId,
-            name: file.name,
-            mime: file.mime,
-            size: file.size,
-            path: file.path,
-          });
         } else
           log("info", "artifact.build_resume_reused", {
             jobId,
@@ -1344,6 +1424,44 @@ export class AgentRunner {
         });
     } catch (e: any) {
       const message = e instanceof Error ? e.message : "Unknown job failure";
+      const current = this.db.getJob(jobId);
+      const artifactKinds = [
+        "research",
+        "analysis",
+        "presentation",
+        "document",
+        "website",
+      ];
+      if (
+        current &&
+        current.status !== "cancelled" &&
+        artifactKinds.includes(current.kind)
+      ) {
+        this.db.updateJob(jobId, {
+          status: "running",
+          progress: Math.max(10, Math.min(95, current.progress)),
+          message:
+            "Structuring artifact: unexpected pipeline error; restarting automatically",
+          error: null,
+        });
+        const existing = this.db.raw
+          .prepare(
+            "SELECT id FROM messages WHERE job_id=? AND role='assistant' ORDER BY created_at DESC LIMIT 1",
+          )
+          .get(jobId) as { id: string } | undefined;
+        if (existing)
+          this.db.updateMessage(existing.id, {
+            status: "streaming",
+            error: null,
+          });
+        log("error", "artifact.pipeline_restart_scheduled", {
+          jobId,
+          kind: current.kind,
+          error: message,
+        });
+        setTimeout(() => this.start(jobId), 5000);
+        return;
+      }
       this.db.updateJob(jobId, {
         status: "failed",
         message: "Failed",
