@@ -12,6 +12,7 @@ import {
 } from "../shared/contracts.js";
 import { personaProfile } from "../shared/personas.js";
 import { buildArtifact } from "./builders.js";
+import { assertArtifactPlanQuality } from "./artifact-quality.js";
 import { log } from "./log.js";
 import { getSkillForKind } from "./skills.js";
 import { personaInstructions } from "./personas.js";
@@ -107,6 +108,7 @@ const artifactProviderSectionSchema = artifactSectionSchema.extend({
   table: artifactSectionSchema.shape.table.unwrap().nullable(),
   chart: artifactSectionSchema.shape.chart.unwrap().nullable(),
   diagram: artifactSectionSchema.shape.diagram.unwrap().nullable(),
+  activity: artifactSectionSchema.shape.activity.unwrap().nullable(),
   imageQuery: artifactSectionSchema.shape.imageQuery.unwrap().nullable(),
 });
 
@@ -184,13 +186,14 @@ function artifactInstructions(kind: JobKind): string {
         : kind === "research" || kind === "document"
           ? " Create 5-12 sections. Include at least three meaningful visuals and at least one distinct concrete imageQuery for a relevant licensed photograph or explanatory illustration. Use charts only for exact sourced values and include sourceNote. Do not create a Sources or References section because the builder adds it."
           : " Create 5-12 sections. Use charts and tables only from executed analysis; every numerical visual must state its data source in sourceNote. Decorative imagery is optional.";
-  return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, sections[{heading,body,bullets,speakerNotes,imageQuery,table{title,headers,rows},chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote},diagram{title,nodes,caption}}], pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Use null for imageQuery, table, chart, diagram, or pages when that field does not apply. Every material factual claim must be supported. Never invent numbers. Body and bullets must contain finished audience-facing content, not directions, placeholders, production notes, or visual descriptions.${visualPolicy}`;
+  return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, requirements[{id:R1..Rn,text,mandatory}], sections[{heading,body,bullets,speakerNotes,requirementIds,layout:auto|title|standard|comparison|process|timeline|gallery|data|conjugation|guided_practice|speed_dating|four_corners|exit_ticket,activity{type:speed_dating|four_corners|guided_practice|independent_practice|discussion|exit_ticket,durationMinutes,directions,prompts,sentenceFrames,cornerLabels},imageQuery,table{title,headers,rows},chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote},diagram{title,nodes,caption}}], pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Extract every explicit user instruction and named deliverable feature into the requirements list; assign stable IDs and cover every mandatory ID in section requirementIds. Use null for imageQuery, table, chart, diagram, or pages when that field does not apply. Every material factual claim must be supported. Never invent numbers. Body and bullets must contain finished audience-facing content, not directions, placeholders, production notes, or visual descriptions. For teaching decks, model classroom activities as activity objects rather than mentioning them in ordinary bullets. Speed Dating needs at least four prompts, three operational directions, and two target-language sentence frames. Four Corners needs exactly four labels, a decision prompt, movement/discussion directions, and at least two sentence frames.${visualPolicy}`;
 }
 
 export function validateArtifactPlan(
   kind: JobKind,
   plan: any,
   minVisuals: number,
+  prompt = "",
 ): void {
   const visualCount = plan.sections.filter(
     (s: any) => s.table || s.chart || s.diagram || s.imageQuery,
@@ -250,18 +253,20 @@ export function validateArtifactPlan(
         "Website plan validation failed: at least four documentary photo queries are required",
       );
   }
+  assertArtifactPlanQuality(kind, prompt, plan);
 }
 
 function parseArtifactPlan(
   kind: JobKind,
   output: string,
   minVisuals: number,
+  prompt = "",
 ) {
   const raw = omitNullObjectFields(
     JSON.parse(output.replace(/^```json\s*|```$/g, "")),
   );
   const plan = ArtifactPlanSchema.parse(raw);
-  validateArtifactPlan(kind, plan, minVisuals);
+  validateArtifactPlan(kind, plan, minVisuals, prompt);
   return plan;
 }
 
@@ -1192,7 +1197,7 @@ export class AgentRunner {
           const minVisuals = getSkillForKind(job.kind).minVisuals;
           let plan;
           try {
-            plan = parseArtifactPlan(job.kind, output, minVisuals);
+            plan = parseArtifactPlan(job.kind, output, minVisuals, job.prompt);
           } catch (initialError) {
             const validationError = errorMessage(initialError);
             log("warn", "artifact.plan_validation_failed", {
@@ -1232,7 +1237,7 @@ export class AgentRunner {
             if (!output)
               throw new Error("Artifact plan repair returned no usable plan");
             try {
-              plan = parseArtifactPlan(job.kind, output, minVisuals);
+              plan = parseArtifactPlan(job.kind, output, minVisuals, job.prompt);
             } catch (repairError) {
               const repairedValidationError = errorMessage(repairError);
               log("error", "artifact.plan_repair_failed", {
@@ -1257,7 +1262,7 @@ export class AgentRunner {
               message: "Building repaired artifact",
             });
           }
-          const file = await buildArtifact(this.config, job.kind, plan);
+          const file = await buildArtifact(this.config, job.kind, plan, job.prompt);
           const id = crypto.randomUUID();
           this.db.addArtifact({
             id,
