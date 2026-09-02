@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertArtifactPlanQuality,
   assertWebsitePackage,
+  repairDocumentBuffer,
   repairPresentationBuffer,
 } from "../artifact-quality";
 import type { ArtifactPlan } from "../../shared/contracts";
@@ -121,13 +122,35 @@ describe("artifact quality gates", () => {
     const zip = new AdmZip();
     zip.addFile("ppt/slides/slide1.xml", Buffer.from('<p:sld xmlns:p="p" xmlns:a="a"><p:sp><p:nvSpPr/><p:spPr/></p:sp></p:sld>'));
     zip.addFile("ppt/notesMasters/notesMaster1.xml", Buffer.from('<p:notesMaster xmlns:p="p" xmlns:a="a"><p:spTree><p:nvGrpSpPr/><p:grpSpPr/><p:sp><p:nvSpPr/></p:sp></p:spTree></p:notesMaster>'));
+    zip.addFile("ppt/presentation.xml", Buffer.from('<p:presentation xmlns:p="p"><p:sldIdLst/><p:notesSz cx="1" cy="1"/><p:notesMasterIdLst><p:notesMasterId/></p:notesMasterIdLst></p:presentation>'));
+    zip.addFile("[Content_Types].xml", Buffer.from('<Types><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="master"/><Override PartName="/ppt/slideMasters/slideMaster2.xml" ContentType="master"/></Types>'));
+    zip.addFile("ppt/slideMasters/slideMaster1.xml", Buffer.from('<p:sldMaster xmlns:p="p"/>'));
     const repaired = repairPresentationBuffer(zip.toBuffer());
     const output = new AdmZip(repaired.buffer);
     const slide = output.getEntry("ppt/slides/slide1.xml")!.getData().toString("utf8");
     const notes = output.getEntry("ppt/notesMasters/notesMaster1.xml")!.getData().toString("utf8");
     expect(slide).toContain("<p:txBody>");
     expect(notes).not.toMatch(/<p:sp(?=[\s>])/);
-    expect(repaired.stats).toEqual({ textBodiesAdded: 1, notesMastersNormalized: 1 });
+    const presentation = output.getEntry("ppt/presentation.xml")!.getData().toString("utf8");
+    const contentTypes = output.getEntry("[Content_Types].xml")!.getData().toString("utf8");
+    expect(presentation.indexOf("<p:notesMasterIdLst>")).toBeLessThan(presentation.indexOf("<p:notesSz"));
+    expect(contentTypes).not.toContain("slideMaster2.xml");
+    expect(repaired.stats).toEqual({
+      textBodiesAdded: 1,
+      notesMastersNormalized: 1,
+      notesMasterLinksReordered: 1,
+      orphanContentTypesRemoved: 1,
+    });
+  });
+
+  it("reassigns duplicate DOCX drawing identifiers deterministically", () => {
+    const zip = new AdmZip();
+    zip.addFile("word/document.xml", Buffer.from('<w:document xmlns:w="w" xmlns:wp="wp"><wp:docPr id="1" name="A"/><wp:docPr id="1" name="B"/></w:document>'));
+    const repaired = repairDocumentBuffer(zip.toBuffer());
+    const xml = new AdmZip(repaired.buffer).getEntry("word/document.xml")!.getData().toString("utf8");
+    expect(xml).toContain('id="1" name="A"');
+    expect(xml).toContain('id="2" name="B"');
+    expect(repaired.stats.drawingIdsReassigned).toBe(2);
   });
 
   it("rejects a packaged website with a broken internal link", () => {
