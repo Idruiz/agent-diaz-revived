@@ -19,6 +19,12 @@ const MINIMAL_NOTES_SP_TREE = '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><
 export interface PresentationRepairStats {
   textBodiesAdded: number;
   notesMastersNormalized: number;
+  notesMasterLinksReordered: number;
+  orphanContentTypesRemoved: number;
+}
+
+export interface DocumentRepairStats {
+  drawingIdsReassigned: number;
 }
 
 export interface ArtifactValidationReceipt {
@@ -34,7 +40,7 @@ function allPlanText(plan: ArtifactPlan): string {
   return [
     plan.title,
     plan.subtitle,
-    ...plan.requirements.map((requirement) => requirement.text),
+    ...(plan.requirements ?? []).map((requirement) => requirement.text),
     ...plan.sections.flatMap((section) => [
       section.heading,
       section.body,
@@ -90,19 +96,19 @@ export function assertArtifactPlanQuality(kind: JobKind, prompt: string, plan: A
     throw new Error("Artifact quality validation failed: unfinished placeholder language is present");
 
   const ids = new Set<string>();
-  for (const requirement of plan.requirements) {
+  for (const requirement of plan.requirements ?? []) {
     if (ids.has(requirement.id))
       throw new Error(`Artifact quality validation failed: duplicate requirement id ${requirement.id}`);
     ids.add(requirement.id);
   }
   for (const section of plan.sections) {
-    for (const id of section.requirementIds)
+    for (const id of section.requirementIds ?? [])
       if (!ids.has(id))
         throw new Error(`Artifact quality validation failed: section '${section.heading}' references unknown requirement ${id}`);
     assertActivityQuality(section);
   }
-  for (const requirement of plan.requirements.filter((item) => item.mandatory)) {
-    const covered = plan.sections.some((section) => section.requirementIds.includes(requirement.id));
+  for (const requirement of (plan.requirements ?? []).filter((item) => item.mandatory)) {
+    const covered = plan.sections.some((section) => (section.requirementIds ?? []).includes(requirement.id));
     if (!covered)
       throw new Error(`Artifact quality validation failed: mandatory requirement ${requirement.id} is not covered: ${requirement.text}`);
   }
@@ -145,11 +151,32 @@ function patchTextlessShapes(xml: string): { xml: string; count: number } {
 
 export function repairPresentationBuffer(input: Buffer): { buffer: Buffer; stats: PresentationRepairStats } {
   const zip = new AdmZip(input);
+  const packageEntries = new Set(zip.getEntries().map((entry) => entry.entryName));
   let textBodiesAdded = 0;
   let notesMastersNormalized = 0;
+  let notesMasterLinksReordered = 0;
+  let orphanContentTypesRemoved = 0;
   for (const entry of zip.getEntries()) {
     if (!entry.entryName.endsWith(".xml")) continue;
     let xml = entry.getData().toString("utf8");
+    if (entry.entryName === "[Content_Types].xml") {
+      xml = xml.replace(/<Override\b[^>]*\bPartName="\/([^"]+)"[^>]*\/>/g, (override, partName: string) => {
+        if (packageEntries.has(partName)) return override;
+        orphanContentTypesRemoved++;
+        return "";
+      });
+    }
+    if (entry.entryName === "ppt/presentation.xml") {
+      const notesMasterList = xml.match(/<p:notesMasterIdLst>[\s\S]*?<\/p:notesMasterIdLst>/)?.[0];
+      if (notesMasterList) {
+        const withoutList = xml.replace(notesMasterList, "");
+        const reordered = withoutList.replace(/(?=<p:notesSz\b)/, notesMasterList);
+        if (reordered !== xml) {
+          xml = reordered;
+          notesMasterLinksReordered++;
+        }
+      }
+    }
     if (/^ppt\/notesMasters\/notesMaster\d+\.xml$/.test(entry.entryName)) {
       const normalized = xml.replace(/<p:spTree>[\s\S]*?<\/p:spTree>/, MINIMAL_NOTES_SP_TREE);
       if (normalized !== xml) {
@@ -164,7 +191,23 @@ export function repairPresentationBuffer(input: Buffer): { buffer: Buffer; stats
     }
     entry.setData(Buffer.from(xml, "utf8"));
   }
-  return { buffer: zip.toBuffer(), stats: { textBodiesAdded, notesMastersNormalized } };
+  return {
+    buffer: zip.toBuffer(),
+    stats: { textBodiesAdded, notesMastersNormalized, notesMasterLinksReordered, orphanContentTypesRemoved },
+  };
+}
+
+export function repairDocumentBuffer(input: Buffer): { buffer: Buffer; stats: DocumentRepairStats } {
+  const zip = new AdmZip(input);
+  const document = zip.getEntry("word/document.xml");
+  if (!document) return { buffer: input, stats: { drawingIdsReassigned: 0 } };
+  let nextId = 1;
+  const xml = document.getData().toString("utf8").replace(
+    /<wp:docPr\b([^>]*?)\bid="\d+"([^>]*)>/g,
+    (_match, before: string, after: string) => `<wp:docPr${before}id="${nextId++}"${after}>`,
+  );
+  document.setData(Buffer.from(xml, "utf8"));
+  return { buffer: zip.toBuffer(), stats: { drawingIdsReassigned: nextId - 1 } };
 }
 
 function assertRequiredEntries(zip: AdmZip, required: string[]): void {
