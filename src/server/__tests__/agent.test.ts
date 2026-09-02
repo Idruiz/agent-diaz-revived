@@ -357,6 +357,7 @@ describe("agent production paths", () => {
       plan = {
         title: "Verified workflow",
         subtitle: "Two-phase provider integration",
+        requirements: [{ id: "R1", text: "Research and explain a verified three-step workflow", mandatory: true }],
         sections: [
           {
             heading: "Evidence",
@@ -402,6 +403,9 @@ describe("agent production paths", () => {
         ...plan,
         pages: null,
         sections: plan.sections.map((section) => ({
+          requirementIds: ["R1"],
+          layout: "auto",
+          activity: null,
           table: null,
           chart: null,
           diagram: null,
@@ -472,7 +476,7 @@ describe("agent production paths", () => {
       strict: true,
     });
     const schema = artifactPlanTextFormat().schema as any;
-    expect(schema.required).toContain("pages");
+    expect(schema.required).toEqual(expect.arrayContaining(["requirements", "sections", "pages"]));
     expect(schema.properties.sections.items.required).toEqual(
       expect.arrayContaining([
         "table",
@@ -515,6 +519,9 @@ describe("agent production paths", () => {
         body: `Finished audience-facing content for section ${index + 1}.`,
         bullets: [`Evidence point ${index + 1}`],
         speakerNotes: `Explain section ${index + 1}.`,
+        requirementIds: ["R1"],
+        layout: "standard",
+        activity: null,
         table: null,
         chart: null,
         diagram:
@@ -531,6 +538,7 @@ describe("agent production paths", () => {
       completePlan = {
         title: "Recovered presentation",
         subtitle: "Automatic plan repair",
+        requirements: [{ id: "R1", text: "Build a seven-section visual presentation", mandatory: true }],
         sections: Array.from({ length: 7 }, (_, index) => makeSection(index)),
         pages: null,
         sources: [
