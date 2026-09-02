@@ -13,6 +13,7 @@ import type {
   Persona,
 } from "../shared/contracts.js";
 import { log } from "./log.js";
+import type { ArtifactValidationReceipt } from "./artifact-quality.js";
 
 export interface Db {
   raw: Database.Database;
@@ -48,6 +49,7 @@ export interface Db {
     mime: string;
     size: number;
     path: string;
+    receipt: ArtifactValidationReceipt;
   }): void;
   listArtifacts(
     jobId?: string,
@@ -58,6 +60,7 @@ export interface Db {
     mime: string;
     size: number;
     createdAt: string;
+    receipt: ArtifactValidationReceipt | null;
   }>;
   getArtifact(
     id: string,
@@ -69,6 +72,7 @@ export interface Db {
         mime: string;
         size: number;
         path: string;
+        receipt: ArtifactValidationReceipt | null;
       }
     | undefined;
   addUpload(row: {
@@ -214,7 +218,7 @@ export function openDatabase(config: Config): Db {
     );
     CREATE TABLE IF NOT EXISTS artifacts(
       id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE, name TEXT NOT NULL, mime TEXT NOT NULL,
-      size INTEGER NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL
+      size INTEGER NOT NULL, path TEXT NOT NULL, receipt_json TEXT, created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS uploads(
       id TEXT PRIMARY KEY, name TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL,
@@ -272,6 +276,7 @@ export function openDatabase(config: Config): Db {
   );
   ensureColumn("messages", "error", "error TEXT");
   ensureColumn("messages", "persona", "persona TEXT");
+  ensureColumn("artifacts", "receipt_json", "receipt_json TEXT");
   const leakedVoiceTurns = raw
     .prepare(
       `SELECT rowid,id,conversation_id conversationId,created_at createdAt
@@ -446,26 +451,58 @@ export function openDatabase(config: Config): Db {
       )?.id ?? null,
     addArtifact: (r) =>
       raw
-        .prepare("INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)")
-        .run(r.id, r.jobId, r.name, r.mime, r.size, r.path, now()),
+        .prepare(
+          "INSERT INTO artifacts(id,job_id,name,mime,size,path,receipt_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          r.id,
+          r.jobId,
+          r.name,
+          r.mime,
+          r.size,
+          r.path,
+          JSON.stringify(r.receipt),
+          now(),
+        ),
     listArtifacts: (jobId) =>
       (jobId
         ? raw
             .prepare(
-              "SELECT id,job_id jobId,name,mime,size,created_at createdAt FROM artifacts WHERE job_id=? ORDER BY created_at DESC",
+              "SELECT id,job_id jobId,name,mime,size,receipt_json receiptJson,created_at createdAt FROM artifacts WHERE job_id=? ORDER BY created_at DESC",
             )
             .all(jobId)
         : raw
             .prepare(
-              "SELECT id,job_id jobId,name,mime,size,created_at createdAt FROM artifacts ORDER BY created_at DESC LIMIT 100",
+              "SELECT id,job_id jobId,name,mime,size,receipt_json receiptJson,created_at createdAt FROM artifacts ORDER BY created_at DESC LIMIT 100",
             )
-            .all()) as any,
-    getArtifact: (id) =>
-      raw
+            .all()
+      ).map((row: any) => ({
+        id: row.id,
+        jobId: row.jobId,
+        name: row.name,
+        mime: row.mime,
+        size: row.size,
+        createdAt: row.createdAt,
+        receipt: row.receiptJson ? JSON.parse(row.receiptJson) : null,
+      })) as any,
+    getArtifact: (id) => {
+      const row = raw
         .prepare(
-          "SELECT id,job_id jobId,name,mime,size,path FROM artifacts WHERE id=?",
+          "SELECT id,job_id jobId,name,mime,size,path,receipt_json receiptJson FROM artifacts WHERE id=?",
         )
-        .get(id) as any,
+        .get(id) as any;
+      return row
+        ? {
+            id: row.id,
+            jobId: row.jobId,
+            name: row.name,
+            mime: row.mime,
+            size: row.size,
+            path: row.path,
+            receipt: row.receiptJson ? JSON.parse(row.receiptJson) : null,
+          }
+        : undefined;
+    },
     addUpload: (r) =>
       raw
         .prepare("INSERT INTO uploads VALUES(?,?,?,?,?,?,?)")
