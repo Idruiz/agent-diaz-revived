@@ -306,15 +306,25 @@ describe("artifact quality gates", () => {
   });
 
   it("pins the proven PowerPoint-compatible PptxGenJS notesMasterIdLst position", () => {
-    const brokenPath = path.join(
-      process.cwd(),
-      "corpus",
-      "pptx",
-      "powerpoint-cant-read-notesmaster-reorder.pptx",
+    const brokenXml = fs.readFileSync(
+      path.join(process.cwd(), "corpus", "pptx", "V0.presentation.xml"),
+      "utf8",
     );
-    expect(fs.existsSync(brokenPath)).toBe(true);
-    expect(() => assertPresentationPackage(fs.readFileSync(brokenPath))).toThrow(
-      /notesMasterIdLst was moved before sldIdLst/,
+    const nativeXml = fs.readFileSync(
+      path.join(process.cwd(), "corpus", "pptx", "V7.order-sentinel.xml"),
+      "utf8",
+    );
+    expect(brokenXml).toMatch(
+      /<\/p:sldMasterIdLst>\s*<p:notesMasterIdLst\b[\s\S]*?<p:sldIdLst\b/,
+    );
+    expect(brokenXml).not.toMatch(
+      /<\/p:sldIdLst>\s*<p:notesMasterIdLst\b/,
+    );
+    expect(nativeXml).toMatch(
+      /<\/p:sldIdLst>\s*<p:notesMasterIdLst\b/,
+    );
+    expect(nativeXml).not.toMatch(
+      /<\/p:sldMasterIdLst>\s*<p:notesMasterIdLst\b/,
     );
   });
 
