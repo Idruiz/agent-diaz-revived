@@ -29,6 +29,7 @@ const base = `http://127.0.0.1:${port}`,
       OPENAI_API_KEY: openAiKey,
       ADMIN_PASSWORD: password,
       STORAGE_DIR: storage,
+      RENDER_GIT_COMMIT: "runtime-smoke-sha",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -51,6 +52,16 @@ try {
     csp = health.headers.get("content-security-policy") || "";
   if (!/media-src[^;]*blob:/.test(csp))
     throw new Error(`CSP blocks generated voice Blob URLs: ${csp}`);
+  const versionResponse = await fetch(`${base}/version`),
+    versionBody = await versionResponse.json();
+  if (
+    !versionResponse.ok ||
+    versionBody.buildSha !== "runtime-smoke-sha" ||
+    versionBody.packageVersion !== "3.4.0" ||
+    versionBody.pptxgenjs !== "4.0.1" ||
+    versionBody.validator !== "0.3.0"
+  )
+    throw new Error(`Version endpoint failed: ${JSON.stringify(versionBody)}`);
   const login = await fetch(`${base}/api/login`, {
     method: "POST",
     headers: { "content-type": "application/json", origin: base },
@@ -130,7 +141,7 @@ try {
   if (!page.ok || !html.includes('id="root"'))
     throw new Error("Production frontend was not served");
   console.log(
-    `[smoke] health/CSP voice playback, authentication, conversation mode/persona, durable storage, artifact download, and production frontend passed on port ${port}.`,
+    `[smoke] health/version/CSP voice playback, authentication, conversation mode/persona, durable storage, artifact download, and production frontend passed on port ${port}.`,
   );
 } finally {
   child.kill("SIGTERM");
