@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   assertArtifactPlanQuality,
   assertWebsitePackage,
@@ -10,9 +10,37 @@ import {
   repairPresentationBuffer,
 } from "../artifact-quality";
 import type { ArtifactPlan } from "../../shared/contracts";
+import type { Config } from "../config";
+import { buildArtifact } from "../builders";
 
 const exactPrompt =
   "create a taching presentation slide deck to teach the present tense in french, connect it to french culture and include slides to get the students to practice such as speed dating and 4 corners";
+
+const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-exact-prompt-"));
+const config = {
+  root: artifactRoot,
+  storageRoot: artifactRoot,
+  dataDir: path.join(artifactRoot, "data"),
+  artifactDir: path.join(artifactRoot, "artifacts"),
+  uploadDir: path.join(artifactRoot, "uploads"),
+  NODE_ENV: "test",
+  PORT: 3000,
+  BASE_URL: "http://localhost:3000",
+  OPENAI_API_KEY: "test-key",
+  ADMIN_PASSWORD: "test-password",
+  OPENAI_MODEL: "test",
+  OPENAI_FAST_MODEL: "test",
+  OPENAI_REALTIME_MODEL: "gpt-realtime-2.1-mini",
+  STORAGE_DIR: "",
+  SESSION_DAYS: 7,
+  MAX_UPLOAD_MB: 25,
+  IMAGE_PROVIDER: "wikimedia",
+  MCP_SERVER_URL: "",
+  MCP_SERVER_LABEL: "workspace",
+  MCP_AUTHORIZATION: "",
+} satisfies Config;
+fs.mkdirSync(config.artifactDir, { recursive: true });
+afterAll(() => fs.rmSync(artifactRoot, { recursive: true, force: true }));
 
 function frenchTeachingPlan(): ArtifactPlan {
   const base = (heading: string, body: string, requirementIds: string[]) => ({
@@ -100,6 +128,27 @@ describe("artifact quality gates", () => {
   it("accepts the exact French teaching request only when both named activities are complete", () => {
     const plan = frenchTeachingPlan();
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).not.toThrow();
+  });
+
+  it("builds and validates the complete PPTX for the exact user prompt", async () => {
+    const plan = frenchTeachingPlan();
+    for (const section of plan.sections) section.imageQuery = undefined;
+    const out = await buildArtifact(config, "presentation", plan, exactPrompt);
+    expect(fs.existsSync(out.path)).toBe(true);
+    const zip = new AdmZip(out.path);
+    const text = zip.getEntries()
+      .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
+      .map((entry) => entry.getData().toString("utf8"))
+      .join("\n");
+    expect(text).toMatch(/Speed Dating/i);
+    expect(text).toMatch(/Four Corners/i);
+    expect(text).toMatch(/culture|francophone/i);
+    expect(zip.getEntries().filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))).toHaveLength(9);
+    if (process.env.CI) {
+      const reviewDir = path.join(process.cwd(), "test-results");
+      fs.mkdirSync(reviewDir, { recursive: true });
+      fs.copyFileSync(out.path, path.join(reviewDir, "french-present-tense-regression.pptx"));
+    }
   });
 
   it("rejects a deck that merely mentions Speed Dating without implementing the activity", () => {
