@@ -1,6 +1,6 @@
 {
   "name": "agent-diaz-revived",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -21,6 +21,8 @@
     "verify": "npm run check && npm test && npm run build && npm run smoke && npm run audit:reviewed"
   },
   "dependencies": {
+    "@xarsh/ooxml-validator": "0.3.0",
+    "adm-zip": "^0.6.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^12.4.1",
     "cookie-parser": "^1.4.7",
@@ -48,7 +50,6 @@
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.2",
-    "adm-zip": "^0.6.0",
     "concurrently": "^9.2.1",
     "esbuild": "^0.25.9",
     "tsx": "^4.20.5",
