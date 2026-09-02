@@ -1315,6 +1315,7 @@ export class AgentRunner {
                 mime: file.mime,
                 size: file.size,
                 path: file.path,
+                receipt: file.validationReceipt,
               });
               log("info", "artifact.build_validated", {
                 jobId,
@@ -1323,6 +1324,10 @@ export class AgentRunner {
                 repairAttempt,
                 name: file.name,
                 size: file.size,
+                buildSha: file.validationReceipt.buildSha,
+                artifactSha256: file.validationReceipt.artifactSha256,
+                knownBenignFindings:
+                  file.validationReceipt.knownBenignFindings.length,
               });
               break;
             } catch (buildError) {
