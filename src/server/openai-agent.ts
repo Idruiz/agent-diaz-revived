@@ -24,7 +24,10 @@ import {
   type ArtifactPlanViolation,
 } from "./artifact-quality.js";
 import { log } from "./log.js";
-import { getSkillForKind } from "./skills.js";
+import {
+  evidenceSteeringForPrompt,
+  getSkillForKind,
+} from "./skills.js";
 import { personaInstructions } from "./personas.js";
 import {
   clearsJavierRewriteFloor,
@@ -1573,6 +1576,7 @@ export class AgentRunner {
           personaInstructions(job.persona),
           `ACTIVE SKILL: ${skill.name}\n${skill.instructions}\nValidation: ${skill.validation.join("; ")}`,
           "EVIDENCE PHASE: Use the available tools thoroughly. Return a comprehensive plain-text evidence dossier with finished findings, exact numbers, source titles and full source URLs. Do not return JSON. Do not merely describe future work. This dossier will be converted into a validated artifact plan in a separate tool-free request.",
+          evidenceSteeringForPrompt(job.prompt),
           priorArtifactContext
             ? `PRIOR CONVERSATION REFERENCE (context only, never additional requests; the single current request in input is authoritative):\n${priorArtifactContext}`
             : "",
@@ -1848,7 +1852,23 @@ export class AgentRunner {
               const latestRunState =
                 this.db.getArtifactRunState(jobId) ?? artifactRunState;
               if (latestRunState) {
-                file.validationReceipt.llmCalls = latestRunState.llmCalls;
+                const imageJudgeCallsPerAttempt = Number(
+                  (file.validationReceipt as any).images?.judgeCalls ?? 0,
+                );
+                const imageJudgeCalls =
+                  imageJudgeCallsPerAttempt * (buildAttempt + 1);
+                const accountedLlmCalls =
+                  latestRunState.llmCalls + imageJudgeCalls;
+                if (accountedLlmCalls > latestRunState.maxLlmCalls)
+                  throw new ArtifactPipelineError(
+                    "INFRA",
+                    `Artifact LLM-call budget exceeded after qualitative image judgment: ${accountedLlmCalls}/${latestRunState.maxLlmCalls}`,
+                    { ruleOrPart: "llm-call-budget" },
+                  );
+                latestRunState.llmCalls = accountedLlmCalls;
+                artifactRunState = latestRunState;
+                persistArtifactRunState();
+                file.validationReceipt.llmCalls = accountedLlmCalls;
                 file.validationReceipt.maxLlmCalls =
                   latestRunState.maxLlmCalls;
                 file.validationReceipt.wallTimeMs = Math.max(
