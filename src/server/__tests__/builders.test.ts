@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import AdmZip from "adm-zip";
+import sharp from "sharp";
 import { buildArtifact } from "../builders";
 import type { Config } from "../config";
 
@@ -80,6 +81,26 @@ const plan = {
         nodes: ["Evidence", "Analysis", "Artifact"],
         caption: "Every stage is checked.",
       },
+    },
+  ],
+  pages: [
+    {
+      slug: "index",
+      title: "Overview",
+      description: "Evidence overview",
+      sectionHeadings: ["Evidence chart"],
+    },
+    {
+      slug: "details",
+      title: "Details",
+      description: "Exact evidence table",
+      sectionHeadings: ["Evidence table"],
+    },
+    {
+      slug: "process",
+      title: "Process",
+      description: "Validated workflow",
+      sectionHeadings: ["Process"],
     },
   ],
   sources: [{ title: "OpenAI", url: "https://openai.com" }],
@@ -239,20 +260,131 @@ describe("artifact builders", () => {
     });
   }, 15_000);
 
-  it("packages phone-portable self-contained website pages", async () => {
+  it("packages phone-portable website pages with one shared stylesheet and exact planned assignments", async () => {
     const out = await buildArtifact(config, "website", plan);
     const zip = new AdmZip(out.path);
     const names = zip.getEntries().map((e) => e.entryName);
     expect(names).toContain("OPEN_ME_FIRST.html");
     expect(names).toContain("index.html");
+    expect(names).toContain("details.html");
+    expect(names).toContain("process.html");
+    expect(names).toContain("assets/styles.css");
     expect(names).not.toContain("styles.css");
-    for (const entry of zip
-      .getEntries()
-      .filter((e) => e.entryName.endsWith(".html"))) {
-      const html = entry.getData().toString("utf8");
-      expect(html).toContain("<style>");
-      expect(html).not.toContain('href="styles.css"');
-      expect(html).not.toContain("assets/images/");
+
+    const expectedByPage = new Map([
+      ["index.html", ["Evidence chart"]],
+      ["details.html", ["Evidence table"]],
+      ["process.html", ["Process"]],
+    ]);
+    for (const [name, headings] of expectedByPage) {
+      const html = zip.getEntry(name)!.getData().toString("utf8");
+      expect(html).toContain('href="assets/styles.css"');
+      expect(html).not.toContain("<style>");
+      expect(html).not.toMatch(/data:image\//i);
+      for (const heading of headings) expect(html).toContain(heading);
+      for (const other of [...expectedByPage.values()].flat().filter((heading) => !headings.includes(heading)))
+        expect(html).not.toContain(`<h2>${other}</h2>`);
     }
+    const receipt = out.validationReceipt as any;
+    expect(receipt.website).toEqual({
+      plannedPages: ["index", "details", "process"],
+      renderedPages: 3,
+      sectionAssignments: 3,
+      uniqueImageFiles: 0,
+      sharedStylesheet: "assets/styles.css",
+      brokenInternalResources: 0,
+    });
   });
+
+  it("stores identical website image bytes once and references the shared asset without base64 duplication", async () => {
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const imagePlan = structuredClone(plan) as any;
+    imagePlan.sections[0].imageQuery = "Paris classroom evidence";
+    imagePlan.sections[1].imageQuery = "French evidence table classroom";
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php"))
+          return new Response(
+            JSON.stringify({
+              query: {
+                pages: {
+                  1: {
+                    pageid: 101,
+                    title: "Shared route image",
+                    categories: [{ title: "Category:Education in France" }],
+                    imageinfo: [
+                      {
+                        thumburl: "https://images.example.test/shared-site.jpg",
+                        descriptionurl:
+                          "https://commons.wikimedia.org/wiki/File:Shared_site.jpg",
+                        width: 1200,
+                        height: 800,
+                        extmetadata: {
+                          ObjectName: { value: "Shared route image" },
+                          ImageDescription: {
+                            value: "Students working with evidence in France.",
+                          },
+                          Artist: { value: "Fixture photographer" },
+                          LicenseShortName: { value: "CC BY 4.0" },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        if (url === "https://images.example.test/shared-site.jpg")
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(`Unexpected website image fetch: ${url}`);
+      });
+
+    try {
+      const out = await buildArtifact(
+        config,
+        "website",
+        imagePlan,
+        "Create a three-page evidence website for a school audience",
+      );
+      const zip = new AdmZip(out.path);
+      const imageEntries = zip
+        .getEntries()
+        .filter((entry) => /^assets\/images\/[^/]+\.jpg$/.test(entry.entryName));
+      expect(imageEntries).toHaveLength(1);
+      const assetPath = imageEntries[0]!.entryName;
+
+      for (const name of ["index.html", "details.html"]) {
+        const html = zip.getEntry(name)!.getData().toString("utf8");
+        expect(html).toContain(`src="${assetPath}"`);
+        expect(html).not.toMatch(/data:image\//i);
+      }
+      const receipt = out.validationReceipt as any;
+      expect(receipt.website.uniqueImageFiles).toBe(1);
+      expect(receipt.images).toMatchObject({
+        requested: 2,
+        fetched: 2,
+        placed: 2,
+      });
+    } finally {
+      imageFetch.mockRestore();
+    }
+  }, 15_000);
 });
