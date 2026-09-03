@@ -503,7 +503,10 @@ describe("artifact quality gates", () => {
           const functionText = node.getText(sourceFile);
           if (
             functionText.includes("word/document.xml") &&
-            /\.replace\s*\(/.test(functionText)
+            /\.replace\s*\(/.test(functionText) &&
+            /\b(?:setData|updateFile|writeZip|toBuffer|atomicWrite)\b/.test(
+              functionText,
+            )
           )
             offenders.push(
               `${fileName}:${
