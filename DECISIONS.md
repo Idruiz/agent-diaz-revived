@@ -200,3 +200,35 @@ REASON: The receipt and durable run state must agree, and qualitative image judg
 ## Deferred
 - Step 8: add consumer-gate fields and non-blocking quality scores; run four recorded golden plans.
 - Step 9: create checkpoint-3 container artifacts/receipts and compare final LLM calls to the Step 1 baseline.
+
+## Step 8 — Finished-file scoring, consumer gates, and recorded golden runs
+DECISION: Add explicit consumer-validation booleans `powerPointDesktopValidated`, `wordDesktopValidated`, and `browserValidated`, all initialized to `false` by automated builds.
+REASON: Automated schema/render checks are not substitutes for opening the finished files in the target consumer. These fields can become true only when the relevant real consumer validation is actually performed.
+
+DECISION: Record non-blocking `scores.layoutVariety`, `scores.emptyCanvasRatio`, `scores.notesCoverage`, and `scores.sourceTopicality` in every receipt.
+REASON: The overhaul requires quality evidence beyond “file opens.” Layout variety and note coverage derive from the reconciled plan, and PPTX empty-canvas ratio derives from serialized shape geometry.
+
+DECISION: Keep `sourceTopicality.score=null` with status `pending_qualitative_review` rather than manufacturing a lexical relevance score.
+REASON: Source topicality is qualitative. Step 8 does not add a new model-review call, so a deterministic numeric claim would be fake precision.
+
+DECISION: Estimate PPTX empty canvas from serialized `a:xfrm` box areas and document the method and limitation in the receipt.
+REASON: This is a deterministic proxy that can be audited from the finished package. Overlaps are not unioned, so the score is intentionally diagnostic rather than a hard acceptance gate.
+
+DECISION: Add four fixed golden plans and execute them through the real AgentRunner: exact French present-tense deck, Spanish culture document, CSV analysis report, and exact three-page website.
+REASON: Fixed plans make the quality gate reproducible while still exercising evidence/structure orchestration, image judgment/retrieval, builders, validation, persistence, and receipts.
+
+DECISION: Remove cross-row PPTX diagram connectors that would require negative width when wrapping from the final column to the first column of the next row.
+REASON: The Step 8 French golden exposed an Open XML MinInclusive violation caused by a negative connector extent. Same-row arrows remain; wrapped rows no longer emit invalid geometry.
+
+DECISION: Treat uppercase `TODO` as a placeholder marker but not lowercase Spanish `todo`.
+REASON: The previous case-insensitive regex rejected ordinary Spanish prose such as “todo el país.” Other placeholder phrases remain case-insensitive, and a dedicated multilingual regression pins the distinction.
+
+DECISION: Emit short-speaker-note warnings only for presentations.
+REASON: DOCX, analysis, and website outputs do not have a speaker-note surface; warning on their empty `speakerNotes` field polluted receipts with irrelevant normalizations.
+
+## Step 8 residuals
+- `sourceTopicality` still requires a human or bounded qualitative review before it can receive a real score.
+- Consumer validation booleans remain false until Inarvis opens the generated PPTX in PowerPoint Desktop, the DOCX in Word Desktop, and the site in a browser.
+
+## Deferred
+- Step 9: create the checkpoint-3 container artifacts and machine-readable receipts, preserve them in CI, compare final LLM-call totals to the Step 1 baseline, run the complete regression matrix, and stop at the final branch checkpoint without merging/deploying.
