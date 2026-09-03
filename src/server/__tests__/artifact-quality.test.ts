@@ -335,18 +335,19 @@ describe("artifact quality gates", () => {
     );
     expect(receipt.presentation.activityTemplates).toHaveLength(3);
     expect(slideText).toContain("7 ideas · 5 licensed visuals");
-    expect(sourcedNoteParagraphs).toEqual(
-      expect.arrayContaining([
-        "Use this slide to model the language, check understanding, and invite a complete response.",
-        "[Sources]",
-        "- https://commons.wikimedia.org/wiki/File:French_classroom.jpg",
-      ]),
+    const noteBody = sourcedNoteParagraphs.find((paragraph) =>
+      paragraph.includes("[Sources]"),
+    )!;
+    expect(noteBody).toContain(
+      "Use this slide to model the language, check understanding, and invite a complete response.",
     );
-    expect(
-      sourcedNoteParagraphs.filter(Boolean).some((paragraph) =>
-        paragraph.includes("\n"),
-      ),
-    ).toBe(false);
+    expect(noteBody).toContain("[Sources]");
+    expect(noteBody).toContain(
+      "- https://commons.wikimedia.org/wiki/File:French_classroom.jpg",
+    );
+    expect(noteBody).toMatch(
+      /response\.\r?\n\r?\n\[Sources\]\r?\n\r?\n- https:\/\/commons\.wikimedia\.org\/wiki\/File:French_classroom\.jpg/,
+    );
     expect(out.validationReceipt.knownBenignFindings[0]).toMatchObject({
       id: "Sch_UnexpectedElementContentExpectingComplex",
       path: "/ppt/presentation.xml",
