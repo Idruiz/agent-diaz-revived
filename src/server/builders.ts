@@ -308,17 +308,30 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     const caption=captionBox??{x:box.x,y:box.y+box.h+.08,w:box.w,h:.18};
     slide.addText(short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:caption.x,y:caption.y,w:caption.w,h:caption.h,fontSize:6.6,color:muted,margin:0,fit:"shrink",align:"right"});
   };
-  const addRenderedChart=async(slide:any,section:ArtifactPlan["sections"][number])=>{
+  const addRenderedChart=async(
+    slide:any,
+    section:ArtifactPlan["sections"][number],
+    image?:RealImage,
+  )=>{
     const chart=section.chart!,png=await chartPng(chart);
     slide.addText(short(chart.title,120),{x:.82,y:1.42,w:11.4,h:.36,fontSize:17,bold:true,color:navy,margin:0,fit:"shrink"});
-    slide.addImage({data:`data:image/png;base64,${png.toString("base64")}`,x:.82,y:1.92,w:8.65,h:4.72,altText:chart.title});
-    slide.addShape(p.ShapeType.roundRect,{x:9.72,y:2.06,w:2.82,h:2.15,rectRadius:.06,fill:{color:pale},line:{color:pale}});
-    slide.addText(short(section.body,260),{x:9.98,y:2.34,w:2.3,h:1.55,fontSize:16,bold:true,color:navy,margin:0,fit:"shrink",valign:"mid"});
-    if(chart.sourceNote)slide.addText(short(chart.sourceNote,180),{x:.84,y:6.62,w:8.7,h:.22,fontSize:8,color:muted,margin:0,fit:"shrink"});
+    const chartW=image?7.55:8.65;
+    slide.addImage({data:`data:image/png;base64,${png.toString("base64")}`,x:.82,y:1.92,w:chartW,h:4.72,altText:chart.title});
+    const cardX=image?8.62:9.72,cardW=image?3.72:2.82;
+    slide.addShape(p.ShapeType.roundRect,{x:cardX,y:2.06,w:cardW,h:image?1.62:2.15,rectRadius:.06,fill:{color:pale},line:{color:pale}});
+    slide.addText(short(section.body,260),{x:cardX+.22,y:2.3,w:cardW-.44,h:image?1.1:1.55,fontSize:image?14.5:16,bold:true,color:navy,margin:0,fit:"shrink",valign:"mid"});
+    if(image)placePhoto(slide,section,image,{x:8.72,y:4.02,w:3.48,h:1.92},{x:8.72,y:6.02,w:3.48,h:.18});
+    if(chart.sourceNote)slide.addText(short(chart.sourceNote,180),{x:.84,y:6.62,w:image?7.5:8.7,h:.22,fontSize:8,color:muted,margin:0,fit:"shrink"});
   };
-  const addNativeDiagram=(slide:any,section:ArtifactPlan["sections"][number])=>{
-    const diagram=section.diagram!,nodes=diagram.nodes.slice(0,8),columns=Math.min(4,nodes.length),rows=Math.ceil(nodes.length/columns),boxW=2.55,boxH=1.05,gapX=.42,gapY=.75,startX=(13.333-(columns*boxW+(columns-1)*gapX))/2,startY=2.05;
-    slide.addText(short(diagram.title,120),{x:.82,y:1.42,w:11.4,h:.36,fontSize:17,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
+  const addNativeDiagram=(
+    slide:any,
+    section:ArtifactPlan["sections"][number],
+    image?:RealImage,
+  )=>{
+    const diagram=section.diagram!,nodes=diagram.nodes.slice(0,8);
+    const availableW=image?8.55:11.5;
+    const columns=Math.min(image?3:4,nodes.length),rows=Math.ceil(nodes.length/columns),boxW=image?2.35:2.55,boxH=1.05,gapX=.38,gapY=.72,startX=.82+(availableW-(columns*boxW+(columns-1)*gapX))/2,startY=2.05;
+    slide.addText(short(diagram.title,120),{x:.82,y:1.42,w:image?8.55:11.4,h:.36,fontSize:17,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
     for(let index=0;index<nodes.length-1;index++){
       const row=Math.floor(index/columns),col=index%columns,nextRow=Math.floor((index+1)/columns),nextCol=(index+1)%columns;
       const x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY),nx=startX+nextCol*(boxW+gapX),ny=startY+nextRow*(boxH+gapY);
@@ -326,12 +339,22 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
       else slide.addShape(p.ShapeType.line,{x:x+boxW/2,y:y+boxH,w:nx+boxW/2-(x+boxW/2),h:ny-y-boxH,line:{color:blue,pt:2.2,endArrowType:"triangle"}});
     }
     nodes.forEach((node,index)=>{const row=Math.floor(index/columns),col=index%columns,x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);slide.addShape(p.ShapeType.roundRect,{x,y,w:boxW,h:boxH,rectRadius:.05,fill:{color:index%2?pale:"F1E5C5"},line:{color:gold,pt:1.2},shadow:{type:"outer",color:"000000",opacity:.1,blur:1,angle:45,distance:.5}});slide.addText(short(node,52),{x:x+.18,y:y+.16,w:boxW-.36,h:boxH-.32,fontSize:17,bold:true,color:navy,align:"center",valign:"mid",margin:0,fit:"shrink"});});
-    if(diagram.caption||section.body)slide.addText(short(diagram.caption||section.body,320),{x:1.2,y:rows===1?4.34:5.62,w:10.9,h:.72,fontSize:18,color:muted,align:"center",margin:0,fit:"shrink"});
+    if(diagram.caption||section.body)slide.addText(short(diagram.caption||section.body,320),{x:1.0,y:rows===1?4.34:5.55,w:image?8.15:11.1,h:.72,fontSize:17,color:muted,align:"center",margin:0,fit:"shrink"});
+    if(image)placePhoto(slide,section,image,{x:9.58,y:1.92,w:2.85,h:3.1},{x:9.58,y:5.14,w:2.85,h:.18});
   };
-  const addNativeTable=(slide:any,section:ArtifactPlan["sections"][number])=>{
-    const table=section.table!,headers=table.headers.map(text=>({text,options:{bold:true,color:white,fill:{color:navy},margin:.08}})),rows=table.rows.slice(0,16).map((row,rowIndex)=>row.map(text=>({text:short(text,160),options:{fill:{color:rowIndex%2?"F2F5F6":white},color:ink,margin:.07}})));
-    slide.addText(short(table.title,120),{x:.78,y:1.4,w:11.6,h:.36,fontSize:17,bold:true,color:navy,margin:0,fit:"shrink"});
-    slide.addTable([headers,...rows],{x:.78,y:1.88,w:11.78,h:4.86,border:{type:"solid",color:"CCD4D9",pt:.7},fontFace:"Aptos",fontSize:11,rowH:.32,margin:.06,valign:"middle",autoFit:false});
+  const addNativeTable=(
+    slide:any,
+    section:ArtifactPlan["sections"][number],
+    image?:RealImage,
+  )=>{
+    const table=section.table!,headers=table.headers.map(text=>({text,options:{bold:true,color:white,fill:{color:navy},margin:.08}})),rows=table.rows.slice(0,image?12:16).map((row,rowIndex)=>row.map(text=>({text:short(text,160),options:{fill:{color:rowIndex%2?"F2F5F6":white},color:ink,margin:.07}})));
+    slide.addText(short(table.title,120),{x:.78,y:1.4,w:image?8.3:11.6,h:.36,fontSize:17,bold:true,color:navy,margin:0,fit:"shrink"});
+    slide.addTable([headers,...rows],{x:.78,y:1.88,w:image?8.25:11.78,h:4.86,border:{type:"solid",color:"CCD4D9",pt:.7},fontFace:"Aptos",fontSize:image?10.4:11,rowH:.32,margin:.06,valign:"middle",autoFit:false});
+    if(image){
+      placePhoto(slide,section,image,{x:9.35,y:1.92,w:2.92,h:2.55},{x:9.35,y:4.56,w:2.92,h:.18});
+      slide.addShape(p.ShapeType.roundRect,{x:9.35,y:4.92,w:2.92,h:1.24,rectRadius:.05,fill:{color:pale},line:{color:pale}});
+      slide.addText(short(section.body,220),{x:9.58,y:5.12,w:2.46,h:.78,fontSize:13.5,bold:true,color:navy,margin:0,fit:"shrink",valign:"mid"});
+    }
   };
   const addActivitySlide=(slide:any,section:ArtifactPlan["sections"][number])=>{
     const activity=section.activity!;
