@@ -12,7 +12,7 @@ import { log } from "./log.js";
 const PLACEHOLDER_RE = /\b(?:tbd|lorem ipsum|placeholder|insert (?:text|content|image)|add (?:content|details)|coming soon)\b|\[(?:insert|add|todo)[^\]]*\]/i;
 const TODO_PLACEHOLDER_RE = /\bTODO\b/;
 function hasPlaceholderText(value:string):boolean {
-  return TODO_hasPlaceholderText(value) || hasPlaceholderText(value);
+  return TODO_PLACEHOLDER_RE.test(value) || PLACEHOLDER_RE.test(value);
 }
 const SPEED_DATING_RE = /speed[\s-]*dating/i;
 const FOUR_CORNERS_RE = /(?:four|4)[\s-]*corners/i;
