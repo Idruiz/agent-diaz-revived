@@ -64,3 +64,31 @@ REASON: The full validation suite now runs more concurrent Office/render work; t
 - Step 3: remove image-count throws and the honey/bee special case while replacing image retrieval with candidate filtering plus one artifact-level judgment call.
 - Step 5: remove `repairDocumentBuffer()` and post-serialization DOCX XML editing.
 - Step 6: remove hard-coded website page splitting and repeated base64 image embedding.
+
+## Step 3 — Image judge and retrieval rewrite
+DECISION: Split Commons handling into candidate metadata search/filter, one artifact-level qualitative judge call, then chosen-only download.
+REASON: The previous title-substring score could not judge geography, dignity, classroom suitability, or subject relevance and downloaded assets before deciding whether to use them.
+
+DECISION: Filter candidates before judgment to CC/PD licenses only, minimum 640×400, aspect ratio 0.45–2.5, and the spec exclusion vocabulary for distress, nudity, memorial, protest/police/weapon, logos/maps/screenshots/scans/book covers.
+REASON: These checks are deterministic and should not consume model judgment.
+
+DECISION: Delete the honey/bee query special case entirely.
+REASON: It was a hard-coded test-passing branch prohibited by the overhaul order.
+
+DECISION: Use a single structured-output image-judge request for all image-bearing sections in production; tests may inject a deterministic provider, and ordinary test fixtures use a test-only first-filtered-candidate fallback.
+REASON: Production must spend one qualitative call per artifact, while unrelated unit tests must not make network model calls. The dedicated judge regression injects the provider and proves exactly one call.
+
+DECISION: Exhausted or rejected image retrieval no longer throws merely because an image-count target was missed.
+REASON: Missing imagery is an ASSET outcome, not evidence that the plan is invalid. The artifact proceeds with a no-photo layout; the receipt records requested/fetched/judged/rejected/placed counts and reasons.
+
+DECISION: Count `placed` from actual builder branches that embed the chosen image, not from fetched candidates.
+REASON: The original false title-slide claim came from equating fetched assets with delivered assets.
+
+DECISION: Track the qualitative call explicitly as `images.judgeCalls` in Step 3; defer folding that count into the orchestration-level `llmCalls` field until Step 7, where `openai-agent.ts` is an allowed file.
+REASON: Step 3's safety rail forbids modifying `openai-agent.ts`. Production still makes at most one image-judge call, and the existing bounded plan path tops out below the six-call global cap; the receipt total must be reconciled later so Step 9's before/after number is honest.
+
+## Deferred
+- Step 4: reconcile visible visual references against actually placed assets and add PPTX activity+photo / activity-template variety.
+- Step 5: remove `repairDocumentBuffer()` and post-serialization DOCX XML editing.
+- Step 6: remove hard-coded website page splitting and repeated base64 image embedding.
+- Step 7: add `images.judgeCalls` to the orchestration-level `llmCalls` receipt total while touching `openai-agent.ts`.
