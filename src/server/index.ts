@@ -9,6 +9,7 @@ import { openDatabase } from "./db.js";
 import { createAuth } from "./auth.js";
 import { ensureDirs } from "./files.js";
 import { apiRoutes } from "./routes.js";
+import { presentationExportRoutes } from "./presentation-exports.js";
 import { AgentRunner } from "./openai-agent.js";
 import { log } from "./log.js";
 
@@ -59,6 +60,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 app.get("/version", (_req, res) => res.json({ buildSha: process.env.RENDER_GIT_COMMIT?.trim() || "unknown", packageVersion: packageMeta.version, pptxgenjs: exactDependencyVersion("pptxgenjs"), validator: exactDependencyVersion("@xarsh/ooxml-validator") }));
+app.use("/api", presentationExportRoutes(config, db, auth));
 app.use("/api", apiRoutes(config, db, runner, auth));
 app.use((err: any, _req: any, res: any, _next: any) => {
   log("error", "http.error", {
