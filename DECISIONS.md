@@ -232,3 +232,39 @@ REASON: DOCX, analysis, and website outputs do not have a speaker-note surface; 
 
 ## Deferred
 - Step 9: create the checkpoint-3 container artifacts and machine-readable receipts, preserve them in CI, compare final LLM-call totals to the Step 1 baseline, run the complete regression matrix, and stop at the final branch checkpoint without merging/deploying.
+
+## Step 9 — Checkpoint-3 package, final regression matrix, and call accounting
+DECISION: Generate checkpoint-3 from the recorded four-case golden matrix inside the same regression container used by CI.
+REASON: The final evidence must exercise the containerized production dependencies and cannot rely on host-only temporary files.
+
+DECISION: Persist four finished artifacts, one JSON receipt per artifact, and a machine-readable `summary.json` under `storage/diagnostics/checkpoint-3`, then upload the directory as a dedicated CI artifact.
+REASON: The checkpoint must preserve the actual finished files and their validation/accounting evidence together rather than leaving evidence only in transient logs.
+
+DECISION: Recompute SHA-256 after each artifact is copied into checkpoint-3 and require that exported-file hash to equal the artifact receipt's `artifactSha256`.
+REASON: This proves the preserved checkpoint binary is byte-for-byte the same artifact that passed validation; an upload or copy cannot silently substitute a different file.
+
+DECISION: Print checkpoint filenames, SHA-256 values, and `summary.json` into CI logs before artifact upload.
+REASON: The checkpoint remains independently auditable even if a workflow artifact later expires.
+
+DECISION: Compare the exact French teaching route against the frozen Step 1 baseline without claiming an artificial cost reduction.
+REASON: The baseline used two mocked LLM calls (evidence + structure). The overhauled route uses three bounded calls when images are requested: evidence + structure + one qualitative image-relevance judgment. The +1 call is intentional and replaces unbounded/irrelevant repair churn with one explicit judgment step.
+
+DECISION: The final golden acceptance matrix is four real `AgentRunner` jobs: French teaching PPTX, Spanish culture DOCX, CSV analysis DOCX, and planned three-page website ZIP.
+REASON: Together they exercise presentation pedagogy/visuals, Word activities, uploaded-data analysis, and website page planning/resources through orchestration, build, validation, persistence, and receipts.
+
+DECISION: Keep consumer validation flags false in automated checkpoint receipts.
+REASON: `powerPointDesktopValidated`, `wordDesktopValidated`, and `browserValidated` may only be asserted after the corresponding real consumer acceptance is performed. LibreOffice/schema validation is not a substitute.
+
+DECISION: Stop at the branch checkpoint after the full CI matrix is green.
+REASON: The governing authorization explicitly forbids modifying or pushing `main`, merging, deploying, or changing Render during Steps 1–9.
+
+## Step 9 acceptance evidence required on the final branch head
+- `npm run verify` green.
+- Containerized checkpoint-3 golden matrix green.
+- Exported checkpoint SHA-256 values equal receipt SHA-256 values.
+- Exact presentation regression green inside the regression container.
+- Production Docker image build green.
+- Exact-prompt regression artifacts uploaded.
+- Checkpoint-3 package uploaded.
+- Branch remains fast-forward-only from `main` with zero commits behind.
+- No merge, `main` update, Render deployment, or Render configuration change.
