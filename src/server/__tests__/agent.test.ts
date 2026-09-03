@@ -554,6 +554,405 @@ describe("agent production paths", () => {
     db.close();
   });
 
+  it("blocks INFRA failures without sending the build error to an LLM plan repair", async () => {
+    const { config, db } = harness();
+    fs.mkdirSync(config.artifactDir, { recursive: true });
+    const conversation = db.createConversation(
+      crypto.randomUUID(),
+      "Infra classification",
+    );
+    const job = db.createJob({
+      id: crypto.randomUUID(),
+      kind: "document",
+      prompt: "Create a production-ready document with evidence and visuals",
+      conversationId: conversation.id,
+      fileIds: [],
+      ...modelProfileFor("balanced"),
+    });
+    const plan = {
+      title: "Infrastructure classification",
+      subtitle: "A deterministic build fixture",
+      requirements: [
+        {
+          id: "R1",
+          text: "Create a production-ready document with evidence and visuals",
+          mandatory: true,
+        },
+      ],
+      sections: [
+        {
+          heading: "Overview",
+          body: "This finished section provides a complete overview with enough visible content for deterministic output validation.",
+          bullets: ["Evidence is explicit.", "The artifact is audience-facing."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard",
+          imageQuery: "French classroom documentary photograph",
+        },
+        {
+          heading: "Evidence table",
+          body: "The evidence table records concrete fixture values and keeps the document output substantive.",
+          bullets: [],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "data",
+          table: {
+            title: "Evidence matrix",
+            headers: ["Stage", "Result"],
+            rows: [
+              ["Evidence", "Complete"],
+              ["Build", "Complete"],
+            ],
+          },
+        },
+        {
+          heading: "Workflow",
+          body: "The workflow diagram gives the third meaningful visual required by the current deterministic plan gate.",
+          bullets: [],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "process",
+          diagram: {
+            title: "Deterministic workflow",
+            nodes: ["Request", "Evidence", "Build", "Validate"],
+            caption: "A complete path from request to validation.",
+          },
+        },
+        {
+          heading: "Implications",
+          body: "Infrastructure failures belong to operations and must not cause a model to rewrite already valid artifact content.",
+          bullets: ["No plan rewrite is appropriate for a missing renderer."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard",
+        },
+        {
+          heading: "Conclusion",
+          body: "The job should expose a blocked infrastructure state while preserving the valid plan and avoiding repair spend.",
+          bullets: ["The user can distinguish infrastructure from content."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard",
+        },
+      ],
+      pages: null,
+      sources: [
+        {
+          title: "Fixture source",
+          url: "https://example.com/fixture-source",
+        },
+      ],
+    };
+    const create = vi.fn(async (request: any) =>
+      request.tools?.length
+        ? {
+            id: "resp_infra_evidence",
+            status: "completed",
+            output_text:
+              "Verified evidence dossier with https://example.com/fixture-source.",
+            output: [],
+          }
+        : {
+            id: "resp_infra_structure",
+            status: "completed",
+            output_text: JSON.stringify(plan),
+            output: [],
+          },
+    );
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php"))
+          return new Response(
+            JSON.stringify({
+              query: {
+                pages: {
+                  1: {
+                    title: "French classroom documentary",
+                    imageinfo: [
+                      {
+                        thumburl: "https://images.example.test/infra.jpg",
+                        descriptionurl:
+                          "https://commons.wikimedia.org/wiki/File:Infra.jpg",
+                        width: 1200,
+                        height: 800,
+                        extmetadata: {
+                          ObjectName: {
+                            value: "French classroom documentary",
+                          },
+                          Artist: { value: "Fixture photographer" },
+                          LicenseShortName: { value: "CC BY 4.0" },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        if (url === "https://images.example.test/infra.jpg")
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(`Unexpected fetch in INFRA test: ${url}`);
+      });
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousSoffice = process.env.SOFFICE_PATH;
+    process.env.NODE_ENV = "production";
+    process.env.SOFFICE_PATH = "/definitely/not/installed/soffice";
+    const runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: { create, retrieve: vi.fn() },
+    };
+    try {
+      await (runner as any).run(job.id);
+    } finally {
+      imageFetch.mockRestore();
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousSoffice === undefined) delete process.env.SOFFICE_PATH;
+      else process.env.SOFFICE_PATH = previousSoffice;
+    }
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(db.getJob(job.id)).toMatchObject({
+      status: "blocked",
+      message: "blocked: infrastructure",
+    });
+    const state = db.getArtifactRunState(job.id);
+    expect(state).toMatchObject({ llmCalls: 2, maxLlmCalls: 6 });
+    expect(state?.attempts).toHaveLength(1);
+    expect(state?.attempts[0]).toMatchObject({
+      failureClass: "INFRA",
+      strategy: "same-plan-build",
+    });
+    expect(db.listArtifacts(job.id)).toHaveLength(0);
+    db.close();
+  }, 20_000);
+
+  it("stops an identical ASSET fingerprint after one same-plan retry with zero repair calls", async () => {
+    const { config, db } = harness();
+    fs.mkdirSync(config.artifactDir, { recursive: true });
+    const conversation = db.createConversation(
+      crypto.randomUUID(),
+      "Fingerprint stop",
+    );
+    const job = db.createJob({
+      id: crypto.randomUUID(),
+      kind: "document",
+      prompt: "Create a production-ready document with one licensed photograph",
+      conversationId: conversation.id,
+      fileIds: [],
+      ...modelProfileFor("balanced"),
+    });
+    const plan = {
+      title: "Fingerprint stop",
+      subtitle: "Identical asset failure fixture",
+      requirements: [
+        {
+          id: "R1",
+          text: "Create a production-ready document with one licensed photograph",
+          mandatory: true,
+        },
+      ],
+      sections: [
+        {
+          heading: "Requested photograph",
+          body: "This section requests a licensed documentary photograph and contains complete audience-facing content.",
+          bullets: ["The requested visual is explicit."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard",
+          imageQuery: "French classroom documentary photograph",
+        },
+        {
+          heading: "Evidence table",
+          body: "A complete evidence table provides a second meaningful visual for deterministic plan validation.",
+          bullets: [],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "data",
+          table: {
+            title: "Evidence",
+            headers: ["Item", "Status"],
+            rows: [["Plan", "Complete"]],
+          },
+        },
+        {
+          heading: "Process diagram",
+          body: "The process diagram provides a third meaningful visual while leaving the image failure isolated.",
+          bullets: [],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "process",
+          diagram: {
+            title: "Process",
+            nodes: ["Plan", "Image", "Build"],
+            caption: "Asset retrieval is a separate responsibility.",
+          },
+        },
+        {
+          heading: "Result",
+          body: "The same asset failure on the same plan must not cause repeated model rewrites or an endless loop.",
+          bullets: ["The retry strategy is deterministic."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard",
+        },
+        {
+          heading: "Close",
+          body: "The job exits the identical retry loop after the fingerprint repeats and records both attempts.",
+          bullets: ["The plan remains unchanged."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard",
+        },
+      ],
+      pages: null,
+      sources: [
+        {
+          title: "Fixture source",
+          url: "https://example.com/fingerprint-source",
+        },
+      ],
+    };
+    const create = vi.fn(async (request: any) =>
+      request.tools?.length
+        ? {
+            id: "resp_asset_evidence",
+            status: "completed",
+            output_text:
+              "Verified evidence dossier with https://example.com/fingerprint-source.",
+            output: [],
+          }
+        : {
+            id: "resp_asset_structure",
+            status: "completed",
+            output_text: JSON.stringify(plan),
+            output: [],
+          },
+    );
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response("not found", {
+          status: 404,
+          headers: { "content-type": "text/plain" },
+        }),
+      );
+    const runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: { create, retrieve: vi.fn() },
+    };
+    try {
+      await (runner as any).run(job.id);
+    } finally {
+      imageFetch.mockRestore();
+    }
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(db.getJob(job.id)).toMatchObject({
+      status: "failed",
+      message: "Artifact stopped: asset",
+    });
+    const state = db.getArtifactRunState(job.id);
+    expect(state).toMatchObject({ llmCalls: 2, maxLlmCalls: 6 });
+    expect(state?.attempts).toHaveLength(2);
+    expect(state?.attempts[0]?.fingerprint).toBe(
+      state?.attempts[1]?.fingerprint,
+    );
+    expect(state?.attempts[0]?.failureClass).toBe("ASSET");
+    db.close();
+  }, 20_000);
+
+  it("enforces the six-call artifact LLM budget across repeated plan repairs", async () => {
+    const { config, db } = harness();
+    const conversation = db.createConversation(
+      crypto.randomUUID(),
+      "LLM budget",
+    );
+    const job = db.createJob({
+      id: crypto.randomUUID(),
+      kind: "presentation",
+      prompt: "Create a seven-section visual presentation",
+      conversationId: conversation.id,
+      fileIds: [],
+      ...modelProfileFor("balanced"),
+    });
+    const invalidPlan = (variant: number) => ({
+      title: `Still invalid ${variant}`,
+      subtitle: "Six sections cannot satisfy the current presentation boundary",
+      requirements: [
+        {
+          id: "R1",
+          text: "Create a seven-section visual presentation",
+          mandatory: true,
+        },
+      ],
+      sections: Array.from({ length: 6 }, (_, index) => ({
+        heading: `Section ${index + 1}`,
+        body: `Finished content ${variant}-${index + 1} with enough explanatory context for deterministic parsing.`,
+        bullets: ["Complete audience-facing point."],
+        speakerNotes: "",
+        requirementIds: ["R1"],
+        layout: "standard",
+        imageQuery: `documentary classroom scene ${variant} ${index + 1}`,
+      })),
+      pages: null,
+      sources: [],
+    });
+    let structureVariant = 0;
+    const create = vi.fn(async (request: any) => {
+      if (request.tools?.length)
+        return {
+          id: "resp_budget_evidence",
+          status: "completed",
+          output_text: "Verified evidence dossier.",
+          output: [],
+        };
+      const variant = structureVariant++;
+      return {
+        id: `resp_budget_${variant}`,
+        status: "completed",
+        output_text: JSON.stringify(invalidPlan(variant)),
+        output: [],
+      };
+    });
+    const runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: { create, retrieve: vi.fn() },
+    };
+
+    await (runner as any).run(job.id);
+
+    expect(create).toHaveBeenCalledTimes(6);
+    expect(db.getJob(job.id)).toMatchObject({
+      status: "failed",
+      message: "Artifact stopped: plan_content",
+    });
+    expect(db.getJob(job.id)?.error).toMatch(/LLM-call budget exhausted/);
+    const state = db.getArtifactRunState(job.id);
+    expect(state).toMatchObject({ llmCalls: 6, maxLlmCalls: 6 });
+    expect(state?.attempts.length).toBeGreaterThanOrEqual(4);
+    db.close();
+  }, 20_000);
+
   it("completes every artifact route through evidence, structure, build, validation, and persistence", async () => {
     const exactPresentationPrompt =
       "create a taching presentation slide deck to teach the present tense in french, connect it to french culture and include slides to get the students to practice such as speed dating and 4 corners";
@@ -993,6 +1392,12 @@ describe("agent production paths", () => {
         expect(fs.existsSync(artifactPath)).toBe(true);
         expect(artifacts[0]!.receipt?.buildSha).toBeTruthy();
         expect(artifacts[0]!.receipt?.artifactSha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(artifacts[0]!.receipt).toMatchObject({
+          llmCalls: 2,
+          maxLlmCalls: 6,
+          attempts: [],
+        });
+        expect(artifacts[0]!.receipt!.wallTimeMs).toBeGreaterThanOrEqual(0);
         if (kind === "presentation") {
           expect(artifacts[0]!.receipt).toMatchObject({
             schemaValidator:
