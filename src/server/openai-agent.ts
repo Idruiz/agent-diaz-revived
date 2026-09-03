@@ -1100,6 +1100,124 @@ export class AgentRunner {
             ].some((prefix) => job.message.startsWith(prefix)) ||
               job.status === "building"),
         );
+
+      let artifactRunState = isArtifact
+        ? this.db.getArtifactRunState(jobId)
+        : null;
+      if (isArtifact && !artifactRunState) {
+        artifactRunState = {
+          startedAt: new Date().toISOString(),
+          llmCalls: 0,
+          maxLlmCalls: MAX_ARTIFACT_LLM_CALLS,
+          attempts: [],
+        };
+        this.db.setArtifactRunState(jobId, artifactRunState);
+      }
+      const persistArtifactRunState = () => {
+        if (isArtifact && artifactRunState)
+          this.db.setArtifactRunState(jobId, artifactRunState);
+      };
+      const trackedCreate = async (
+        request: any,
+        phase: "evidence" | "structure" | "structure-retry" | "plan-repair",
+      ) => {
+        if (!isArtifact) return this.client.responses.create(request);
+        if (!artifactRunState)
+          throw new ArtifactPipelineError(
+            "INFRA",
+            "Artifact run state is unavailable",
+            { ruleOrPart: "run-state" },
+          );
+        const elapsed =
+          Date.now() - Date.parse(artifactRunState.startedAt);
+        if (elapsed > MAX_ARTIFACT_WALL_TIME_MS)
+          throw new ArtifactPipelineError(
+            "INFRA",
+            `Artifact wall-time budget exceeded after ${elapsed} ms`,
+            { ruleOrPart: "wall-time-budget" },
+          );
+        if (artifactRunState.llmCalls >= artifactRunState.maxLlmCalls)
+          throw new ArtifactPipelineError(
+            phase === "plan-repair" ? "PLAN_CONTENT" : "INFRA",
+            `Artifact LLM-call budget exhausted at ${artifactRunState.llmCalls}/${artifactRunState.maxLlmCalls}`,
+            { ruleOrPart: "llm-call-budget" },
+          );
+        artifactRunState.llmCalls++;
+        persistArtifactRunState();
+        try {
+          return await this.client.responses.create(request);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (
+            /(?:5\d\d|server[_ -]?error|rate[_ -]?limit|ECONN|ETIMEDOUT|network)/i.test(
+              message,
+            )
+          )
+            throw new ArtifactPipelineError(
+              "INFRA",
+              `Provider infrastructure failure during ${phase}: ${message}`,
+              { ruleOrPart: `provider-${phase}`, cause: error },
+            );
+          throw error;
+        }
+      };
+      const recordArtifactFailure = (
+        error: unknown,
+        planLike: unknown,
+        strategy: string,
+        forcedClass?: ArtifactFailureClass,
+      ) => {
+        const classified = forcedClass
+          ? error instanceof ArtifactPipelineError
+            ? error
+            : new ArtifactPipelineError(
+                forcedClass,
+                error instanceof Error ? error.message : String(error),
+                { ruleOrPart: forcedClass === "PLAN_CONTENT" ? "plan-validation" : "unknown" },
+              )
+          : classifyArtifactFailure(error);
+        const planSha = sha256Text(
+          typeof planLike === "string"
+            ? planLike
+            : JSON.stringify(planLike ?? null),
+        );
+        let packageSha = classified.packageSha;
+        if (
+          !packageSha &&
+          classified.diagnosticPath &&
+          fs.existsSync(classified.diagnosticPath)
+        )
+          packageSha = createHash("sha256")
+            .update(fs.readFileSync(classified.diagnosticPath))
+            .digest("hex");
+        const fingerprint = artifactFailureFingerprint({
+          failureClass: classified.failureClass,
+          ruleOrPart: classified.ruleOrPart,
+          planSha,
+          packageSha,
+          strategy,
+        });
+        const attempt: ArtifactAttemptReceipt = {
+          failureClass: classified.failureClass,
+          fingerprint,
+          ruleOrPart: classified.ruleOrPart,
+          planSha,
+          packageSha,
+          strategy,
+          diagnosticPath: classified.diagnosticPath,
+          at: new Date().toISOString(),
+        };
+        if (artifactRunState) {
+          artifactRunState.attempts.push(attempt);
+          persistArtifactRunState();
+        }
+        const duplicateCount =
+          artifactRunState?.attempts.filter(
+            (item) => item.fingerprint === fingerprint,
+          ).length ?? 1;
+        return { classified, fingerprint, duplicateCount };
+      };
       if (!existingResponseId)
         this.db.updateJob(jobId, {
           status: "running",
@@ -1139,7 +1257,7 @@ export class AgentRunner {
           safety_identifier: "agent-diaz-owner",
         } as any;
         assertProviderRequestCompatible(request);
-        return this.client.responses.create(request);
+        return trackedCreate(request, "evidence");
       };
       const createStructureResponse = async (evidence: string) => {
         const request = {
@@ -1157,7 +1275,7 @@ export class AgentRunner {
           text: { format: artifactPlanTextFormat(job.kind) },
         } as any;
         assertProviderRequestCompatible(request);
-        return this.client.responses.create(request);
+        return trackedCreate(request, "structure");
       };
       const createPlanRepairResponse = async (
         previousResponseId: string,
@@ -1179,7 +1297,7 @@ export class AgentRunner {
           text: { format: artifactPlanTextFormat(job.kind) },
         } as any;
         assertProviderRequestCompatible(request);
-        return this.client.responses.create(request);
+        return trackedCreate(request, "plan-repair");
       };
 
       let response: any,
@@ -1227,22 +1345,25 @@ export class AgentRunner {
           jobId,
           structureResponse,
           () =>
-            this.client.responses.create({
-              model: job.model,
-              previous_response_id: structureResponse.id,
-              reasoning: {
-                effort: job.reasoningEffort,
-                context: "all_turns",
-              },
-              instructions:
-                "Retry the artifact structure phase from the original request and evidence in the previous response. Return one complete JSON artifact plan only. Do not use tools.",
-              input:
-                "Reconstruct the complete artifact plan; the previous structure attempt failed transiently.",
-              background: true,
-              store: true,
-              safety_identifier: "agent-diaz-owner",
-              text: { format: artifactPlanTextFormat(job.kind) },
-            } as any),
+            trackedCreate(
+              {
+                model: job.model,
+                previous_response_id: structureResponse.id,
+                reasoning: {
+                  effort: job.reasoningEffort,
+                  context: "all_turns",
+                },
+                instructions:
+                  "Retry the artifact structure phase from the original request and evidence in the previous response. Return one complete JSON artifact plan only. Do not use tools.",
+                input:
+                  "Reconstruct the complete artifact plan; the previous structure attempt failed transiently.",
+                background: true,
+                store: true,
+                safety_identifier: "agent-diaz-owner",
+                text: { format: artifactPlanTextFormat(job.kind) },
+              } as any,
+              "structure-retry",
+            ),
           79,
           "Structuring artifact",
           true,
@@ -1285,13 +1406,32 @@ export class AgentRunner {
               } catch (planError) {
                 repairAttempt++;
                 const validationError = errorMessage(planError);
+                const planFailure = new ArtifactPipelineError(
+                  "PLAN_CONTENT",
+                  validationError,
+                  { ruleOrPart: "plan-validation" },
+                );
+                const failureRecord = recordArtifactFailure(
+                  planFailure,
+                  output,
+                  "plan-repair",
+                  "PLAN_CONTENT",
+                );
                 log("warn", "artifact.plan_validation_failed", {
                   jobId,
                   kind: job.kind,
                   attempt: repairAttempt,
                   sectionCount: planSectionCount(output),
+                  fingerprint: failureRecord.fingerprint,
+                  duplicateCount: failureRecord.duplicateCount,
                   error: validationError,
                 });
+                if (failureRecord.duplicateCount >= 2)
+                  throw new ArtifactPipelineError(
+                    "PLAN_CONTENT",
+                    `Repeated identical plan-validation fingerprint ${failureRecord.fingerprint}; stopping identical repair loop`,
+                    { ruleOrPart: "plan-validation" },
+                  );
                 this.db.updateJob(jobId, {
                   status: "running",
                   progress: Math.min(91, 83 + repairAttempt),
@@ -1353,7 +1493,22 @@ export class AgentRunner {
                 job.kind,
                 plan,
                 job.prompt,
+                jobId,
               );
+              const latestRunState =
+                this.db.getArtifactRunState(jobId) ?? artifactRunState;
+              if (latestRunState) {
+                file.validationReceipt.llmCalls = latestRunState.llmCalls;
+                file.validationReceipt.maxLlmCalls =
+                  latestRunState.maxLlmCalls;
+                file.validationReceipt.wallTimeMs = Math.max(
+                  0,
+                  Date.now() - Date.parse(latestRunState.startedAt),
+                );
+                file.validationReceipt.attempts = [
+                  ...latestRunState.attempts,
+                ];
+              }
               const id = crypto.randomUUID();
               this.db.addArtifact({
                 id,
@@ -1379,49 +1534,62 @@ export class AgentRunner {
               break;
             } catch (buildError) {
               buildAttempt++;
-              const validationError = errorMessage(buildError);
-              log("warn", "artifact.build_validation_failed_retriable", {
+              const failureRecord = recordArtifactFailure(
+                buildError,
+                plan,
+                "same-plan-build",
+              );
+              const validationError = failureRecord.classified.message;
+              log("warn", "artifact.build_failed", {
                 jobId,
                 kind: job.kind,
                 buildAttempt,
                 repairAttempt,
+                failureClass: failureRecord.classified.failureClass,
+                fingerprint: failureRecord.fingerprint,
+                duplicateCount: failureRecord.duplicateCount,
+                diagnosticPath:
+                  failureRecord.classified.diagnosticPath,
                 error: validationError,
               });
+
+              if (failureRecord.classified.failureClass === "INFRA")
+                throw failureRecord.classified;
+
+              if (failureRecord.duplicateCount >= 2)
+                throw new ArtifactPipelineError(
+                  failureRecord.classified.failureClass,
+                  `Repeated identical ${failureRecord.classified.failureClass} fingerprint ${failureRecord.fingerprint}; identical retry loop stopped`,
+                  {
+                    ruleOrPart: failureRecord.classified.ruleOrPart,
+                    diagnosticPath:
+                      failureRecord.classified.diagnosticPath,
+                    packageSha:
+                      failureRecord.classified.packageSha,
+                  },
+                );
+
               this.db.updateJob(jobId, {
-                status: "running",
-                progress: Math.min(96, 91 + Math.min(buildAttempt, 5)),
+                status: "building",
+                progress: Math.min(
+                  96,
+                  91 + Math.min(buildAttempt, 5),
+                ),
                 error: null,
-                message: `Artifact validation found an issue; regenerating automatically (attempt ${buildAttempt + 1})`,
+                message:
+                  failureRecord.classified.failureClass === "ASSET"
+                    ? `Asset resolution failed; retrying the same plan without an LLM rewrite (attempt ${buildAttempt + 1})`
+                    : `Build validation failed; retrying the same plan without an LLM rewrite (attempt ${buildAttempt + 1})`,
               });
-              const parentResponseId = response.id as string;
-              await sleep(Math.min(15_000, 1000 * 2 ** Math.min(buildAttempt - 1, 4)));
+              await sleep(
+                Math.min(
+                  5000,
+                  750 * 2 ** Math.min(buildAttempt - 1, 3),
+                ),
+              );
               if (this.db.getJob(jobId)?.status === "cancelled") return;
-              let repairResponse = await createPlanRepairResponse(
-                parentResponseId,
-                `BUILT ARTIFACT ERROR:\n${validationError}\n\nThe package was not published. Repair the plan so a fresh build avoids this error while preserving every user requirement and all verified evidence.`,
-              );
-              this.db.updateJob(jobId, {
-                providerResponseId: repairResponse.id,
-                error: null,
-                message: `Artifact regeneration: repair attempt ${buildAttempt} started`,
-              });
-              repairResponse = await this.awaitBackgroundResponse(
-                jobId,
-                repairResponse,
-                () =>
-                  createPlanRepairResponse(
-                    parentResponseId,
-                    `BUILT ARTIFACT ERROR:\n${validationError}\n\nRegenerate a corrected complete plan. Do not use tools or repeat research.`,
-                  ),
-                96,
-                "Artifact regeneration",
-                true,
-              );
-              if (!repairResponse) return;
-              response = repairResponse;
-              output = repairResponse.output_text?.trim() || "{}";
-            }
-          }
+              continue;
+            }          }
         } else
           log("info", "artifact.build_resume_reused", {
             jobId,
@@ -1490,6 +1658,41 @@ export class AgentRunner {
         "document",
         "website",
       ];
+      if (
+        current &&
+        current.status !== "cancelled" &&
+        artifactKinds.includes(current.kind) &&
+        e instanceof ArtifactPipelineError
+      ) {
+        const blocked = e.failureClass === "INFRA";
+        this.db.updateJob(jobId, {
+          status: blocked ? "blocked" : "failed",
+          progress: Math.max(10, Math.min(96, current.progress)),
+          message: blocked
+            ? "blocked: infrastructure"
+            : `Artifact stopped: ${e.failureClass.toLowerCase()}`,
+          error: message,
+        });
+        const existing = this.db.raw
+          .prepare(
+            "SELECT id FROM messages WHERE job_id=? AND role='assistant' ORDER BY created_at DESC LIMIT 1",
+          )
+          .get(jobId) as { id: string } | undefined;
+        if (existing)
+          this.db.updateMessage(existing.id, {
+            status: "failed",
+            error: message,
+          });
+        log(blocked ? "warn" : "error", "artifact.pipeline_stopped", {
+          jobId,
+          kind: current.kind,
+          failureClass: e.failureClass,
+          ruleOrPart: e.ruleOrPart,
+          diagnosticPath: e.diagnosticPath,
+          error: message,
+        });
+        return;
+      }
       if (
         current &&
         current.status !== "cancelled" &&
