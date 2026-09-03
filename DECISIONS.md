@@ -183,3 +183,20 @@ REASON: The finished package must expose enough evidence to audit architecture a
 - Step 7: reconcile image-judge calls into global LLM-call accounting and strengthen evidence/teaching steering.
 - Step 8: final finished-file quality scoring and consumer gates.
 - Step 9: exact regression matrix, before/after receipt, final diagnostics and PR checkpoint.
+
+## Step 7 — Teaching evidence steering and LLM-call accounting
+DECISION: Classify teaching requests deterministically from explicit instructional vocabulary and inject the exact §3.7 content-research sentence only for those requests.
+REASON: Teaching artifacts need cultural/content facts, authentic examples, places, foods, customs, sample sentences, image-worthy subjects, and credible content sources; generic business/research artifacts should not be steered toward classroom content.
+
+DECISION: Keep the teaching-content instruction as one exported constant in `skills.ts` and test its exact literal text.
+REASON: The overhaul specifies the sentence verbatim; centralizing it prevents silent drift between skill and orchestration code.
+
+DECISION: Add successful image-judge calls to global `llmCalls` as `receipt.images.judgeCalls × successful-build attempt count`.
+REASON: Step 3 intentionally tracked the qualitative judge separately because `openai-agent.ts` was out of scope. A same-plan build retry re-runs image resolution and therefore can spend another qualitative judge call; multiplying by total build attempts records that spend rather than hiding it.
+
+DECISION: Persist the reconciled LLM-call total back into `artifact_run_state_json` and fail if it would exceed the six-call budget.
+REASON: The receipt and durable run state must agree, and qualitative image judgment is model spend just as evidence/structure/repair calls are.
+
+## Deferred
+- Step 8: add consumer-gate fields and non-blocking quality scores; run four recorded golden plans.
+- Step 9: create checkpoint-3 container artifacts/receipts and compare final LLM calls to the Step 1 baseline.
