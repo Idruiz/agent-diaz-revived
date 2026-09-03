@@ -10,7 +10,12 @@ import { atomicWrite, safeJoin } from "./files.js";
 import { chartPng, chartSvg, diagramPng, diagramSvg } from "./visuals.js";
 import { fetchCommonsImage, type RealImage } from "./real-images.js";
 import { log } from "./log.js";
-import { repairDocumentBuffer, validateBuiltArtifact, type ArtifactValidationReceipt } from "./artifact-quality.js";
+import {
+  ArtifactPipelineError,
+  repairDocumentBuffer,
+  validateBuiltArtifact,
+  type ArtifactValidationReceipt,
+} from "./artifact-quality.js";
 
 const PptxGenJS=((PptxGenModule as any).default??PptxGenModule) as typeof PptxGenModule;
 
@@ -57,12 +62,16 @@ function noteBlock(notes:string|undefined,sources:string[]):string{
     .join("\n\n");
 }
 
-async function pptx(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
+async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const images=await collectImages({...plan,sections:contentSections},10);
   const requestedImages=contentSections.filter(section=>section.imageQuery).length;
   if(requestedImages>=3&&images.size<Math.min(3,requestedImages))
-    throw new Error(`Presentation photography validation failed: retrieved ${images.size} of ${requestedImages} requested licensed images`);
+    throw new ArtifactPipelineError(
+      "ASSET",
+      `Presentation photography validation failed: retrieved ${images.size} of ${requestedImages} requested licensed images`,
+      { ruleOrPart: "presentation-images" },
+    );
   const p=new PptxGenJS(); p.layout="LAYOUT_WIDE"; p.author="Agent Díaz"; p.subject=plan.title; p.title=plan.title;
   p.theme={headFontFace:"Aptos Display",bodyFontFace:"Aptos"};
   const bg="F7F3EA",ink="17202A",gold="C99A2E",navy="17324D",blue="2F739C",muted="5A6772",white="FFFFFF",pale="E7EEF2";
@@ -187,16 +196,26 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile
   const name=`${slug(plan.title)}.pptx`, target=safeJoin(config.artifactDir,name);
   const raw=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer); if(raw.length<5000)throw new Error("PPTX validation failed: output too small");
   atomicWrite(target,raw);
-  const validationReceipt=await validateBuiltArtifact("presentation",prompt,plan,target);
+  const validationReceipt=await validateBuiltArtifact(
+    "presentation",
+    prompt,
+    plan,
+    target,
+    jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
+  );
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:raw.length,validationReceipt};
 }
 
-async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document"):Promise<BuiltFile>{
+async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId=""):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const images=await collectImages({...plan,sections:contentSections},10);
   const requestedImages=contentSections.filter(section=>section.imageQuery).length;
   if(requestedImages>0&&images.size<Math.min(requestedImages,1))
-    throw new Error(`Document photography validation failed: retrieved ${images.size} of ${requestedImages} requested licensed images`);
+    throw new ArtifactPipelineError(
+      "ASSET",
+      `Document photography validation failed: retrieved ${images.size} of ${requestedImages} requested licensed images`,
+      { ruleOrPart: "document-images" },
+    );
   const noBorder={style:BorderStyle.NONE,size:0,color:"FFFFFF"};
   const cellBorders={top:noBorder,bottom:{style:BorderStyle.SINGLE,size:4,color:"D9E0E4"},left:noBorder,right:noBorder,insideHorizontal:noBorder,insideVertical:noBorder};
   const tableWidths=(headers:string[],rows:string[][])=>{
@@ -262,11 +281,17 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
   const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);
   log("info","artifact.document_ooxml_repaired",{name,drawingIdsReassigned:repaired.stats.drawingIdsReassigned});
   atomicWrite(target,buf);
-  const validationReceipt=await validateBuiltArtifact(kind,prompt,plan,target);
+  const validationReceipt=await validateBuiltArtifact(
+    kind,
+    prompt,
+    plan,
+    target,
+    jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
+  );
   return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length,validationReceipt};
 }
 
-async function website(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
+async function website(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
   const css=`:root{--ink:#17202a;--gold:#c99a2e;--paper:#f7f3ea;--navy:#17324d;--blue:#2f739c;--white:#fff;--muted:#5a6772}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,Aptos,system-ui,sans-serif;color:var(--ink);background:var(--paper);line-height:1.65}nav{position:sticky;top:0;z-index:5;display:flex;gap:1.35rem;align-items:center;padding:1rem 6vw;background:#101d29f7;color:white;box-shadow:0 3px 18px #0003;backdrop-filter:blur(12px)}nav strong{margin-right:auto;letter-spacing:.04em}nav a{color:white;text-decoration:none;font-weight:650}nav a[aria-current=page]{color:#f1c65b;border-bottom:2px solid}.hero{isolation:isolate;position:relative;overflow:hidden;background-color:var(--navy);background-position:center;background-size:cover;color:white;padding:clamp(5rem,10vw,8rem) 6vw;border-top:8px solid var(--gold)}.hero:before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,#10283df2 0%,#10283dc9 52%,#10283d52 100%)}.hero .eyebrow{text-transform:uppercase;letter-spacing:.18em;color:#f1c65b;font-size:.78rem;font-weight:800}.hero h1{font-size:clamp(2.8rem,6vw,5.7rem);letter-spacing:-.04em;line-height:.96;margin:.55rem 0 1rem;max-width:15ch}.hero p{font-size:clamp(1.05rem,2vw,1.3rem);max-width:56ch;color:#e0e9f0}main{max-width:1180px;margin:auto;padding:2rem 6vw 4rem}section{padding:clamp(3rem,6vw,5.5rem) 0;border-bottom:1px solid #d9d2c2}section.with-photo{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.92fr);gap:clamp(2rem,5vw,5rem);align-items:center}.with-photo.flip .copy{order:2}.with-photo.flip .photo{order:1}.copy{min-width:0}h2{color:var(--navy);font-size:clamp(2rem,4vw,3.25rem);letter-spacing:-.035em;line-height:1.05;margin:.2rem 0 1.3rem}p{font-size:1.08rem}li{margin:.55rem 0}a{color:#815e09}.photo{margin:0;background:white;padding:.65rem;border-radius:20px;box-shadow:0 18px 55px #12202b22;transform:rotate(.35deg)}.flip .photo{transform:rotate(-.35deg)}.photo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;border-radius:14px}.photo figcaption{font-size:.75rem;line-height:1.35;color:var(--muted);padding:.65rem .3rem .15rem}.viz,.table-wrap{grid-column:1/-1;margin:2rem 0 0}.viz svg{width:100%;height:auto;display:block;box-shadow:0 15px 45px #12202b1b;border-radius:18px}.table{overflow:auto;background:white;border-radius:14px;box-shadow:0 12px 35px #12202b14}table{border-collapse:collapse;width:100%;min-width:560px}th,td{padding:.9rem 1rem;border-bottom:1px solid #dbe2e6;text-align:left}th{background:var(--navy);color:white}footer{padding:2.4rem 6vw;background:#101d29;color:#ccd6df}footer a{color:#f1c65b}@media(max-width:760px){nav{align-items:flex-start;flex-wrap:wrap}.hero{padding-top:4rem}nav strong{width:100%}section.with-photo{display:block}.with-photo.flip .copy,.with-photo.flip .photo{order:initial}.photo{margin-top:2rem;transform:none!important}}`;
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const thirds=[0,1,2].map(i=>contentSections.filter((_,j)=>j%3===i));
@@ -277,7 +302,12 @@ async function website(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltF
   ];
   const images=await collectImages(plan,12);
   const requestedPhotos=new Set(contentSections.map(s=>s.imageQuery).filter(Boolean)).size;
-  if(requestedPhotos>0&&images.size<Math.min(3,requestedPhotos))throw new Error(`Website photography validation failed: retrieved ${images.size} of ${requestedPhotos} requested licensed images`);
+  if(requestedPhotos>0&&images.size<Math.min(3,requestedPhotos))
+    throw new ArtifactPipelineError(
+      "ASSET",
+      `Website photography validation failed: retrieved ${images.size} of ${requestedPhotos} requested licensed images`,
+      { ruleOrPart: "website-images" },
+    );
   const fileName=(page:(typeof pages)[number])=>page.slug==="index"?"index.html":`${page.slug}.html`;
   const nav=(active:string)=>`<nav aria-label="Primary"><strong>${escapeHtml(plan.title)}</strong>${pages.map(p=>`<a href="${fileName(p)}"${p.slug===active?' aria-current="page"':""}>${escapeHtml(p.title)}</a>`).join("")}<a href="attributions.html"${active==="attributions"?' aria-current="page"':""}>Credits</a></nav>`;
   const renderSection=(s:ArtifactPlan["sections"][number],index:number)=>{const img=s.imageQuery?images.get(s.imageQuery):undefined;return `<section class="${img?`with-photo${index%2?" flip":""}`:""}"><div class="copy"><h2>${escapeHtml(s.heading)}</h2><p>${escapeHtml(s.body)}</p>${s.bullets.length?`<ul>${s.bullets.map(b=>`<li>${escapeHtml(b)}</li>`).join("")}</ul>`:""}</div>${img?`<figure class="photo"><img src="${imageDataUri(img)}" alt="${escapeHtml(img.title)}" loading="lazy"><figcaption>${escapeHtml(img.title)} — ${escapeHtml(img.creator)} · ${escapeHtml(img.license)} · <a href="${escapeHtml(img.sourceUrl)}">source</a></figcaption></figure>`:""}${s.table?`<figure class="table-wrap"><figcaption>${escapeHtml(s.table.title)}</figcaption><div class="table"><table><thead><tr>${s.table.headers.map(h=>`<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${s.table.rows.map(r=>`<tr>${r.map(v=>`<td>${escapeHtml(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></figure>`:""}${s.chart?`<figure class="viz">${chartSvg(s.chart)}</figure>`:""}${s.diagram?`<figure class="viz">${diagramSvg(s.diagram)}</figure>`:""}</section>`};
@@ -287,9 +317,29 @@ async function website(config:Config,plan:ArtifactPlan,prompt=""):Promise<BuiltF
   const refs=`<section><h2>Research sources</h2>${plan.sources.length?`<ol>${plan.sources.map(s=>`<li><a href="${escapeHtml(s.url)}" rel="noopener noreferrer">${escapeHtml(s.title)}</a></li>`).join("")}</ol>`:"<p>No external research sources were used.</p>"}</section><section><h2>Image credits</h2>${images.size?`<ol>${[...images.values()].map(i=>`<li>${escapeHtml(i.title)} — ${escapeHtml(i.creator)}, ${escapeHtml(i.license)}. <a href="${escapeHtml(i.sourceUrl)}">Wikimedia Commons source</a></li>`).join("")}</ol>`:"<p>No photographs were requested for this build.</p>"}</section>`;
   htmlPages.push({name:"attributions.html",html:shell("Sources & credits","Research references and licenses for every bundled photograph.","attributions",refs)});
   const home=htmlPages.find(p=>p.name==="index.html");if(home)htmlPages.push({name:"OPEN_ME_FIRST.html",html:home.html});
-  const stream=new PassThrough(),chunks:Buffer[]=[];stream.on("data",c=>chunks.push(Buffer.from(c)));const done=new Promise<Buffer>((resolve,reject)=>{stream.on("end",()=>resolve(Buffer.concat(chunks)));stream.on("error",reject)});const zip=archiver("zip",{zlib:{level:9}});zip.on("error",e=>stream.destroy(e));zip.pipe(stream);for(const p of htmlPages)zip.append(p.html,{name:p.name});await zip.finalize();const buf=await done;if(buf.length<1500)throw new Error("Website ZIP validation failed");const name=`${slug(plan.title)}_website.zip`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);const validationReceipt=await validateBuiltArtifact("website",prompt,plan,target);return{name,mime:"application/zip",path:target,size:buf.length,validationReceipt};
+  const stream=new PassThrough(),chunks:Buffer[]=[];stream.on("data",c=>chunks.push(Buffer.from(c)));const done=new Promise<Buffer>((resolve,reject)=>{stream.on("end",()=>resolve(Buffer.concat(chunks)));stream.on("error",reject)});const zip=archiver("zip",{zlib:{level:9}});zip.on("error",e=>stream.destroy(e));zip.pipe(stream);for(const p of htmlPages)zip.append(p.html,{name:p.name});await zip.finalize();const buf=await done;if(buf.length<1500)throw new Error("Website ZIP validation failed");const name=`${slug(plan.title)}_website.zip`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);const validationReceipt=await validateBuiltArtifact(
+    "website",
+    prompt,
+    plan,
+    target,
+    jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
+  );return{name,mime:"application/zip",path:target,size:buf.length,validationReceipt};
 }
 
-export async function buildArtifact(config:Config,kind:JobKind,plan:ArtifactPlan,prompt=""):Promise<BuiltFile>{
-  if(kind==="presentation")return pptx(config,plan,prompt); if(kind==="document"||kind==="analysis"||kind==="research")return docx(config,plan,prompt,kind); if(kind==="website")return website(config,plan,prompt); throw new Error(`No deterministic builder for ${kind}`);
+export async function buildArtifact(
+  config: Config,
+  kind: JobKind,
+  plan: ArtifactPlan,
+  prompt = "",
+  jobId = "",
+): Promise<BuiltFile> {
+  if (kind === "presentation") return pptx(config, plan, prompt, jobId);
+  if (kind === "document" || kind === "analysis" || kind === "research")
+    return docx(config, plan, prompt, kind, jobId);
+  if (kind === "website") return website(config, plan, prompt, jobId);
+  throw new ArtifactPipelineError(
+    "BUILD",
+    `No deterministic builder for ${kind}`,
+    { ruleOrPart: "builder-dispatch" },
+  );
 }
