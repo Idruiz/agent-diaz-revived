@@ -18,6 +18,7 @@ import {
   judgeImageCandidates,
   type ImageJudgeSection,
 } from "./image-judge.js";
+import { reconcilePresentationPlan } from "./reconcile.js";
 import { log } from "./log.js";
 import {
   ArtifactPipelineError,
@@ -44,6 +45,21 @@ export interface ImageResolutionReceipt {
     reason: string;
   }>;
   placed: number;
+}
+
+export interface PresentationBuildReceipt {
+  placedAssets: number;
+  activityTemplates: string[];
+  reconciliations: Array<{
+    sectionIndex: number;
+    heading: string;
+    reason: string;
+    movedToSpeakerNotes: string[];
+  }>;
+  titleCounts: {
+    contentSlides: number;
+    licensedVisuals: number;
+  };
 }
 
 interface CollectedImages {
@@ -227,22 +243,42 @@ const imageDataUri=(image:RealImage)=>`data:${image.mime};base64,${image.bytes.t
 const isSourcesHeading=(heading:string)=>/^(sources|references|bibliography|works cited)$/i.test(heading.trim());
 const short=(value:string,max:number)=>value.length<=max?value:`${value.slice(0,Math.max(1,max-1)).trimEnd()}…`;
 
-function noteBlock(notes:string|undefined,sources:string[]):string{
-  return [notes?.trim(),sources.length?`[Sources]\n${sources.map(source=>`- ${source}`).join("\n")}`:""]
-    .filter(Boolean)
-    .join("\n\n");
+function noteParagraphs(
+  notes: string | undefined,
+  sources: string[],
+): string[] {
+  const paragraphs = (notes ?? "")
+    .split(/\n+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (sources.length) {
+    paragraphs.push("[Sources]");
+    paragraphs.push(...sources.map((source) => `- ${source}`));
+  }
+  return paragraphs;
+}
+
+function addNotesParagraphs(slide: any, paragraphs: string[]): void {
+  for (const paragraph of paragraphs)
+    if (paragraph.trim()) slide.addNotes(paragraph.trim());
 }
 
 async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
-  const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
+  const originalContentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const collectedImages=await collectImages(
     config,
-    {...plan,sections:contentSections},
+    {...plan,sections:originalContentSections},
     prompt,
     10,
   );
   const images=collectedImages.images;
+  const reconciled=reconcilePresentationPlan(
+    {...plan,sections:originalContentSections},
+    new Set(images.keys()),
+  );
+  const contentSections=reconciled.plan.sections;
   const placedImageQueries=new Set<string>();
+  const usedActivityTemplates=new Set<string>();
   const p=new PptxGenJS(); p.layout="LAYOUT_WIDE"; p.author="Agent Díaz"; p.subject=plan.title; p.title=plan.title;
   p.theme={headFontFace:"Aptos Display",bodyFontFace:"Aptos"};
   const bg="F7F3EA",ink="17202A",gold="C99A2E",navy="17324D",blue="2F739C",muted="5A6772",white="FFFFFF",pale="E7EEF2";
@@ -265,6 +301,12 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
   const addPhoto=(slide:any,image:RealImage,box:{x:number;y:number;w:number;h:number})=>{
     slide.addShape(p.ShapeType.roundRect,{x:box.x-.04,y:box.y-.04,w:box.w+.08,h:box.h+.08,rectRadius:.08,fill:{color:white},line:{color:white},shadow:{type:"outer",color:"000000",opacity:.16,blur:2,angle:45,distance:1}});
     slide.addImage({data:imageDataUri(image),x:box.x,y:box.y,w:box.w,h:box.h,sizing:{type:"cover",w:box.w,h:box.h},altText:image.title});
+  };
+  const placePhoto=(slide:any,section:ArtifactPlan["sections"][number],image:RealImage,box:{x:number;y:number;w:number;h:number},captionBox?:{x:number;y:number;w:number;h:number})=>{
+    addPhoto(slide,image,box);
+    if(section.imageQuery)placedImageQueries.add(section.imageQuery);
+    const caption=captionBox??{x:box.x,y:box.y+box.h+.08,w:box.w,h:.18};
+    slide.addText(short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:caption.x,y:caption.y,w:caption.w,h:caption.h,fontSize:6.6,color:muted,margin:0,fit:"shrink",align:"right"});
   };
   const addRenderedChart=async(slide:any,section:ArtifactPlan["sections"][number])=>{
     const chart=section.chart!,png=await chartPng(chart);
