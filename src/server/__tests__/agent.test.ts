@@ -17,9 +17,11 @@ import {
   validateArtifactPlan,
 } from "../openai-agent";
 import { inspectJavierStyle } from "../javier-style";
+import { setImageJudgeProviderForTests } from "../image-judge";
 import type { Config } from "../config";
 const roots: string[] = [];
 afterEach(() => {
+  setImageJudgeProviderForTests(null);
   for (const root of roots.splice(0))
     fs.rmSync(root, { recursive: true, force: true });
 });
@@ -1681,6 +1683,209 @@ describe("agent production paths", () => {
       imageFetch.mockRestore();
     }
   }, 60_000);
+
+  it("counts one qualitative image-judge call in the successful artifact receipt", async () => {
+    const { config, db } = harness();
+    fs.mkdirSync(config.artifactDir, { recursive: true });
+    const conversation = db.createConversation(
+      crypto.randomUUID(),
+      "Teaching image-judge accounting",
+    );
+    const job = db.createJob({
+      id: crypto.randomUUID(),
+      kind: "presentation",
+      prompt:
+        "Create a teaching presentation for Grade 8 students about everyday French life with guided practice.",
+      conversationId: conversation.id,
+      fileIds: [],
+      ...modelProfileFor("balanced"),
+    });
+
+    const sections = Array.from({ length: 7 }, (_, index) => ({
+      heading: `Teaching section ${index + 1}`,
+      body:
+        "Students encounter concrete French-language examples connected to everyday life in France.",
+      bullets: [
+        `Authentic example ${index + 1}`,
+        `Student check ${index + 1}`,
+      ],
+      speakerNotes:
+        "Model the example, check comprehension, and invite one complete response.",
+      requirementIds: ["R1"],
+      layout: "standard",
+      activity:
+        index === 5
+          ? {
+              type: "guided_practice",
+              durationMinutes: 8,
+              directions: [
+                "Read the prompt.",
+                "Respond with a complete sentence.",
+                "Compare with a partner.",
+              ],
+              prompts: [
+                "Que fais-tu après l'école ?",
+                "Où vas-tu le week-end ?",
+              ],
+              sentenceFrames: [
+                "Après l'école, je ___.",
+                "Le week-end, je vais ___.",
+              ],
+              cornerLabels: [],
+            }
+          : null,
+      table: null,
+      chart: null,
+      diagram: null,
+      imageQuery: `France everyday classroom scene ${index + 1}`,
+    }));
+    const plan = {
+      title: "La vie quotidienne en français",
+      subtitle: "Exemples authentiques et pratique guidée",
+      requirements: [
+        {
+          id: "R1",
+          text: "Teach Grade 8 students about everyday French life",
+          mandatory: true,
+        },
+      ],
+      sections,
+      pages: null,
+      sources: [
+        {
+          title: "France culture fixture",
+          url: "https://example.com/france-culture",
+        },
+      ],
+    };
+
+    const create = vi.fn(async (request: any) =>
+      request.tools?.length
+        ? {
+            id: "resp_teaching_accounting_evidence",
+            status: "completed",
+            output_text:
+              "French culture evidence with authentic examples and https://example.com/france-culture.",
+            output: [],
+          }
+        : {
+            id: "resp_teaching_accounting_structure",
+            status: "completed",
+            output_text: JSON.stringify(plan),
+            output: [],
+          },
+    );
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php"))
+          return new Response(
+            JSON.stringify({
+              query: {
+                pages: {
+                  1: {
+                    pageid: 401,
+                    title: "French daily life fixture",
+                    categories: [
+                      { title: "Category:Everyday life in France" },
+                    ],
+                    imageinfo: [
+                      {
+                        thumburl:
+                          "https://images.example.test/teaching-accounting.jpg",
+                        descriptionurl:
+                          "https://commons.wikimedia.org/wiki/File:Teaching_accounting.jpg",
+                        width: 1200,
+                        height: 800,
+                        extmetadata: {
+                          ObjectName: {
+                            value: "French daily life fixture",
+                          },
+                          ImageDescription: {
+                            value:
+                              "A classroom-suitable everyday scene in France.",
+                          },
+                          Artist: { value: "Fixture photographer" },
+                          LicenseShortName: { value: "CC BY 4.0" },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        if (
+          url ===
+          "https://images.example.test/teaching-accounting.jpg"
+        )
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(
+          `Unexpected fetch in image-judge accounting test: ${url}`,
+        );
+      });
+
+    const judge = vi.fn(async (judgeSections: any[]) =>
+      judgeSections.map((section) => ({
+        sectionIndex: section.sectionIndex,
+        chosenCandidate: section.candidates[0]?.id ?? null,
+        reason:
+          "The candidate metadata establishes a relevant classroom-suitable scene in France.",
+        fallbackQueries: [
+          section.heading,
+          section.query,
+        ] as [string, string],
+      })),
+    );
+    setImageJudgeProviderForTests(judge);
+
+    const runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: { create, retrieve: vi.fn() },
+    };
+    try {
+      await (runner as any).run(job.id);
+    } finally {
+      imageFetch.mockRestore();
+    }
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(judge).toHaveBeenCalledTimes(1);
+    const artifact = db.listArtifacts(job.id)[0]!;
+    expect(artifact.receipt).toMatchObject({
+      llmCalls: 3,
+      maxLlmCalls: 6,
+      images: {
+        judgeCalls: 1,
+        requested: 7,
+        fetched: 7,
+        placed: 7,
+      },
+    });
+    expect(db.getArtifactRunState(job.id)).toMatchObject({
+      llmCalls: 3,
+      maxLlmCalls: 6,
+    });
+    db.close();
+  }, 20_000);
 
   it("repairs an invalid presentation plan without repeating the evidence phase", async () => {
     const { config, db } = harness(),
