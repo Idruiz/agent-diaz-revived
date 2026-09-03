@@ -433,7 +433,7 @@ describe("agent production paths", () => {
       fileIds: [],
       ...modelProfileFor("balanced"),
     });
-    const section = (index: number) => ({
+    const section = (index: number): any => ({
       heading: `City section ${index + 1}`,
       body: `Finished audience-facing city content ${index + 1} with enough concrete explanation to remain useful after deterministic normalization.`,
       bullets: [`Verified city point ${index + 1}.`],
