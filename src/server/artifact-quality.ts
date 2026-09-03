@@ -15,7 +15,7 @@ const FOUR_CORNERS_RE = /(?:four|4)[\s-]*corners/i;
 const TEACHING_RE = /\b(?:teach|teaching|lesson|students?|classroom|practice)\b/i;
 const SCHEMA_VALIDATOR = "Open XML SDK 3.5.1 (via @xarsh/ooxml-validator 0.3.0)";
 const PPTX_GENERATOR = "pptxgenjs 4.0.1";
-const DOCX_GENERATOR = "docx 9.5.1";
+const DOCX_GENERATOR = "docx 9.7.1";
 const PPTX_NOTES_MASTER_INCIDENT = "2026-09-02 PowerPoint notesMasterIdLst ordering incident";
 const KNOWN_BENIGN_NOTES_MASTER_FINDING = {
   id: "Sch_UnexpectedElementContentExpectingComplex",
