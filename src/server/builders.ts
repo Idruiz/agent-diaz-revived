@@ -22,7 +22,6 @@ import { reconcilePresentationPlan } from "./reconcile.js";
 import { log } from "./log.js";
 import {
   ArtifactPipelineError,
-  repairDocumentBuffer,
   validateBuiltArtifact,
   type ArtifactValidationReceipt,
 } from "./artifact-quality.js";
@@ -60,6 +59,17 @@ export interface PresentationBuildReceipt {
     contentSlides: number;
     licensedVisuals: number;
   };
+}
+
+export interface DocumentBuildReceipt {
+  activitiesRendered: number;
+  activityTypes: string[];
+  truncations: Array<{
+    section: string;
+    field: string;
+    originalCount: number;
+    renderedCount: number;
+  }>;
 }
 
 interface CollectedImages {
@@ -547,6 +557,62 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     widths[widths.length-1]!+=9360-widths.reduce((sum,value)=>sum+value,0);return widths;
   };
   const imageDimensions=(image:RealImage,maxWidth=560,maxHeight=320)=>{const scale=Math.min(maxWidth/image.width,maxHeight/image.height);return{width:Math.max(1,Math.round(image.width*scale)),height:Math.max(1,Math.round(image.height*scale))}};
+  const documentTruncations:DocumentBuildReceipt["truncations"]=[];
+  const renderedActivityTypes=new Set<string>();
+  let activitiesRendered=0;
+  const addActivityToDocument=(section:ArtifactPlan["sections"][number])=>{
+    const activity=section.activity;
+    if(!activity)return;
+    activitiesRendered++;
+    renderedActivityTypes.add(activity.type);
+    children.push(
+      new Paragraph({spacing:{before:220,after:90},keepNext:true,children:[
+        new TextRun({text:`Activity · ${activity.type.replace(/_/g," ")} · ${activity.durationMinutes} min`,bold:true,size:22,color:"C99A2E",allCaps:true}),
+      ]}),
+      new Paragraph({spacing:{after:80},children:[new TextRun({text:"Directions",bold:true,size:20,color:"17324D"})]}),
+    );
+    activity.directions.forEach((value,index)=>children.push(
+      new Paragraph({spacing:{after:70},indent:{left:360,hanging:220},children:[
+        new TextRun({text:`${index+1}. `,bold:true,size:18,color:"2F739C"}),
+        new TextRun({text:value,size:18,color:"17202A"}),
+      ]}),
+    ));
+    if(activity.type==="four_corners"){
+      children.push(new Paragraph({spacing:{before:120,after:90},keepNext:true,children:[new TextRun({text:"Four Corners",bold:true,size:20,color:"17324D"})]}));
+      const labels=[...activity.cornerLabels];
+      const cells=Array.from({length:4},(_,index)=>new TableCell({
+        width:{size:4680,type:WidthType.DXA},
+        verticalAlign:VerticalAlign.CENTER,
+        shading:{type:ShadingType.CLEAR,fill:index%2?"E7EEF2":"F7EED7",color:"auto"},
+        borders:cellBorders,
+        children:[new Paragraph({alignment:AlignmentType.CENTER,spacing:{before:180,after:180},children:[
+          new TextRun({text:labels[index]??"",bold:true,size:22,color:"17324D"}),
+        ]})],
+      }));
+      children.push(new Table({
+        width:{size:9360,type:WidthType.DXA},
+        columnWidths:[4680,4680],
+        layout:TableLayoutType.FIXED,
+        rows:[
+          new TableRow({children:[cells[0]!,cells[1]!]}),
+          new TableRow({children:[cells[2]!,cells[3]!]}),
+        ],
+        borders:cellBorders,
+      }));
+    }
+    if(activity.prompts.length){
+      children.push(new Paragraph({spacing:{before:140,after:80},keepNext:true,children:[new TextRun({text:"Prompts",bold:true,size:20,color:"17324D"})]}));
+      activity.prompts.forEach((value)=>children.push(
+        new Paragraph({text:value,numbering:{reference:"activity-prompts",level:0},style:"BodyText"}),
+      ));
+    }
+    if(activity.sentenceFrames.length){
+      children.push(new Paragraph({spacing:{before:140,after:80},keepNext:true,children:[new TextRun({text:"Sentence frames",bold:true,size:20,color:"17324D"})]}));
+      activity.sentenceFrames.forEach((value)=>children.push(
+        new Paragraph({spacing:{after:70},children:[new TextRun({text:value,italics:true,size:18,color:"2F739C"})]}),
+      ));
+    }
+  };
   const children:Array<Paragraph|Table>=[
     new Paragraph({spacing:{before:1760,after:160},children:[new TextRun({text:plan.title,bold:true,size:60,color:"17324D",font:"Calibri"})],alignment:AlignmentType.CENTER}),
     new Paragraph({border:{bottom:{style:BorderStyle.SINGLE,size:18,color:"C99A2E",space:1}},spacing:{after:360}}),
@@ -561,9 +627,9 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
       new Paragraph({pageBreakBefore:imageStartsPage,style:"DiazHeading1",keepNext:true,border:{bottom:{style:BorderStyle.SINGLE,size:8,color:"C99A2E",space:6}},children:[new TextRun({text:section.heading,bold:true,color:"2E74B5",size:32,font:"Calibri"})]}),
       new Paragraph({keepNext:true,children:[new TextRun({text:section.body,size:22,color:"17202A",font:"Calibri"})]}),
     );
-    for(const bullet of section.bullets.slice(0,10))children.push(new Paragraph({text:bullet,numbering:{reference:"artifact-bullets",level:0},style:"BodyText"}));
+    for(const bullet of section.bullets)children.push(new Paragraph({text:bullet,numbering:{reference:"artifact-bullets",level:0},style:"BodyText"}));
     if(section.table){
-      const sourceRows=section.table.rows.slice(0,24),widths=tableWidths(section.table.headers,sourceRows);
+      const sourceRows=section.table.rows,widths=tableWidths(section.table.headers,sourceRows);
       children.push(new Paragraph({spacing:{before:80,after:80},children:[new TextRun({text:section.table.title,bold:true,size:23,color:"17324D"})]}));
       const header=new TableRow({tableHeader:true,children:section.table.headers.map((header,column)=>new TableCell({width:{size:widths[column]!,type:WidthType.DXA},shading:{type:ShadingType.CLEAR,fill:"F2F4F7",color:"auto"},verticalAlign:VerticalAlign.CENTER,borders:cellBorders,children:[new Paragraph({spacing:{before:70,after:70},children:[new TextRun({text:header,bold:true,color:"17324D",size:18})]})]}))});
       const rows=sourceRows.map(row=>new TableRow({children:row.map((value,column)=>new TableCell({width:{size:widths[column]!,type:WidthType.DXA},shading:{type:ShadingType.CLEAR,fill:"FFFFFF",color:"auto"},verticalAlign:VerticalAlign.CENTER,borders:cellBorders,children:[new Paragraph({spacing:{before:60,after:60},children:[new TextRun({text:value,size:17,color:"17202A"})]})]}))}));
@@ -584,6 +650,7 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
         new Paragraph({spacing:{after:140},children:[new TextRun({text:`${image.title} — ${image.creator} · ${image.license}`,italics:true,size:15,color:"5A6772"})],alignment:AlignmentType.CENTER}),
       );
     }
+    addActivityToDocument(section);
   }
   if(plan.sources.length){
     children.push(new Paragraph({pageBreakBefore:true,style:"DiazHeading1",children:[new TextRun({text:"Sources",bold:true,color:"17324D",size:34})]}));
@@ -598,13 +665,14 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
         {id:"BodyText",name:"Body Text",basedOn:"Normal",quickFormat:true,run:{font:"Calibri",size:22,color:"17202A"},paragraph:{spacing:{after:160,line:280}}},
       ],
     },
-    numbering:{config:[{reference:"artifact-bullets",levels:[{level:0,format:LevelFormat.BULLET,text:"•",alignment:AlignmentType.LEFT,style:{paragraph:{indent:{left:720,hanging:360},spacing:{after:160,line:280}},run:{font:"Calibri",size:22,color:"17202A"}}}]}]},
+    numbering:{config:[
+      {reference:"artifact-bullets",levels:[{level:0,format:LevelFormat.BULLET,text:"•",alignment:AlignmentType.LEFT,style:{paragraph:{indent:{left:720,hanging:360},spacing:{after:160,line:280}},run:{font:"Calibri",size:22,color:"17202A"}}}]},
+      {reference:"activity-prompts",levels:[{level:0,format:LevelFormat.BULLET,text:"◆",alignment:AlignmentType.LEFT,style:{paragraph:{indent:{left:720,hanging:360},spacing:{after:120,line:260}},run:{font:"Calibri",size:20,color:"17324D"}}}]},
+    ]},
     sections:[{properties:{titlePage:true,page:{margin:{top:1440,right:1440,bottom:1440,left:1440,header:708,footer:708}}},headers:{first:new Header({children:[new Paragraph("")]}),default:new Header({children:[new Paragraph({border:{bottom:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:short(plan.title,85),bold:true,size:16,color:"5A6772",font:"Calibri"})]})]})},footers:{first:new Footer({children:[new Paragraph("")]}),default:new Footer({children:[new Paragraph({border:{top:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:"AGENT DÍAZ  ·  ",bold:true,size:14,color:"C99A2E",font:"Calibri"}),new TextRun({children:[PageNumber.CURRENT],size:14,color:"5A6772",font:"Calibri"})],alignment:AlignmentType.RIGHT})]})},children}],
   });
-  const raw=await Packer.toBuffer(d); if(raw.length<3000)throw new Error("DOCX validation failed: output too small");
-  const repaired=repairDocumentBuffer(raw),buf=repaired.buffer;
+  const buf=await Packer.toBuffer(d); if(buf.length<3000)throw new Error("DOCX validation failed: output too small");
   const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);
-  log("info","artifact.document_ooxml_repaired",{name,drawingIdsReassigned:repaired.stats.drawingIdsReassigned});
   atomicWrite(target,buf);
   const validationReceipt=await validateBuiltArtifact(
     kind,
@@ -614,7 +682,16 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
   );
   collectedImages.metrics.placed=placedImageQueries.size;
-  (validationReceipt as ArtifactValidationReceipt & {images:ImageResolutionReceipt}).images=collectedImages.metrics;
+  const enrichedReceipt=validationReceipt as ArtifactValidationReceipt & {
+    images:ImageResolutionReceipt;
+    document:DocumentBuildReceipt;
+  };
+  enrichedReceipt.images=collectedImages.metrics;
+  enrichedReceipt.document={
+    activitiesRendered,
+    activityTypes:[...renderedActivityTypes].sort(),
+    truncations:documentTruncations,
+  };
   return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length,validationReceipt};
 }
 
