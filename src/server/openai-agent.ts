@@ -1098,7 +1098,8 @@ export class AgentRunner {
               "Artifact regeneration",
               "Rebuilding artifact",
             ].some((prefix) => job.message.startsWith(prefix)) ||
-              job.status === "building"),
+              job.status === "building" ||
+              job.status === "blocked"),
         );
 
       let artifactRunState = isArtifact
@@ -1691,6 +1692,27 @@ export class AgentRunner {
           diagnosticPath: e.diagnosticPath,
           error: message,
         });
+        if (blocked && this.config.NODE_ENV !== "test") {
+          const state = this.db.getArtifactRunState(jobId);
+          const latest = state?.attempts.at(-1);
+          const duplicateCount = latest
+            ? state!.attempts.filter(
+                (attempt) => attempt.fingerprint === latest.fingerprint,
+              ).length
+            : 1;
+          if (duplicateCount < 2) {
+            const delayMs = Math.min(
+              60_000,
+              5000 * 2 ** Math.max(0, duplicateCount - 1),
+            );
+            log("warn", "artifact.infrastructure_retry_scheduled", {
+              jobId,
+              delayMs,
+              fingerprint: latest?.fingerprint ?? null,
+            });
+            setTimeout(() => this.start(jobId), delayMs);
+          }
+        }
         return;
       }
       if (
