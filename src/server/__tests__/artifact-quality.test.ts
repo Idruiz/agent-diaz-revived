@@ -7,6 +7,7 @@ import sharp from "sharp";
 import ts from "typescript";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
+  ArtifactPipelineError,
   assertArtifactPlanQuality,
   assertPresentationPackage,
   assertWebsitePackage,
@@ -129,6 +130,34 @@ function frenchTeachingPlan(): ArtifactPlan {
 }
 
 describe("artifact quality gates", () => {
+  it("preserves a BUILD specimen in diagnostics instead of deleting evidence", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-build-diag-"));
+    const filePath = path.join(root, "broken.pptx");
+    const diagnosticsRoot = path.join(root, "diagnostics");
+    fs.writeFileSync(filePath, Buffer.from("not-a-zip-package"));
+    let thrown: unknown;
+    try {
+      await validateBuiltArtifact(
+        "presentation",
+        exactPrompt,
+        frenchTeachingPlan(),
+        filePath,
+        { root: diagnosticsRoot, jobId: "job-build" },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ArtifactPipelineError);
+    expect((thrown as ArtifactPipelineError).failureClass).toBe("BUILD");
+    expect(fs.existsSync(filePath)).toBe(true);
+    const diagnosticDir = path.join(diagnosticsRoot, "job-build");
+    const entries = fs.readdirSync(diagnosticDir);
+    expect(entries.some((name) => name.endsWith(".pptx"))).toBe(true);
+    expect(entries.some((name) => name.endsWith(".pptx.json"))).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+
   it("accepts the exact French teaching request only when both named activities are complete", () => {
     const plan = frenchTeachingPlan();
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).not.toThrow();
