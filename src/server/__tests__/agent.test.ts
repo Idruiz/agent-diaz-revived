@@ -945,7 +945,7 @@ describe("agent production paths", () => {
     db.close();
   }, 20_000);
 
-  it("stops an identical ASSET fingerprint after one same-plan retry with zero repair calls", async () => {
+  it("completes with an honest no-photo artifact when image retrieval is exhausted, with zero repair calls", async () => {
     const { config, db } = harness();
     fs.mkdirSync(config.artifactDir, { recursive: true });
     const conversation = db.createConversation(
@@ -1067,16 +1067,27 @@ describe("agent production paths", () => {
 
     expect(create).toHaveBeenCalledTimes(2);
     expect(db.getJob(job.id)).toMatchObject({
-      status: "failed",
-      message: "Artifact stopped: asset",
+      status: "completed",
+      message: "Completed",
     });
     const state = db.getArtifactRunState(job.id);
     expect(state).toMatchObject({ llmCalls: 2, maxLlmCalls: 6 });
-    expect(state?.attempts).toHaveLength(2);
-    expect(state?.attempts[0]?.fingerprint).toBe(
-      state?.attempts[1]?.fingerprint,
-    );
-    expect(state?.attempts[0]?.failureClass).toBe("ASSET");
+    expect(state?.attempts).toHaveLength(0);
+    const artifacts = db.listArtifacts(job.id);
+    expect(artifacts).toHaveLength(1);
+    const receipt = artifacts[0]!.receipt as any;
+    expect(receipt.images).toMatchObject({
+      requested: 1,
+      fetched: 0,
+      placed: 0,
+      judgeCalls: 0,
+    });
+    expect(receipt.images.rejectedWithReasons.length).toBeGreaterThan(0);
+    expect(
+      receipt.images.rejectedWithReasons.some((item: any) =>
+        /search failed|no candidate|not found|provider/i.test(item.reason),
+      ),
+    ).toBe(true);
     db.close();
   }, 20_000);
 
