@@ -560,6 +560,13 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
   const documentTruncations:DocumentBuildReceipt["truncations"]=[];
   const renderedActivityTypes=new Set<string>();
   let activitiesRendered=0;
+  let nextDrawingId=1;
+  const drawingAltText=(name:string,description:string,title=name)=>({
+    id:nextDrawingId++,
+    name,
+    description,
+    title,
+  });
   const addActivityToDocument=(section:ArtifactPlan["sections"][number])=>{
     const activity=section.activity;
     if(!activity)return;
@@ -637,16 +644,16 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     }
     if(section.chart){
       const png=await chartPng(section.chart);
-      children.push(new Paragraph({spacing:{before:180,after:80},children:[new ImageRun({data:png,transformation:{width:560,height:314},type:"png",altText:{title:section.chart.title,description:section.chart.sourceNote||section.chart.title,name:section.chart.title}})],alignment:AlignmentType.CENTER}));
+      children.push(new Paragraph({spacing:{before:180,after:80},children:[new ImageRun({data:png,transformation:{width:560,height:314},type:"png",altText:drawingAltText(section.chart.title,section.chart.sourceNote||section.chart.title)})],alignment:AlignmentType.CENTER}));
       if(section.chart.sourceNote)children.push(new Paragraph({spacing:{after:140},children:[new TextRun({text:`Source: ${section.chart.sourceNote}`,italics:true,size:16,color:"5A6772"})],alignment:AlignmentType.CENTER}));
     }else if(section.diagram){
       const png=await diagramPng(section.diagram);
-      children.push(new Paragraph({spacing:{before:180,after:120},children:[new ImageRun({data:png,transformation:{width:560,height:235},type:"png",altText:{title:section.diagram.title,description:section.diagram.caption||section.diagram.title,name:section.diagram.title}})],alignment:AlignmentType.CENTER}));
+      children.push(new Paragraph({spacing:{before:180,after:120},children:[new ImageRun({data:png,transformation:{width:560,height:235},type:"png",altText:drawingAltText(section.diagram.title,section.diagram.caption||section.diagram.title)})],alignment:AlignmentType.CENTER}));
     }else if(section.imageQuery&&images.has(section.imageQuery)){
       placedImageQueries.add(section.imageQuery);
       const image=images.get(section.imageQuery)!,dimensions=imageDimensions(image);
       children.push(
-        new Paragraph({spacing:{before:220,after:80},children:[new ImageRun({data:image.bytes,transformation:dimensions,type:image.extension as "jpg"|"png",altText:{title:image.title,description:`${image.title} by ${image.creator}`,name:image.title}})],alignment:AlignmentType.CENTER}),
+        new Paragraph({spacing:{before:220,after:80},children:[new ImageRun({data:image.bytes,transformation:dimensions,type:image.extension as "jpg"|"png",altText:drawingAltText(image.title,`${image.title} by ${image.creator}`)})],alignment:AlignmentType.CENTER}),
         new Paragraph({spacing:{after:140},children:[new TextRun({text:`${image.title} — ${image.creator} · ${image.license}`,italics:true,size:15,color:"5A6772"})],alignment:AlignmentType.CENTER}),
       );
     }
