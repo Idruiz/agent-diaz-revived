@@ -11,7 +11,6 @@ import {
   assertArtifactPlanQuality,
   assertPresentationPackage,
   assertWebsitePackage,
-  repairDocumentBuffer,
   validateBuiltArtifact,
 } from "../artifact-quality";
 import type { ArtifactPlan } from "../../shared/contracts";
@@ -478,14 +477,20 @@ describe("artifact quality gates", () => {
     expect(qualitySource).not.toContain("notesMasterLinksReordered");
   });
 
-  it("reassigns duplicate DOCX drawing identifiers deterministically", () => {
-    const zip = new AdmZip();
-    zip.addFile("word/document.xml", Buffer.from('<w:document xmlns:w="w" xmlns:wp="wp"><wp:docPr id="1" name="A"/><wp:docPr id="1" name="B"/></w:document>'));
-    const repaired = repairDocumentBuffer(zip.toBuffer());
-    const xml = new AdmZip(repaired.buffer).getEntry("word/document.xml")!.getData().toString("utf8");
-    expect(xml).toContain('id="1" name="A"');
-    expect(xml).toContain('id="2" name="B"');
-    expect(repaired.stats.drawingIdsReassigned).toBe(2);
+  it("forbids post-serialization Word document XML rewrite helpers", () => {
+    const buildersSource = fs.readFileSync(
+      path.join(process.cwd(), "src/server/builders.ts"),
+      "utf8",
+    );
+    const qualitySource = fs.readFileSync(
+      path.join(process.cwd(), "src/server/artifact-quality.ts"),
+      "utf8",
+    );
+    expect(buildersSource).not.toContain("repairDocumentBuffer");
+    expect(qualitySource).not.toContain("repairDocumentBuffer");
+    expect(qualitySource).not.toMatch(
+      /word\/document\.xml[\s\S]{0,800}\.replace\s*\(/,
+    );
   });
 
   it("keeps validation as a repair signal and never quarantines an invalid artifact", async () => {
