@@ -108,6 +108,20 @@ export async function judgeImageCandidates(
     };
   }
 
+  if (config.NODE_ENV === "test") {
+    return {
+      decisions: sections.map((section) => ({
+        sectionIndex: section.sectionIndex,
+        chosenCandidate: section.candidates[0]?.id ?? null,
+        reason: section.candidates[0]
+          ? "Deterministic test-only candidate selection."
+          : "No filtered candidate was available.",
+        fallbackQueries: [section.heading, section.query],
+      })),
+      judgeCalls: 0,
+    };
+  }
+
   const client = new OpenAI({
     apiKey: config.OPENAI_API_KEY,
   });
