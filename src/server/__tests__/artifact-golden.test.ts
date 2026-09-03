@@ -14,6 +14,20 @@ import {
 } from "./fixtures/artifact-golden-plans";
 
 const roots: string[] = [];
+const writeCheckpoint3 = process.env.WRITE_CHECKPOINT_3 === "1";
+const checkpoint3Root = path.join(
+  process.cwd(),
+  "storage",
+  "diagnostics",
+  "checkpoint-3",
+);
+
+function checkpointArtifactName(
+  golden: ArtifactGoldenCase,
+  artifactPath: string,
+): string {
+  return `${golden.id}${path.extname(artifactPath)}`;
+}
 
 function harness() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-golden-"));
@@ -60,6 +74,10 @@ afterEach(() => {
 
 describe("recorded artifact golden runs", () => {
   it("runs French deck, Spanish culture document, CSV analysis, and three-page website through AgentRunner with honest receipts", async () => {
+    if (writeCheckpoint3) {
+      fs.rmSync(checkpoint3Root, { recursive: true, force: true });
+      fs.mkdirSync(checkpoint3Root, { recursive: true });
+    }
     const imageBytes = await sharp({
       create: {
         width: 1200,
@@ -147,6 +165,7 @@ describe("recorded artifact golden runs", () => {
       receipt: any;
       artifactPath: string;
       providerCalls: number;
+      checkpointName: string | null;
     }> = [];
 
     try {
@@ -267,11 +286,25 @@ describe("recorded artifact golden runs", () => {
         expect(receipt.llmCalls).toBe(expectedImages > 0 ? 3 : 2);
         expect(receipt.maxLlmCalls).toBe(6);
 
+        let checkpointName: string | null = null;
+        if (writeCheckpoint3) {
+          checkpointName = checkpointArtifactName(golden, artifactPath);
+          fs.copyFileSync(
+            artifactPath,
+            path.join(checkpoint3Root, checkpointName),
+          );
+          fs.writeFileSync(
+            path.join(checkpoint3Root, `${golden.id}.receipt.json`),
+            JSON.stringify(receipt, null, 2) + "\n",
+          );
+        }
+
         completed.push({
           golden,
           receipt,
           artifactPath,
           providerCalls: create.mock.calls.length,
+          checkpointName,
         });
         db.close();
       }
@@ -415,5 +448,84 @@ describe("recorded artifact golden runs", () => {
         .getData()
         .toString("utf8"),
     ).toContain("The design feature ___ may support ___");
+
+    if (writeCheckpoint3) {
+      const baselinePath = path.join(
+        process.cwd(),
+        "corpus",
+        "baseline",
+        "2026-09-02.json",
+      );
+      const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
+      const frenchCurrent = completed.find(
+        (entry) => entry.golden.id === "french-present-tense",
+      )!;
+      const summary = {
+        checkpoint: 3,
+        buildSha: frenchCurrent.receipt.buildSha,
+        generatedBy: "recorded artifact golden runs",
+        provider: "mocked",
+        baseline: {
+          recordedAt: baseline.recordedAt,
+          sourceSha: baseline.source.sha,
+          exactFrenchLlmCalls: baseline.llmCalls,
+          planAttempts: baseline.planAttempts,
+          buildAttempts: baseline.buildAttempts,
+          repairAttempts: baseline.repairAttempts,
+          artifactSha256: baseline.artifact.sha256,
+        },
+        currentExactFrench: {
+          llmCalls: frenchCurrent.receipt.llmCalls,
+          maxLlmCalls: frenchCurrent.receipt.maxLlmCalls,
+          deltaVsBaseline:
+            frenchCurrent.receipt.llmCalls - baseline.llmCalls,
+          explanation:
+            "Current routing adds one bounded qualitative image-judge call; evidence and structure remain one call each, and this golden run used zero plan-repair or build-repair attempts.",
+          attempts: frenchCurrent.receipt.attempts,
+          normalizations: frenchCurrent.receipt.normalizations,
+          artifactSha256: frenchCurrent.receipt.artifactSha256,
+          bytes: frenchCurrent.receipt.bytes,
+          powerPointDesktopValidated:
+            frenchCurrent.receipt.powerPointDesktopValidated,
+        },
+        artifacts: completed.map((entry) => ({
+          id: entry.golden.id,
+          kind: entry.golden.kind,
+          file: entry.checkpointName,
+          receipt: `${entry.golden.id}.receipt.json`,
+          artifactSha256: entry.receipt.artifactSha256,
+          bytes: entry.receipt.bytes,
+          llmCalls: entry.receipt.llmCalls,
+          maxLlmCalls: entry.receipt.maxLlmCalls,
+          providerCalls: entry.providerCalls,
+          imageJudgeCalls: entry.receipt.images?.judgeCalls ?? 0,
+          attempts: entry.receipt.attempts,
+          normalizations: entry.receipt.normalizations,
+          powerPointDesktopValidated:
+            entry.receipt.powerPointDesktopValidated,
+          wordDesktopValidated: entry.receipt.wordDesktopValidated,
+          browserValidated: entry.receipt.browserValidated,
+          scores: entry.receipt.scores,
+        })),
+      };
+      fs.writeFileSync(
+        path.join(checkpoint3Root, "summary.json"),
+        JSON.stringify(summary, null, 2) + "\n",
+      );
+
+      expect(summary.currentExactFrench.llmCalls).toBe(3);
+      expect(summary.currentExactFrench.deltaVsBaseline).toBe(1);
+      expect(summary.currentExactFrench.attempts).toEqual([]);
+      expect(summary.artifacts).toHaveLength(4);
+      for (const item of summary.artifacts) {
+        expect(item.file).toBeTruthy();
+        expect(
+          fs.existsSync(path.join(checkpoint3Root, item.file!)),
+        ).toBe(true);
+        expect(
+          fs.existsSync(path.join(checkpoint3Root, item.receipt)),
+        ).toBe(true);
+      }
+    }
   }, 60_000);
 });
