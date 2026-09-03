@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import PptxGenModule from "pptxgenjs";
@@ -70,6 +71,15 @@ export interface DocumentBuildReceipt {
     originalCount: number;
     renderedCount: number;
   }>;
+}
+
+export interface WebsiteBuildReceipt {
+  plannedPages: string[];
+  renderedPages: number;
+  sectionAssignments: number;
+  uniqueImageFiles: number;
+  sharedStylesheet: string;
+  brokenInternalResources: number;
 }
 
 interface CollectedImages {
@@ -702,34 +712,222 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
   return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length,validationReceipt};
 }
 
-async function website(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
-  const css=`:root{--ink:#17202a;--gold:#c99a2e;--paper:#f7f3ea;--navy:#17324d;--blue:#2f739c;--white:#fff;--muted:#5a6772}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,Aptos,system-ui,sans-serif;color:var(--ink);background:var(--paper);line-height:1.65}nav{position:sticky;top:0;z-index:5;display:flex;gap:1.35rem;align-items:center;padding:1rem 6vw;background:#101d29f7;color:white;box-shadow:0 3px 18px #0003;backdrop-filter:blur(12px)}nav strong{margin-right:auto;letter-spacing:.04em}nav a{color:white;text-decoration:none;font-weight:650}nav a[aria-current=page]{color:#f1c65b;border-bottom:2px solid}.hero{isolation:isolate;position:relative;overflow:hidden;background-color:var(--navy);background-position:center;background-size:cover;color:white;padding:clamp(5rem,10vw,8rem) 6vw;border-top:8px solid var(--gold)}.hero:before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,#10283df2 0%,#10283dc9 52%,#10283d52 100%)}.hero .eyebrow{text-transform:uppercase;letter-spacing:.18em;color:#f1c65b;font-size:.78rem;font-weight:800}.hero h1{font-size:clamp(2.8rem,6vw,5.7rem);letter-spacing:-.04em;line-height:.96;margin:.55rem 0 1rem;max-width:15ch}.hero p{font-size:clamp(1.05rem,2vw,1.3rem);max-width:56ch;color:#e0e9f0}main{max-width:1180px;margin:auto;padding:2rem 6vw 4rem}section{padding:clamp(3rem,6vw,5.5rem) 0;border-bottom:1px solid #d9d2c2}section.with-photo{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.92fr);gap:clamp(2rem,5vw,5rem);align-items:center}.with-photo.flip .copy{order:2}.with-photo.flip .photo{order:1}.copy{min-width:0}h2{color:var(--navy);font-size:clamp(2rem,4vw,3.25rem);letter-spacing:-.035em;line-height:1.05;margin:.2rem 0 1.3rem}p{font-size:1.08rem}li{margin:.55rem 0}a{color:#815e09}.photo{margin:0;background:white;padding:.65rem;border-radius:20px;box-shadow:0 18px 55px #12202b22;transform:rotate(.35deg)}.flip .photo{transform:rotate(-.35deg)}.photo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;border-radius:14px}.photo figcaption{font-size:.75rem;line-height:1.35;color:var(--muted);padding:.65rem .3rem .15rem}.viz,.table-wrap{grid-column:1/-1;margin:2rem 0 0}.viz svg{width:100%;height:auto;display:block;box-shadow:0 15px 45px #12202b1b;border-radius:18px}.table{overflow:auto;background:white;border-radius:14px;box-shadow:0 12px 35px #12202b14}table{border-collapse:collapse;width:100%;min-width:560px}th,td{padding:.9rem 1rem;border-bottom:1px solid #dbe2e6;text-align:left}th{background:var(--navy);color:white}footer{padding:2.4rem 6vw;background:#101d29;color:#ccd6df}footer a{color:#f1c65b}@media(max-width:760px){nav{align-items:flex-start;flex-wrap:wrap}.hero{padding-top:4rem}nav strong{width:100%}section.with-photo{display:block}.with-photo.flip .copy,.with-photo.flip .photo{order:initial}.photo{margin-top:2rem;transform:none!important}}`;
-  const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
-  const thirds=[0,1,2].map(i=>contentSections.filter((_,j)=>j%3===i));
-  const pages=plan.pages??[
-    {slug:"index",title:"Home",description:plan.subtitle,sectionHeadings:thirds[0]!.map(s=>s.heading)},
-    {slug:"insights",title:"Insights",description:"Key evidence and findings",sectionHeadings:thirds[1]!.map(s=>s.heading)},
-    {slug:"resources",title:"Resources",description:"Practical details and references",sectionHeadings:thirds[2]!.map(s=>s.heading)}
-  ];
-  const collectedImages=await collectImages(config,plan,prompt,12);
+async function website(
+  config:Config,
+  plan:ArtifactPlan,
+  prompt="",
+  jobId="",
+):Promise<BuiltFile>{
+  const contentSections=plan.sections.filter(
+    section=>!isSourcesHeading(section.heading),
+  );
+  const pages=plan.pages;
+  if(!pages||pages.length<3)
+    throw new ArtifactPipelineError(
+      "PLAN_CONTENT",
+      "Website build requires at least three fully specified plan.pages entries.",
+      {ruleOrPart:"website-pages"},
+    );
+
+  const sectionByHeading=new Map(
+    contentSections.map(section=>[section.heading,section] as const),
+  );
+  const assignmentCounts=new Map<string,number>();
+  for(const page of pages){
+    for(const heading of page.sectionHeadings){
+      if(!sectionByHeading.has(heading))
+        throw new ArtifactPipelineError(
+          "PLAN_CONTENT",
+          `Website page '${page.slug}' references unknown section '${heading}'.`,
+          {ruleOrPart:"website-page-assignment"},
+        );
+      assignmentCounts.set(
+        heading,
+        (assignmentCounts.get(heading)??0)+1,
+      );
+    }
+  }
+  for(const heading of sectionByHeading.keys()){
+    const count=assignmentCounts.get(heading)??0;
+    if(count!==1)
+      throw new ArtifactPipelineError(
+        "PLAN_CONTENT",
+        `Website section '${heading}' must be assigned exactly once; found ${count} assignments.`,
+        {ruleOrPart:"website-page-assignment"},
+      );
+  }
+
+  const collectedImages=await collectImages(
+    config,
+    {...plan,sections:contentSections},
+    prompt,
+    12,
+  );
   const images=collectedImages.images;
   const placedImageQueries=new Set<string>();
-  const fileName=(page:(typeof pages)[number])=>page.slug==="index"?"index.html":`${page.slug}.html`;
-  const nav=(active:string)=>`<nav aria-label="Primary"><strong>${escapeHtml(plan.title)}</strong>${pages.map(p=>`<a href="${fileName(p)}"${p.slug===active?' aria-current="page"':""}>${escapeHtml(p.title)}</a>`).join("")}<a href="attributions.html"${active==="attributions"?' aria-current="page"':""}>Credits</a></nav>`;
-  const renderSection=(s:ArtifactPlan["sections"][number],index:number)=>{const img=s.imageQuery?images.get(s.imageQuery):undefined;if(img&&s.imageQuery)placedImageQueries.add(s.imageQuery);return `<section class="${img?`with-photo${index%2?" flip":""}`:""}"><div class="copy"><h2>${escapeHtml(s.heading)}</h2><p>${escapeHtml(s.body)}</p>${s.bullets.length?`<ul>${s.bullets.map(b=>`<li>${escapeHtml(b)}</li>`).join("")}</ul>`:""}</div>${img?`<figure class="photo"><img src="${imageDataUri(img)}" alt="${escapeHtml(img.title)}" loading="lazy"><figcaption>${escapeHtml(img.title)} — ${escapeHtml(img.creator)} · ${escapeHtml(img.license)} · <a href="${escapeHtml(img.sourceUrl)}">source</a></figcaption></figure>`:""}${s.table?`<figure class="table-wrap"><figcaption>${escapeHtml(s.table.title)}</figcaption><div class="table"><table><thead><tr>${s.table.headers.map(h=>`<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${s.table.rows.map(r=>`<tr>${r.map(v=>`<td>${escapeHtml(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></figure>`:""}${s.chart?`<figure class="viz">${chartSvg(s.chart)}</figure>`:""}${s.diagram?`<figure class="viz">${diagramSvg(s.diagram)}</figure>`:""}</section>`};
-  const fallbackHero=[...images.values()][0];
-  const shell=(title:string,description:string,active:string,body:string,heroImage=fallbackHero)=>`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="${escapeHtml(description)}"><meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><title>${escapeHtml(title)} · ${escapeHtml(plan.title)}</title><style>${css}</style></head><body>${nav(active)}<header class="hero"${heroImage?` style="background-image:url('${imageDataUri(heroImage)}')"`:""}><div class="eyebrow">Agent Díaz field guide</div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p></header><main>${body}</main><footer>Created with Agent Díaz · <a href="attributions.html">Sources and image credits</a></footer></body></html>`;
-  const htmlPages=pages.map(page=>{const wanted=new Set(page.sectionHeadings),sections=contentSections.filter(s=>wanted.has(s.heading)),pageHero=sections.map(s=>s.imageQuery?images.get(s.imageQuery):undefined).find((image):image is RealImage=>!!image);return {name:fileName(page),html:shell(page.title,page.description,page.slug,sections.map(renderSection).join(""),pageHero)}});
-  const refs=`<section><h2>Research sources</h2>${plan.sources.length?`<ol>${plan.sources.map(s=>`<li><a href="${escapeHtml(s.url)}" rel="noopener noreferrer">${escapeHtml(s.title)}</a></li>`).join("")}</ol>`:"<p>No external research sources were used.</p>"}</section><section><h2>Image credits</h2>${images.size?`<ol>${[...images.values()].map(i=>`<li>${escapeHtml(i.title)} — ${escapeHtml(i.creator)}, ${escapeHtml(i.license)}. <a href="${escapeHtml(i.sourceUrl)}">Wikimedia Commons source</a></li>`).join("")}</ol>`:"<p>No photographs were requested for this build.</p>"}</section>`;
-  htmlPages.push({name:"attributions.html",html:shell("Sources & credits","Research references and licenses for every bundled photograph.","attributions",refs)});
-  const home=htmlPages.find(p=>p.name==="index.html");if(home)htmlPages.push({name:"OPEN_ME_FIRST.html",html:home.html});
-  const stream=new PassThrough(),chunks:Buffer[]=[];stream.on("data",c=>chunks.push(Buffer.from(c)));const done=new Promise<Buffer>((resolve,reject)=>{stream.on("end",()=>resolve(Buffer.concat(chunks)));stream.on("error",reject)});const zip=archiver("zip",{zlib:{level:9}});zip.on("error",e=>stream.destroy(e));zip.pipe(stream);for(const p of htmlPages)zip.append(p.html,{name:p.name});await zip.finalize();const buf=await done;if(buf.length<1500)throw new Error("Website ZIP validation failed");const name=`${slug(plan.title)}_website.zip`,target=safeJoin(config.artifactDir,name);atomicWrite(target,buf);const validationReceipt=await validateBuiltArtifact(
+
+  const assetByQuery=new Map<string,string>();
+  const uniqueImageAssets=new Map<string,RealImage>();
+  for(const [query,image] of images){
+    const digest=createHash("sha256")
+      .update(image.bytes)
+      .digest("hex")
+      .slice(0,20);
+    const assetPath=`assets/images/${digest}.jpg`;
+    assetByQuery.set(query,assetPath);
+    if(!uniqueImageAssets.has(assetPath))
+      uniqueImageAssets.set(assetPath,image);
+  }
+
+  const css=`:root{--ink:#17202a;--gold:#c99a2e;--paper:#f7f3ea;--navy:#17324d;--blue:#2f739c;--white:#fff;--muted:#5a6772}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,Aptos,system-ui,sans-serif;color:var(--ink);background:var(--paper);line-height:1.65}nav{position:sticky;top:0;z-index:5;display:flex;gap:1.35rem;align-items:center;padding:1rem 6vw;background:#101d29f7;color:white;box-shadow:0 3px 18px #0003;backdrop-filter:blur(12px)}nav strong{margin-right:auto;letter-spacing:.04em}nav a{color:white;text-decoration:none;font-weight:650}nav a[aria-current=page]{color:#f1c65b;border-bottom:2px solid}.hero{isolation:isolate;position:relative;overflow:hidden;background:var(--navy);color:white;padding:clamp(5rem,10vw,8rem) 6vw;border-top:8px solid var(--gold)}.hero-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}.hero:before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,#10283df2 0%,#10283dc9 52%,#10283d52 100%)}.hero .eyebrow{text-transform:uppercase;letter-spacing:.18em;color:#f1c65b;font-size:.78rem;font-weight:800}.hero h1{font-size:clamp(2.8rem,6vw,5.7rem);letter-spacing:-.04em;line-height:.96;margin:.55rem 0 1rem;max-width:15ch}.hero p{font-size:clamp(1.05rem,2vw,1.3rem);max-width:56ch;color:#e0e9f0}main{max-width:1180px;margin:auto;padding:2rem 6vw 4rem}section{padding:clamp(3rem,6vw,5.5rem) 0;border-bottom:1px solid #d9d2c2}section.with-photo{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.92fr);gap:clamp(2rem,5vw,5rem);align-items:center}.with-photo.flip .copy{order:2}.with-photo.flip .photo{order:1}.copy{min-width:0}h2{color:var(--navy);font-size:clamp(2rem,4vw,3.25rem);letter-spacing:-.035em;line-height:1.05;margin:.2rem 0 1.3rem}h3{color:var(--navy);margin:1.3rem 0 .65rem}p{font-size:1.08rem}li{margin:.55rem 0}a{color:#815e09}.photo{margin:0;background:white;padding:.65rem;border-radius:20px;box-shadow:0 18px 55px #12202b22;transform:rotate(.35deg)}.flip .photo{transform:rotate(-.35deg)}.photo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;border-radius:14px}.photo figcaption{font-size:.75rem;line-height:1.35;color:var(--muted);padding:.65rem .3rem .15rem}.viz,.table-wrap,.activity{grid-column:1/-1;margin:2rem 0 0}.viz svg{width:100%;height:auto;display:block;box-shadow:0 15px 45px #12202b1b;border-radius:18px}.table{overflow:auto;background:white;border-radius:14px;box-shadow:0 12px 35px #12202b14}table{border-collapse:collapse;width:100%;min-width:560px}th,td{padding:.9rem 1rem;border-bottom:1px solid #dbe2e6;text-align:left}th{background:var(--navy);color:white}.activity{background:white;border-left:6px solid var(--gold);padding:1.25rem 1.5rem;border-radius:12px;box-shadow:0 10px 32px #12202b12}.corner-grid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin:1rem 0}.corner-grid div{padding:1rem;background:#eef3f5;border-radius:10px;font-weight:750;color:var(--navy);text-align:center}footer{padding:2.4rem 6vw;background:#101d29;color:#ccd6df}footer a{color:#f1c65b}@media(max-width:760px){nav{align-items:flex-start;flex-wrap:wrap}.hero{padding-top:4rem}nav strong{width:100%}section.with-photo{display:block}.with-photo.flip .copy,.with-photo.flip .photo{order:initial}.photo{margin-top:2rem;transform:none!important}.corner-grid{grid-template-columns:1fr}table{min-width:480px}}`;
+
+  const fileName=(page:(typeof pages)[number])=>
+    page.slug==="index"?"index.html":`${page.slug}.html`;
+  const nav=(active:string)=>`<nav aria-label="Primary"><strong>${escapeHtml(plan.title)}</strong>${pages.map(page=>`<a href="${fileName(page)}"${page.slug===active?' aria-current="page"':""}>${escapeHtml(page.title)}</a>`).join("")}<a href="attributions.html"${active==="attributions"?' aria-current="page"':""}>Credits</a></nav>`;
+
+  const renderActivity=(section:ArtifactPlan["sections"][number])=>{
+    const activity=section.activity;
+    if(!activity)return "";
+    const corners=activity.type==="four_corners"&&activity.cornerLabels.length
+      ?`<div class="corner-grid">${activity.cornerLabels.map(label=>`<div>${escapeHtml(label)}</div>`).join("")}</div>`
+      :"";
+    return `<aside class="activity"><h3>${escapeHtml(activity.type.replace(/_/g," "))} · ${activity.durationMinutes} min</h3><h3>Directions</h3><ol>${activity.directions.map(value=>`<li>${escapeHtml(value)}</li>`).join("")}</ol>${corners}<h3>Prompts</h3><ul>${activity.prompts.map(value=>`<li>${escapeHtml(value)}</li>`).join("")}</ul>${activity.sentenceFrames.length?`<h3>Sentence frames</h3><ul>${activity.sentenceFrames.map(value=>`<li>${escapeHtml(value)}</li>`).join("")}</ul>`:""}</aside>`;
+  };
+
+  const renderSection=(
+    section:ArtifactPlan["sections"][number],
+    index:number,
+  )=>{
+    const image=section.imageQuery
+      ?images.get(section.imageQuery)
+      :undefined;
+    const imagePath=section.imageQuery
+      ?assetByQuery.get(section.imageQuery)
+      :undefined;
+    if(image&&imagePath&&section.imageQuery)
+      placedImageQueries.add(section.imageQuery);
+    return `<section class="${image&&imagePath?`with-photo${index%2?" flip":""}`:""}"><div class="copy"><h2>${escapeHtml(section.heading)}</h2><p>${escapeHtml(section.body)}</p>${section.bullets.length?`<ul>${section.bullets.map(bullet=>`<li>${escapeHtml(bullet)}</li>`).join("")}</ul>`:""}</div>${image&&imagePath?`<figure class="photo"><img src="${imagePath}" alt="${escapeHtml(image.title)}" loading="lazy"><figcaption>${escapeHtml(image.title)} — ${escapeHtml(image.creator)} · ${escapeHtml(image.license)} · <a href="${escapeHtml(image.sourceUrl)}" rel="noopener noreferrer">source</a></figcaption></figure>`:""}${section.table?`<figure class="table-wrap"><figcaption>${escapeHtml(section.table.title)}</figcaption><div class="table"><table><thead><tr>${section.table.headers.map(header=>`<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${section.table.rows.map(row=>`<tr>${row.map(value=>`<td>${escapeHtml(value)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></figure>`:""}${section.chart?`<figure class="viz">${chartSvg(section.chart)}</figure>`:""}${section.diagram?`<figure class="viz">${diagramSvg(section.diagram)}</figure>`:""}${renderActivity(section)}</section>`;
+  };
+
+  const fallbackHeroPath=[...assetByQuery.values()][0];
+  const shell=(
+    title:string,
+    description:string,
+    active:string,
+    body:string,
+    heroPath?:string,
+  )=>`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="${escapeHtml(description)}"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'"><title>${escapeHtml(title)} · ${escapeHtml(plan.title)}</title><link rel="stylesheet" href="assets/styles.css"></head><body>${nav(active)}<header class="hero">${heroPath?`<img class="hero-photo" src="${heroPath}" alt="">`:""}<div class="eyebrow">Agent Díaz field guide</div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p></header><main>${body}</main><footer>Created with Agent Díaz · <a href="attributions.html">Sources and image credits</a></footer></body></html>`;
+
+  const htmlPages=pages.map(page=>{
+    const sections=page.sectionHeadings.map(
+      heading=>sectionByHeading.get(heading)!,
+    );
+    const pageHeroPath=sections
+      .map(section=>section.imageQuery
+        ?assetByQuery.get(section.imageQuery)
+        :undefined)
+      .find((value):value is string=>Boolean(value));
+    return {
+      name:fileName(page),
+      html:shell(
+        page.title,
+        page.description,
+        page.slug,
+        sections.map(renderSection).join(""),
+        pageHeroPath,
+      ),
+    };
+  });
+
+  const uniqueCredits=[...uniqueImageAssets.entries()];
+  const refs=`<section><h2>Research sources</h2>${plan.sources.length?`<ol>${plan.sources.map(source=>`<li><a href="${escapeHtml(source.url)}" rel="noopener noreferrer">${escapeHtml(source.title)}</a></li>`).join("")}</ol>`:"<p>No external research sources were used.</p>"}</section><section><h2>Image credits</h2>${uniqueCredits.length?`<ol>${uniqueCredits.map(([assetPath,image])=>`<li><a href="${assetPath}">${escapeHtml(image.title)}</a> — ${escapeHtml(image.creator)}, ${escapeHtml(image.license)}. <a href="${escapeHtml(image.sourceUrl)}" rel="noopener noreferrer">Wikimedia Commons source</a></li>`).join("")}</ol>`:"<p>No photographs were delivered for this build.</p>"}</section>`;
+  htmlPages.push({
+    name:"attributions.html",
+    html:shell(
+      "Sources & credits",
+      "Research references and licenses for every bundled photograph.",
+      "attributions",
+      refs,
+      fallbackHeroPath,
+    ),
+  });
+  const home=htmlPages.find(page=>page.name==="index.html");
+  if(!home)
+    throw new ArtifactPipelineError(
+      "BUILD",
+      "Website build did not produce index.html.",
+      {ruleOrPart:"website-index"},
+    );
+  htmlPages.push({
+    name:"OPEN_ME_FIRST.html",
+    html:home.html,
+  });
+
+  const unplacedFetched=[...images.keys()].filter(
+    query=>!placedImageQueries.has(query),
+  );
+  if(unplacedFetched.length)
+    throw new ArtifactPipelineError(
+      "BUILD",
+      `Website layout discarded fetched images: ${unplacedFetched.join(", ")}`,
+      {ruleOrPart:"website-image-placement"},
+    );
+
+  const stream=new PassThrough(),chunks:Buffer[]=[];
+  stream.on("data",chunk=>chunks.push(Buffer.from(chunk)));
+  const done=new Promise<Buffer>((resolve,reject)=>{
+    stream.on("end",()=>resolve(Buffer.concat(chunks)));
+    stream.on("error",reject);
+  });
+  const zip=archiver("zip",{zlib:{level:9}});
+  zip.on("error",error=>stream.destroy(error));
+  zip.pipe(stream);
+  zip.append(css,{name:"assets/styles.css"});
+  for(const [assetPath,image] of uniqueImageAssets)
+    zip.append(image.bytes,{name:assetPath});
+  for(const page of htmlPages)
+    zip.append(page.html,{name:page.name});
+  await zip.finalize();
+  const buf=await done;
+  if(buf.length<1500)
+    throw new Error("Website ZIP validation failed");
+
+  const name=`${slug(plan.title)}_website.zip`;
+  const target=safeJoin(config.artifactDir,name);
+  atomicWrite(target,buf);
+  const validationReceipt=await validateBuiltArtifact(
     "website",
     prompt,
     plan,
     target,
-    jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
-  );collectedImages.metrics.placed=placedImageQueries.size;(validationReceipt as ArtifactValidationReceipt & {images:ImageResolutionReceipt}).images=collectedImages.metrics;return{name,mime:"application/zip",path:target,size:buf.length,validationReceipt};
+    jobId
+      ?{root:path.join(config.storageRoot,"diagnostics"),jobId}
+      :undefined,
+  );
+  collectedImages.metrics.placed=placedImageQueries.size;
+  const enrichedReceipt=validationReceipt as ArtifactValidationReceipt & {
+    images:ImageResolutionReceipt;
+    website:WebsiteBuildReceipt;
+  };
+  enrichedReceipt.images=collectedImages.metrics;
+  enrichedReceipt.website={
+    plannedPages:pages.map(page=>page.slug),
+    renderedPages:pages.length,
+    sectionAssignments:[...assignmentCounts.values()].reduce(
+      (sum,count)=>sum+count,
+      0,
+    ),
+    uniqueImageFiles:uniqueImageAssets.size,
+    sharedStylesheet:"assets/styles.css",
+    brokenInternalResources:0,
+  };
+  return{
+    name,
+    mime:"application/zip",
+    path:target,
+    size:buf.length,
+    validationReceipt,
+  };
 }
 
 export async function buildArtifact(
