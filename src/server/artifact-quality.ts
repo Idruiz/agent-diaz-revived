@@ -24,10 +24,6 @@ const KNOWN_BENIGN_NOTES_MASTER_FINDING = {
   descriptionIncludes: "notesMasterIdLst",
 } as const;
 
-export interface DocumentRepairStats {
-  drawingIdsReassigned: number;
-}
-
 export interface ArtifactValidationFinding {
   id?: string;
   path?: string;
@@ -364,19 +360,6 @@ export function assertArtifactPlanQuality(
       .join("\n")}`,
     { ruleOrPart: "plan-content" },
   );
-}
-
-export function repairDocumentBuffer(input: Buffer): { buffer: Buffer; stats: DocumentRepairStats } {
-  const zip = new AdmZip(input);
-  const document = zip.getEntry("word/document.xml");
-  if (!document) return { buffer: input, stats: { drawingIdsReassigned: 0 } };
-  let nextId = 1;
-  const xml = document.getData().toString("utf8").replace(
-    /<wp:docPr\b([^>]*?)\bid="\d+"([^>]*)>/g,
-    (_match, before: string, after: string) => `<wp:docPr${before}id="${nextId++}"${after}>`,
-  );
-  document.setData(Buffer.from(xml, "utf8"));
-  return { buffer: zip.toBuffer(), stats: { drawingIdsReassigned: nextId - 1 } };
 }
 
 function assertRequiredEntries(zip: AdmZip, required: string[]): void {
