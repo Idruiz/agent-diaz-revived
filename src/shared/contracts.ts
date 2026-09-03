@@ -15,6 +15,7 @@ export const JobStatusSchema = z.enum([
   "running",
   "waiting_approval",
   "building",
+  "blocked",
   "completed",
   "failed",
   "cancelled",
