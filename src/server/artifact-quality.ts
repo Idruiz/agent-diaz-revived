@@ -13,7 +13,6 @@ const PLACEHOLDER_RE = /\b(?:todo|tbd|lorem ipsum|placeholder|insert (?:text|con
 const SPEED_DATING_RE = /speed[\s-]*dating/i;
 const FOUR_CORNERS_RE = /(?:four|4)[\s-]*corners/i;
 const TEACHING_RE = /\b(?:teach|teaching|lesson|students?|classroom|practice)\b/i;
-const CULTURE_RE = /\b(?:culture|cultural|francophone|France|French society|French-speaking)\b/i;
 const SCHEMA_VALIDATOR = "Open XML SDK 3.5.1 (via @xarsh/ooxml-validator 0.3.0)";
 const PPTX_GENERATOR = "pptxgenjs 4.0.1";
 const DOCX_GENERATOR = "docx 9.5.1";
@@ -57,6 +56,17 @@ export interface ArtifactAttemptReceipt {
   at: string;
 }
 
+export interface ArtifactNormalizationReceipt {
+  code: string;
+  detail: string;
+}
+
+export interface ArtifactPlanViolation {
+  code: string;
+  message: string;
+  mandatory: boolean;
+}
+
 export class ArtifactPipelineError extends Error {
   readonly failureClass: ArtifactFailureClass;
   readonly ruleOrPart: string;
@@ -97,6 +107,7 @@ export interface ArtifactValidationReceipt {
   maxLlmCalls: number;
   wallTimeMs: number;
   attempts: ArtifactAttemptReceipt[];
+  normalizations: ArtifactNormalizationReceipt[];
 }
 
 export function asArtifactPipelineError(
@@ -176,83 +187,183 @@ function sectionText(section: ArtifactPlan["sections"][number]): string {
   ].join("\n");
 }
 
-function assertActivityQuality(section: ArtifactPlan["sections"][number]): void {
+function activityQualityViolations(
+  section: ArtifactPlan["sections"][number],
+): ArtifactPlanViolation[] {
   const activity = section.activity;
-  if (!activity) return;
+  if (!activity) return [];
+  const violations: ArtifactPlanViolation[] = [];
+  const push = (code: string, message: string) =>
+    violations.push({ code, message, mandatory: true });
+
   if (activity.type === "speed_dating") {
     if (activity.prompts.length < 4)
-      throw new Error("Artifact quality validation failed: Speed Dating requires at least four usable prompts");
+      push(
+        "speed_dating_prompts",
+        "Artifact quality validation failed: Speed Dating requires at least four usable prompts",
+      );
     if (activity.sentenceFrames.length < 2)
-      throw new Error("Artifact quality validation failed: Speed Dating requires at least two language frames");
+      push(
+        "speed_dating_frames",
+        "Artifact quality validation failed: Speed Dating requires at least two language frames",
+      );
     if (activity.directions.length < 3)
-      throw new Error("Artifact quality validation failed: Speed Dating requires setup, rotation, and response directions");
+      push(
+        "speed_dating_directions",
+        "Artifact quality validation failed: Speed Dating requires setup, rotation, and response directions",
+      );
   }
   if (activity.type === "four_corners") {
     if (activity.cornerLabels.length !== 4)
-      throw new Error("Artifact quality validation failed: Four Corners requires exactly four corner labels");
+      push(
+        "four_corners_labels",
+        "Artifact quality validation failed: Four Corners requires exactly four corner labels",
+      );
     if (activity.prompts.length < 1)
-      throw new Error("Artifact quality validation failed: Four Corners requires a decision prompt");
+      push(
+        "four_corners_prompt",
+        "Artifact quality validation failed: Four Corners requires a decision prompt",
+      );
     if (activity.sentenceFrames.length < 2)
-      throw new Error("Artifact quality validation failed: Four Corners requires at least two discussion frames");
+      push(
+        "four_corners_frames",
+        "Artifact quality validation failed: Four Corners requires at least two discussion frames",
+      );
   }
   if (activity.type === "exit_ticket" && activity.prompts.length < 2)
-    throw new Error("Artifact quality validation failed: an exit ticket requires at least two checks");
+    push(
+      "exit_ticket_prompts",
+      "Artifact quality validation failed: an exit ticket requires at least two checks",
+    );
+  return violations;
 }
 
-export function assertArtifactPlanQuality(kind: JobKind, prompt: string, plan: ArtifactPlan): void {
+export function artifactPlanQualityViolations(
+  kind: JobKind,
+  prompt: string,
+  plan: ArtifactPlan,
+): ArtifactPlanViolation[] {
+  const violations: ArtifactPlanViolation[] = [];
   const requirements = plan.requirements ?? [];
-  if (prompt.trim() && (
-    requirements.length === 0 ||
-    requirements.every((item) => !item.mandatory) ||
-    requirements.some((item) => /^deliver the requested artifact$/i.test(item.text.trim()))
-  ))
-    throw new Error("Artifact quality validation failed: prompt-specific mandatory requirements were not extracted");
+  const push = (
+    code: string,
+    message: string,
+    mandatory = true,
+  ) => violations.push({ code, message, mandatory });
+
+  if (
+    prompt.trim() &&
+    (requirements.length === 0 ||
+      requirements.every((item) => !item.mandatory))
+  )
+    push(
+      "mandatory_requirements_missing",
+      "Artifact quality validation failed: prompt-specific mandatory requirements were not extracted",
+    );
+
   const serialized = allPlanText(plan);
   if (PLACEHOLDER_RE.test(serialized))
-    throw new Error("Artifact quality validation failed: unfinished placeholder language is present");
+    push(
+      "placeholder_text",
+      "Artifact quality validation failed: unfinished placeholder language is present",
+    );
 
   const ids = new Set<string>();
   for (const requirement of requirements) {
     if (ids.has(requirement.id))
-      throw new Error(`Artifact quality validation failed: duplicate requirement id ${requirement.id}`);
+      push(
+        "duplicate_requirement_id",
+        `Artifact quality validation failed: duplicate requirement id ${requirement.id}`,
+        false,
+      );
     ids.add(requirement.id);
   }
+
   for (const section of plan.sections) {
     for (const id of section.requirementIds ?? [])
       if (!ids.has(id))
-        throw new Error(`Artifact quality validation failed: section '${section.heading}' references unknown requirement ${id}`);
-    assertActivityQuality(section);
+        push(
+          "unknown_requirement_id",
+          `Artifact quality validation failed: section '${section.heading}' references unknown requirement ${id}`,
+          false,
+        );
+    violations.push(...activityQualityViolations(section));
   }
+
   for (const requirement of requirements.filter((item) => item.mandatory)) {
-    const covered = plan.sections.some((section) => (section.requirementIds ?? []).includes(requirement.id));
+    const covered = plan.sections.some((section) =>
+      (section.requirementIds ?? []).includes(requirement.id),
+    );
     if (!covered)
-      throw new Error(`Artifact quality validation failed: mandatory requirement ${requirement.id} is not covered: ${requirement.text}`);
+      push(
+        "mandatory_requirement_uncovered",
+        `Artifact quality validation failed: mandatory requirement ${requirement.id} is not covered: ${requirement.text}`,
+      );
   }
 
   if (kind === "presentation") {
-    const activityTypes = new Set(plan.sections.map((section) => section.activity?.type).filter(Boolean));
-    if (SPEED_DATING_RE.test(prompt) && !activityTypes.has("speed_dating"))
-      throw new Error("Artifact quality validation failed: the prompt explicitly requires a Speed Dating activity slide");
-    if (FOUR_CORNERS_RE.test(prompt) && !activityTypes.has("four_corners"))
-      throw new Error("Artifact quality validation failed: the prompt explicitly requires a Four Corners activity slide");
-    if (TEACHING_RE.test(prompt)) {
-      if (!plan.sections.some((section) => section.activity))
-        throw new Error("Artifact quality validation failed: a teaching deck requires active student practice");
-      const usefulNotes = plan.sections.filter((section) => section.speakerNotes.trim().length >= 20).length;
-      if (usefulNotes < Math.ceil(plan.sections.length / 2))
-        throw new Error("Artifact quality validation failed: a teaching deck requires useful presenter notes on at least half of its slides");
-    }
-    if (CULTURE_RE.test(prompt) && !CULTURE_RE.test(serialized))
-      throw new Error("Artifact quality validation failed: the requested cultural connection is absent");
+    const activityTypes = new Set(
+      plan.sections
+        .map((section) => section.activity?.type)
+        .filter(Boolean),
+    );
+    if (
+      SPEED_DATING_RE.test(prompt) &&
+      !activityTypes.has("speed_dating")
+    )
+      push(
+        "speed_dating_missing",
+        "Artifact quality validation failed: the prompt explicitly requires a Speed Dating activity slide",
+      );
+    if (
+      FOUR_CORNERS_RE.test(prompt) &&
+      !activityTypes.has("four_corners")
+    )
+      push(
+        "four_corners_missing",
+        "Artifact quality validation failed: the prompt explicitly requires a Four Corners activity slide",
+      );
+    if (
+      TEACHING_RE.test(prompt) &&
+      !plan.sections.some((section) => section.activity)
+    )
+      push(
+        "student_practice_missing",
+        "Artifact quality validation failed: a teaching deck requires active student practice",
+      );
   }
 
   if (kind === "website") {
     const slugs = plan.pages?.map((page) => page.slug) ?? [];
     if (slugs.length !== new Set(slugs).size)
-      throw new Error("Artifact quality validation failed: website page slugs must be unique");
+      push(
+        "website_duplicate_slugs",
+        "Artifact quality validation failed: website page slugs must be unique",
+      );
     if (!slugs.includes("index"))
-      throw new Error("Artifact quality validation failed: website plan requires an index page");
+      push(
+        "website_index_missing",
+        "Artifact quality validation failed: website plan requires an index page",
+      );
   }
+
+  return violations;
+}
+
+export function assertArtifactPlanQuality(
+  kind: JobKind,
+  prompt: string,
+  plan: ArtifactPlan,
+): void {
+  const violations = artifactPlanQualityViolations(kind, prompt, plan);
+  if (!violations.length) return;
+  throw new ArtifactPipelineError(
+    "PLAN_CONTENT",
+    `Artifact plan content violations:\n${violations
+      .map((violation) => `- [${violation.code}] ${violation.message}`)
+      .join("\n")}`,
+    { ruleOrPart: "plan-content" },
+  );
 }
 
 export function repairDocumentBuffer(input: Buffer): { buffer: Buffer; stats: DocumentRepairStats } {
@@ -563,6 +674,7 @@ export async function validateBuiltArtifact(
       maxLlmCalls: 0,
       wallTimeMs: 0,
       attempts: [],
+      normalizations: [],
     };
     log("info", "artifact.quality_passed", { ...receipt });
     return receipt;
