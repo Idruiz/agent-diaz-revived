@@ -10,7 +10,9 @@ import {
   artifactPlanTextFormat,
   assertProviderRequestCompatible,
   isValidWav,
+  collectArtifactPlanViolations,
   modelProfileFor,
+  normalizeArtifactPlan,
   sanitizeStructuredOutputSchema,
   validateArtifactPlan,
 } from "../openai-agent";
@@ -348,37 +350,234 @@ describe("agent production paths", () => {
     });
   });
 
-  it("enforces the presentation section boundary in both provider and deterministic validation", () => {
+  it("lets NORMALIZE own the presentation maximum while keeping a real minimum-content violation", () => {
     const format = artifactPlanTextFormat("presentation") as any;
     expect(format.schema.properties.sections).toMatchObject({
-      minItems: 7,
-      maxItems: 11,
+      minItems: 1,
+      maxItems: 30,
     });
     const planWithSections = (count: number) => ({
       title: "Presentation boundary",
-      subtitle: "Exact section contract",
+      subtitle: "Normalized section contract",
+      requirements: [
+        {
+          id: "R1",
+          text: "Create a complete visual presentation",
+          mandatory: true,
+        },
+      ],
       sections: Array.from({ length: count }, (_, index) => ({
         heading: `Section ${index + 1}`,
-        body: `Finished content for section ${index + 1}.`,
+        body: `Finished content for section ${index + 1} with concrete audience-facing explanation.`,
         bullets: [],
         speakerNotes: "",
+        requirementIds: ["R1"],
+        layout: "standard" as const,
         imageQuery: `documentary classroom scene ${index + 1}`,
       })),
+      pages: undefined,
       sources: [],
     });
+    const twelve = normalizeArtifactPlan(
+      "presentation",
+      planWithSections(12),
+    );
+    expect(twelve.plan.sections).toHaveLength(11);
+    expect(twelve.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "merge_excess_sections" }),
+      ]),
+    );
+    const six = normalizeArtifactPlan(
+      "presentation",
+      planWithSections(6),
+    );
+    expect(
+      collectArtifactPlanViolations(
+        "presentation",
+        six.plan,
+        5,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "presentation_sections_missing",
+          mandatory: true,
+        }),
+      ]),
+    );
     expect(() =>
-      validateArtifactPlan("presentation", planWithSections(6), 5),
-    ).toThrow("expected 7-11 content sections");
-    expect(() =>
-      validateArtifactPlan("presentation", planWithSections(7), 5),
+      validateArtifactPlan(
+        "presentation",
+        normalizeArtifactPlan(
+          "presentation",
+          planWithSections(7),
+        ).plan,
+        5,
+      ),
     ).not.toThrow();
-    expect(() =>
-      validateArtifactPlan("presentation", planWithSections(11), 5),
-    ).not.toThrow();
-    expect(() =>
-      validateArtifactPlan("presentation", planWithSections(12), 5),
-    ).toThrow("expected 7-11 content sections");
   });
+
+  it("normalizes four computable plan defects with zero plan-repair LLM calls and records them in the receipt", async () => {
+    const { config, db } = harness();
+    fs.mkdirSync(config.artifactDir, { recursive: true });
+    const conversation = db.createConversation(
+      crypto.randomUUID(),
+      "Normalize presentation",
+    );
+    const job = db.createJob({
+      id: crypto.randomUUID(),
+      kind: "presentation",
+      prompt: "Create a comprehensive visual presentation about French cities",
+      conversationId: conversation.id,
+      fileIds: [],
+      ...modelProfileFor("balanced"),
+    });
+    const section = (index: number) => ({
+      heading: `City section ${index + 1}`,
+      body: `Finished audience-facing city content ${index + 1} with enough concrete explanation to remain useful after deterministic normalization.`,
+      bullets: [`Verified city point ${index + 1}.`],
+      speakerNotes: "",
+      requirementIds: index === 8 ? ["R1", "R99"] : ["R1"],
+      layout: "standard",
+      activity: null,
+      table: null,
+      chart: null,
+      diagram: null,
+      imageQuery: null as string | null,
+    });
+    const sections = Array.from({ length: 12 }, (_, index) =>
+      section(index),
+    );
+    sections[0]!.imageQuery = "Paris city street";
+    sections[1]!.imageQuery = "Paris city street";
+    sections[2]!.imageQuery = "Lyon city square";
+    sections[3]!.imageQuery = "Marseille harbor France";
+    sections[4]!.imageQuery = "Bordeaux river France";
+    sections[5]!.imageQuery = "Nice promenade France";
+    sections[6]!.chart = {
+      title: "Fixture city values",
+      type: "bar",
+      labels: ["A", "B"],
+      series: [{ name: "Value", values: [1, 2] }],
+      unit: "points",
+      sourceNote: "",
+    };
+    const plan = {
+      title: "French cities",
+      subtitle: "A normalized presentation fixture",
+      requirements: [
+        {
+          id: "R1",
+          text: "Create a comprehensive visual presentation about French cities",
+          mandatory: true,
+        },
+      ],
+      sections,
+      pages: null,
+      sources: [
+        {
+          title: "Fixture city source",
+          url: "https://example.com/french-cities",
+        },
+      ],
+    };
+    const create = vi.fn(async (request: any) =>
+      request.tools?.length
+        ? {
+            id: "resp_normalize_evidence",
+            status: "completed",
+            output_text:
+              "Verified city evidence with https://example.com/french-cities.",
+            output: [],
+          }
+        : {
+            id: "resp_normalize_structure",
+            status: "completed",
+            output_text: JSON.stringify(plan),
+            output: [],
+          },
+    );
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php"))
+          return new Response(
+            JSON.stringify({
+              query: {
+                pages: {
+                  1: {
+                    title: "French city fixture",
+                    imageinfo: [
+                      {
+                        thumburl:
+                          "https://images.example.test/normalize-city.jpg",
+                        descriptionurl:
+                          "https://commons.wikimedia.org/wiki/File:Normalize_city.jpg",
+                        width: 1200,
+                        height: 800,
+                        extmetadata: {
+                          ObjectName: { value: "French city fixture" },
+                          Artist: { value: "Fixture photographer" },
+                          LicenseShortName: { value: "CC BY 4.0" },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        if (url === "https://images.example.test/normalize-city.jpg")
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(
+          `Unexpected fetch in NORMALIZE test: ${url}`,
+        );
+      });
+    const runner = new AgentRunner(config, db);
+    (runner as any).client = {
+      responses: { create, retrieve: vi.fn() },
+    };
+    try {
+      await (runner as any).run(job.id);
+    } finally {
+      imageFetch.mockRestore();
+    }
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(db.getJob(job.id)?.status).toBe("completed");
+    const artifact = db.listArtifacts(job.id)[0]!;
+    expect(artifact.receipt?.llmCalls).toBe(2);
+    expect(artifact.receipt?.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "dedupe_image_query" }),
+        expect.objectContaining({ code: "merge_excess_sections" }),
+        expect.objectContaining({ code: "default_chart_source_note" }),
+        expect.objectContaining({
+          code: "strip_unknown_requirement_ids",
+        }),
+      ]),
+    );
+    db.close();
+  }, 20_000);
 
   it("runs artifact evidence and JSON structuring as two incompatible-safe provider phases", async () => {
     const { config, db } = harness(),
