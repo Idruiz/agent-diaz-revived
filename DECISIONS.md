@@ -123,3 +123,30 @@ REASON: Verification and receipt claims must describe the artifact that was actu
 - Step 6: replace website hard-coded page splitting and base64 image duplication.
 - Step 7: reconcile image-judge calls into the global LLM-call count and add teaching evidence steering.
 - Step 8: record layout/empty-canvas/source-topicality scores and all consumer gates.
+
+## Step 5 — Native DOCX serialization and activity fidelity
+DECISION: Delete `repairDocumentBuffer()` and direct-write the bytes returned by `Packer.toBuffer()`.
+REASON: Post-serialization unzip/regex/rezip editing is prohibited by the overhaul and hid generator defects instead of solving them at construction time.
+
+DECISION: Assign deterministic `docProperties.id` values to every DOCX `ImageRun` before serialization.
+REASON: The raw `docx` generator otherwise emitted duplicate `wp:docPr id="1"` values. The locked runtime is docx 9.7.1, whose typed API accepts an explicit string ID, so charts, diagrams, and photographs now receive `"1"`, `"2"`, … before OOXML is written.
+
+DECISION: Report `docx 9.7.1` as the generator version.
+REASON: `package.json` permits `^9.5.1`, but the committed lock resolves 9.7.1. Receipts must report the actual locked generator rather than the lower semver range floor.
+
+DECISION: Render every schema-bounded bullet and table row instead of slicing them in the Word builder.
+REASON: The previous `.slice(0,10)` and `.slice(0,24)` silently deleted valid plan content. The schema already bounds these collections, so no additional builder truncation is necessary.
+
+DECISION: Render all activity directions, prompts, sentence frames, duration/type metadata, and Four Corners labels in DOCX; Four Corners uses a native two-row by two-column Word table.
+REASON: The old document builder validated activity content in the plan and then silently omitted it from the file.
+
+DECISION: Add `document.{activitiesRendered,activityTypes,truncations}` to the receipt and keep `truncations=[]` when nothing is intentionally clipped.
+REASON: Any future deliberate truncation must become visible evidence rather than disappearing silently.
+
+DECISION: Guard against actual Word-package rewrite functions, not benign validation reads.
+REASON: `packageVisibleText()` reads `word/document.xml` and separately strips HTML tags with `.replace()`; it does not mutate the DOCX. The AST guard therefore requires both Word XML access and a package-mutation primitive such as `setData`, `updateFile`, `writeZip`, `toBuffer`, or `atomicWrite`.
+
+## Deferred
+- Step 6: replace website hard-coded page splitting and base64 image duplication with plan-owned page assignment and shared assets.
+- Step 7: reconcile image-judge calls into the global LLM-call count and strengthen evidence/teaching steering.
+- Step 8: add final layout/content/source/consumer scoring and gates.
