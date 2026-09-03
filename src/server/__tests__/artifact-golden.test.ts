@@ -75,8 +75,12 @@ afterEach(() => {
 describe("recorded artifact golden runs", () => {
   it("runs French deck, Spanish culture document, CSV analysis, and three-page website through AgentRunner with honest receipts", async () => {
     if (writeCheckpoint3) {
-      fs.rmSync(checkpoint3Root, { recursive: true, force: true });
       fs.mkdirSync(checkpoint3Root, { recursive: true });
+      for (const entry of fs.readdirSync(checkpoint3Root))
+        fs.rmSync(path.join(checkpoint3Root, entry), {
+          recursive: true,
+          force: true,
+        });
     }
     const imageBytes = await sharp({
       create: {
