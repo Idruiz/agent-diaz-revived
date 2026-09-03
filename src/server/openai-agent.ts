@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -12,7 +13,13 @@ import {
 } from "../shared/contracts.js";
 import { personaProfile } from "../shared/personas.js";
 import { buildArtifact } from "./builders.js";
-import { assertArtifactPlanQuality } from "./artifact-quality.js";
+import {
+  ArtifactPipelineError,
+  asArtifactPipelineError,
+  assertArtifactPlanQuality,
+  type ArtifactAttemptReceipt,
+  type ArtifactFailureClass,
+} from "./artifact-quality.js";
 import { log } from "./log.js";
 import { getSkillForKind } from "./skills.js";
 import { personaInstructions } from "./personas.js";
@@ -32,6 +39,46 @@ import {
 } from "./karen-style.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const MAX_ARTIFACT_LLM_CALLS = 6;
+const MAX_ARTIFACT_WALL_TIME_MS = 20 * 60 * 1000;
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export function classifyArtifactFailure(error: unknown): ArtifactPipelineError {
+  if (error instanceof ArtifactPipelineError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    /(?:soffice|libreoffice.*(?:unavailable|timed out)|validator.*(?:binary|execution|spawn|crash)|provider.*(?:5\d\d|server_error|rate_limit))/i.test(
+      message,
+    )
+  )
+    return new ArtifactPipelineError("INFRA", message, {
+      ruleOrPart: "infrastructure",
+      cause: error,
+    });
+  if (
+    /(?:photography validation|image provider|licensed bitmap|image retrieval|no usable licensed image)/i.test(
+      message,
+    )
+  )
+    return new ArtifactPipelineError("ASSET", message, {
+      ruleOrPart: "asset-resolution",
+      cause: error,
+    });
+  return asArtifactPipelineError(error, "BUILD", "artifact-build");
+}
+
+export function artifactFailureFingerprint(input: {
+  failureClass: ArtifactFailureClass;
+  ruleOrPart: string;
+  planSha: string;
+  packageSha: string | null;
+  strategy: string;
+}): string {
+  return sha256Text(JSON.stringify(input));
+}
 
 export interface ModelProfile {
   mode: ModelMode;
