@@ -272,6 +272,17 @@ describe("artifact quality gates", () => {
         ),
       )
       .join("\n");
+    const sourcedNotesXml = zip
+      .getEntry("ppt/notesSlides/notesSlide2.xml")!
+      .getData()
+      .toString("utf8");
+    const sourcedNoteParagraphs = [
+      ...sourcedNotesXml.matchAll(/<a:p>[\s\S]*?<\/a:p>/g),
+    ].map((match) =>
+      [...match[0].matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
+        .map((textMatch) => textMatch[1])
+        .join(""),
+    );
     const presentationXml = zip
       .getEntry("ppt/presentation.xml")!
       .getData()
@@ -324,7 +335,18 @@ describe("artifact quality gates", () => {
     );
     expect(receipt.presentation.activityTemplates).toHaveLength(3);
     expect(slideText).toContain("7 ideas · 5 licensed visuals");
-    expect(notesText).not.toMatch(/<a:t>[^<]*\n/);
+    expect(sourcedNoteParagraphs).toEqual(
+      expect.arrayContaining([
+        "Use this slide to model the language, check understanding, and invite a complete response.",
+        "[Sources]",
+        "- https://commons.wikimedia.org/wiki/File:French_classroom.jpg",
+      ]),
+    );
+    expect(
+      sourcedNoteParagraphs.filter(Boolean).some((paragraph) =>
+        paragraph.includes("\n"),
+      ),
+    ).toBe(false);
     expect(out.validationReceipt.knownBenignFindings[0]).toMatchObject({
       id: "Sch_UnexpectedElementContentExpectingComplex",
       path: "/ppt/presentation.xml",
