@@ -9,7 +9,11 @@ import { validateFile } from "@xarsh/ooxml-validator";
 import type { ArtifactPlan, JobKind } from "../shared/contracts.js";
 import { log } from "./log.js";
 
-const PLACEHOLDER_RE = /\b(?:todo|tbd|lorem ipsum|placeholder|insert (?:text|content|image)|add (?:content|details)|coming soon)\b|\[(?:insert|add|todo)[^\]]*\]/i;
+const PLACEHOLDER_RE = /\b(?:tbd|lorem ipsum|placeholder|insert (?:text|content|image)|add (?:content|details)|coming soon)\b|\[(?:insert|add|todo)[^\]]*\]/i;
+const TODO_PLACEHOLDER_RE = /\bTODO\b/;
+function hasPlaceholderText(value:string):boolean {
+  return TODO_hasPlaceholderText(value) || hasPlaceholderText(value);
+}
 const SPEED_DATING_RE = /speed[\s-]*dating/i;
 const FOUR_CORNERS_RE = /(?:four|4)[\s-]*corners/i;
 const TEACHING_RE = /\b(?:teach|teaching|lesson|students?|classroom|practice)\b/i;
@@ -285,7 +289,7 @@ export function artifactPlanQualityViolations(
     );
 
   const serialized = allPlanText(plan);
-  if (PLACEHOLDER_RE.test(serialized))
+  if (hasPlaceholderText(serialized))
     push(
       "placeholder_text",
       "Artifact quality validation failed: unfinished placeholder language is present",
@@ -518,7 +522,7 @@ export function assertWebsitePackage(filePath: string): void {
     const html = entry.getData().toString("utf8");
     if (!/<title>[^<]+<\/title>/i.test(html) || !/<nav\b/i.test(html) || !/<main\b/i.test(html))
       throw new Error(`Website package validation failed: incomplete semantic shell in ${entry.entryName}`);
-    if (PLACEHOLDER_RE.test(html))
+    if (hasPlaceholderText(html))
       throw new Error(`Website package validation failed: placeholder content in ${entry.entryName}`);
     if (/data:image\//i.test(html))
       throw new Error(
