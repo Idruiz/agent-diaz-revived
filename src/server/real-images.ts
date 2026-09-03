@@ -11,12 +11,46 @@ export interface RealImage {
   license: string;
   sourceUrl: string;
 }
-const text = (v: unknown) =>
-  String(v ?? "")
+
+export interface CommonsImageCandidate {
+  id: string;
+  title: string;
+  description: string;
+  categories: string[];
+  creator: string;
+  license: string;
+  width: number;
+  height: number;
+  thumbUrl: string;
+  sourceUrl: string;
+  query: string;
+}
+
+export interface CandidateRejection {
+  candidateId: string;
+  title: string;
+  reason: string;
+}
+
+const EXCLUDED_SUBJECT_RE =
+  /\b(?:nude|naked|corpse|funeral|memorial|injury|blood|protest|riot|homeless|sleeping person|drunk|police|weapon|logo|flag|map|screenshot|scan|book cover)\b/i;
+const ALLOWED_LICENSE_RE =
+  /^(?:CC(?:\s|[-]?)(?:BY|BY-SA|BY-NC|BY-NC-SA|0)\b|CC0\b|Public domain\b|PD\b)/i;
+const MIN_WIDTH = 640;
+const MIN_HEIGHT = 400;
+const MIN_ASPECT = 0.45;
+const MAX_ASPECT = 2.5;
+
+const text = (value: unknown) =>
+  String(value ?? "")
     .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ")
     .trim();
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const sleep = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 async function fetchWithRetry(
   url: URL | string,
@@ -44,12 +78,41 @@ async function fetchWithRetry(
   throw last ?? new Error("Image provider request failed");
 }
 
-export async function normalizeLicensedImage(bytes: Buffer): Promise<Buffer> {
+export function imageCandidateRejectionReason(
+  candidate: CommonsImageCandidate,
+): string | null {
+  if (!ALLOWED_LICENSE_RE.test(candidate.license))
+    return `license '${candidate.license || "missing"}' is not CC/PD`;
+  if (
+    candidate.width < MIN_WIDTH ||
+    candidate.height < MIN_HEIGHT
+  )
+    return `dimensions ${candidate.width}×${candidate.height} are below ${MIN_WIDTH}×${MIN_HEIGHT}`;
+  const aspect =
+    candidate.height > 0 ? candidate.width / candidate.height : 0;
+  if (aspect < MIN_ASPECT || aspect > MAX_ASPECT)
+    return `aspect ratio ${aspect.toFixed(2)} is outside ${MIN_ASPECT}–${MAX_ASPECT}`;
+  const haystack = [
+    candidate.title,
+    candidate.description,
+    ...candidate.categories,
+  ].join(" ");
+  if (EXCLUDED_SUBJECT_RE.test(haystack))
+    return "metadata matches the classroom-safety exclusion list";
+  return null;
+}
+
+export async function normalizeLicensedImage(
+  bytes: Buffer,
+): Promise<Buffer> {
   if (bytes.length > 10 * 1024 * 1024)
     throw new Error("Image exceeded 10 MB limit");
   if (bytes.length < 1000)
     throw new Error("Image download was unexpectedly small");
-  return sharp(bytes, { failOn: "warning", limitInputPixels: 40_000_000 })
+  return sharp(bytes, {
+    failOn: "warning",
+    limitInputPixels: 40_000_000,
+  })
     .rotate()
     .resize({
       width: 1600,
@@ -61,111 +124,90 @@ export async function normalizeLicensedImage(bytes: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-export async function fetchCommonsImage(query: string): Promise<RealImage> {
-  const tokens = query
-    .toLocaleLowerCase()
+function searchVariants(query: string): string[] {
+  const normalized = text(query);
+  const tokens = normalized
     .split(/[^\p{L}\p{N}]+/u)
     .filter((token) => token.length > 2);
-  const searchNoise = new Set([
-    "photograph",
-    "photography",
-    "photo",
-    "image",
-    "documentary",
-    "detailed",
-    "scientific",
-    "illustration",
-    "comparison",
-    "closeup",
-    "close",
-  ]);
-  const meaningful = tokens.filter((token) => !searchNoise.has(token));
-  const honeyIndex=meaningful.findIndex((token,index)=>token==="honey"&&meaningful[index+1]==="bee"),
-    core=honeyIndex>=0?meaningful.slice(honeyIndex,honeyIndex+2):meaningful.slice(0,2),
-    modifiers=meaningful.filter((_,index)=>honeyIndex>=0?(index<honeyIndex||index>honeyIndex+1):index>1).filter(token=>token!=="western"),
-    broad=core.length&&modifiers.length?`"${core.join(" ")}" (${modifiers.slice(0,5).join(" OR ")})`:"";
-  const variants = [...new Set([
-    broad,
-    query,
-    meaningful.join(" "),
-    meaningful.slice(0,6).join(" "),
-    meaningful.slice(0,4).join(" "),
-    meaningful.slice(0,3).join(" "),
-  ].filter(Boolean))];
-  let pages:any[]=[];
-  for(const variant of variants){
+  return [
+    normalized,
+    tokens.slice(0, 7).join(" "),
+    tokens.slice(0, 5).join(" "),
+  ].filter(
+    (value, index, all) =>
+      Boolean(value) && all.indexOf(value) === index,
+  );
+}
+
+export async function searchCommonsCandidates(
+  query: string,
+  limit = 8,
+): Promise<{
+  candidates: CommonsImageCandidate[];
+  rejected: CandidateRejection[];
+}> {
+  const accepted = new Map<string, CommonsImageCandidate>();
+  const rejected = new Map<string, CandidateRejection>();
+
+  for (const variant of searchVariants(query)) {
+    if (accepted.size >= limit) break;
     const api = new URL("https://commons.wikimedia.org/w/api.php");
     api.searchParams.set("action", "query");
     api.searchParams.set("generator", "search");
-    api.searchParams.set("gsrsearch", `${variant} filetype:bitmap`);
+    api.searchParams.set(
+      "gsrsearch",
+      `${variant} filetype:bitmap`,
+    );
     api.searchParams.set("gsrnamespace", "6");
-    api.searchParams.set("gsrlimit", "12");
-    api.searchParams.set("prop", "imageinfo");
-    api.searchParams.set("iiprop", "url|size|extmetadata");
+    api.searchParams.set("gsrlimit", String(Math.max(limit, 8)));
+    api.searchParams.set("prop", "imageinfo|categories");
+    api.searchParams.set(
+      "iiprop",
+      "url|size|extmetadata",
+    );
     api.searchParams.set("iiurlwidth", "1600");
+    api.searchParams.set("cllimit", "max");
     api.searchParams.set("format", "json");
     api.searchParams.set("origin", "*");
+
     const response = await fetchWithRetry(api, {
       headers: {
-        "User-Agent": "AgentDiaz/3.3 (licensed educational artifact builder)",
+        "User-Agent":
+          "AgentDiaz/3.4 (licensed educational artifact builder)",
       },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(15_000),
     });
     const json: any = await response.json();
-    pages = Object.values(json?.query?.pages ?? {}) as any[];
-    if(pages.length)break;
-  }
-  const wantsIllustration=/\b(illustration|diagram|engraving|historical print)\b/i.test(query);
-  const avoid=wantsIllustration
-    ? /\b(logo|flag|map|seal|coat of arms|icon|symbol|screenshot)\b/i
-    : /\b(logo|flag|map|seal|coat of arms|icon|symbol|screenshot|book|journal|newspaper|magazine|poster|advertisement|cover|scan|page|diagram|engraving)\b/i;
-  const candidates = pages
-    .map((p) => ({ p, ii: p.imageinfo?.[0] }))
-    .filter(
-      (x) =>
-        x.ii?.thumburl &&
-        /\.(?:jpe?g|png|webp)(?:[/?]|$)/i.test(String(x.ii.thumburl)),
-    )
-    .map((hit) => {
-      const title=String(hit.p.title||"").toLocaleLowerCase(),
-        description=text(hit.ii.extmetadata?.ImageDescription?.value).toLocaleLowerCase(),
-        haystack=`${title} ${description}`,
-        titleMatches=tokens.filter((token)=>title.includes(token)).length,
-        descriptionMatches=tokens.filter((token)=>description.includes(token)).length;
-      const pixels = Number(hit.ii.width || 0) * Number(hit.ii.height || 0);
-      return {
-        ...hit,
-        score:
-          titleMatches * 55 +
-          descriptionMatches * 7 +
-          Math.min(30, pixels / 500_000) +
-          (/\.jpe?g(?:[/?]|$)/i.test(String(hit.ii.thumburl)) ? 6 : 0) -
-          (avoid.test(haystack) ? 220 : 0),
-      };
-    })
-    .sort((a, b) => b.score - a.score);
-  if (!candidates.length)
-    throw new Error(`No licensed bitmap found for image query: ${query}`);
-  let last: Error | undefined;
-  for (const hit of candidates.slice(0, 6)) {
-    try {
-      const image = await fetchWithRetry(hit.ii.thumburl, {
-        headers: { "User-Agent": "AgentDiaz/3.3" },
-        signal: AbortSignal.timeout(20000),
-      });
-      const downloaded = Buffer.from(await image.arrayBuffer()),
-        bytes = await normalizeLicensedImage(downloaded),
-        dimensions = await sharp(bytes).metadata(),
-        meta = hit.ii.extmetadata ?? {};
-      if (!dimensions.width || !dimensions.height)
-        throw new Error("Normalized image has no dimensions");
-      return {
-        bytes,
-        extension: "jpg",
-        mime: "image/jpeg",
-        width: dimensions.width,
-        height: dimensions.height,
-        title: text(meta.ObjectName?.value || hit.p.title).slice(0, 180),
+    const pages = Object.values(
+      json?.query?.pages ?? {},
+    ) as any[];
+
+    for (const page of pages) {
+      if (accepted.size >= limit) break;
+      const ii = page.imageinfo?.[0];
+      if (
+        !ii?.thumburl ||
+        !/\.(?:jpe?g|png|webp)(?:[/?]|$)/i.test(
+          String(ii.thumburl),
+        )
+      )
+        continue;
+
+      const meta = ii.extmetadata ?? {};
+      const candidate: CommonsImageCandidate = {
+        id: String(page.pageid ?? page.title ?? ii.thumburl),
+        title: text(
+          meta.ObjectName?.value || page.title,
+        ).slice(0, 220),
+        description: text(
+          meta.ImageDescription?.value,
+        ).slice(0, 500),
+        categories: (page.categories ?? [])
+          .map((category: any) =>
+            text(category.title).replace(/^Category:/i, ""),
+          )
+          .filter(Boolean)
+          .slice(0, 24),
         creator: text(
           meta.Artist?.value ||
             meta.Credit?.value ||
@@ -173,18 +215,72 @@ export async function fetchCommonsImage(query: string): Promise<RealImage> {
         ).slice(0, 220),
         license: text(
           meta.LicenseShortName?.value ||
-            meta.UsageTerms?.value ||
-            "See source for license",
+            meta.UsageTerms?.value,
         ).slice(0, 120),
+        width: Number(ii.width || 0),
+        height: Number(ii.height || 0),
+        thumbUrl: String(ii.thumburl),
         sourceUrl: String(
-          meta.CanonicalPage?.value || hit.ii.descriptionurl || hit.ii.url,
+          meta.CanonicalPage?.value ||
+            ii.descriptionurl ||
+            ii.url,
         ),
+        query,
       };
-    } catch (error) {
-      last = error instanceof Error ? error : new Error("Image candidate failed");
+
+      const reason = imageCandidateRejectionReason(candidate);
+      if (reason) {
+        rejected.set(candidate.id, {
+          candidateId: candidate.id,
+          title: candidate.title,
+          reason,
+        });
+        continue;
+      }
+      if (!accepted.has(candidate.id))
+        accepted.set(candidate.id, candidate);
     }
   }
-  throw new Error(
-    `No usable licensed image found for '${query}': ${last?.message || "all candidates failed"}`,
-  );
+
+  return {
+    candidates: [...accepted.values()].slice(0, limit),
+    rejected: [...rejected.values()],
+  };
+}
+
+export async function downloadCommonsCandidate(
+  candidate: CommonsImageCandidate,
+): Promise<RealImage> {
+  const response = await fetchWithRetry(candidate.thumbUrl, {
+    headers: { "User-Agent": "AgentDiaz/3.4" },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const downloaded = Buffer.from(await response.arrayBuffer());
+  const bytes = await normalizeLicensedImage(downloaded);
+  const dimensions = await sharp(bytes).metadata();
+  if (!dimensions.width || !dimensions.height)
+    throw new Error("Normalized image has no dimensions");
+  return {
+    bytes,
+    extension: "jpg",
+    mime: "image/jpeg",
+    width: dimensions.width,
+    height: dimensions.height,
+    title: candidate.title,
+    creator: candidate.creator,
+    license: candidate.license,
+    sourceUrl: candidate.sourceUrl,
+  };
+}
+
+export async function fetchCommonsImage(
+  query: string,
+): Promise<RealImage> {
+  const { candidates } = await searchCommonsCandidates(query, 1);
+  const candidate = candidates[0];
+  if (!candidate)
+    throw new Error(
+      `No usable licensed image candidates found for '${query}'`,
+    );
+  return downloadCommonsCandidate(candidate);
 }
