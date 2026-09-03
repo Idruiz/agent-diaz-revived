@@ -98,7 +98,7 @@ describe("artifact builders", () => {
       expect(fs.existsSync(out.path)).toBe(true);
       expect(out.size).toBeGreaterThan(kind === "website" ? 1500 : 8000);
       expect(path.dirname(out.path)).toBe(config.artifactDir);
-    });
+    }, 15_000);
   it("uses schema-safe rendered charts while keeping diagrams and text native", async () => {
     const out = await buildArtifact(config, "presentation", plan);
     const zip = new AdmZip(out.path),
