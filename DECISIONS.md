@@ -150,3 +150,36 @@ REASON: `packageVisibleText()` reads `word/document.xml` and separately strips H
 - Step 6: replace website hard-coded page splitting and base64 image duplication with plan-owned page assignment and shared assets.
 - Step 7: reconcile image-judge calls into the global LLM-call count and strengthen evidence/teaching steering.
 - Step 8: add final layout/content/source/consumer scoring and gates.
+
+## Step 6 — Plan-owned website architecture and shared assets
+DECISION: Make `plan.pages` mandatory and authoritative for website builds; delete the hard-coded modulo-thirds fallback entirely.
+REASON: The validator and builder must obey the same site architecture. Inventing Home/Insights/Resources after validation made the plan contract meaningless.
+
+DECISION: Require every non-source section heading to be assigned to exactly one planned page, and reject unknown, missing, or multiply assigned headings.
+REASON: Page ownership is deterministic and must not be silently inferred or duplicated.
+
+DECISION: Write one shared stylesheet at `assets/styles.css` and reference it from every page.
+REASON: Repeating the complete site CSS in every HTML file wastes package size and makes page behavior diverge.
+
+DECISION: Hash normalized photograph bytes and write each unique file once under `assets/images/<sha>.jpg`.
+REASON: The previous builder embedded every image as base64 in every page that used it. Content-addressed files provide deterministic deduplication and portable relative references.
+
+DECISION: Validate both local `href` and `src` resources in the finished ZIP and reject `data:image` payloads.
+REASON: Link integrity alone does not catch missing stylesheets/images or accidental return of base64 embedding.
+
+DECISION: Treat fetched-but-unplaced website images as a BUILD invariant failure.
+REASON: As with PPTX, retrieval cost and receipt counts must correspond to delivered assets rather than silently discarded files.
+
+DECISION: Render website activities from the same typed activity object used by PPTX/DOCX, including directions, prompts, sentence frames, duration, and Four Corners labels.
+REASON: Cross-format content fidelity requires user-requested activities to survive regardless of output format.
+
+DECISION: Permit `<style>` elements inside generated inline SVG charts while forbidding page-level inline CSS in `<head>`.
+REASON: chart SVGs carry their own local typography rules, whereas the page shell must use the shared stylesheet. The regression scopes the assertion to the document head.
+
+DECISION: Record `website.{plannedPages,renderedPages,sectionAssignments,uniqueImageFiles,sharedStylesheet,brokenInternalResources}` in the receipt.
+REASON: The finished package must expose enough evidence to audit architecture and asset deduplication.
+
+## Deferred
+- Step 7: reconcile image-judge calls into global LLM-call accounting and strengthen evidence/teaching steering.
+- Step 8: final finished-file quality scoring and consumer gates.
+- Step 9: exact regression matrix, before/after receipt, final diagnostics and PR checkpoint.
