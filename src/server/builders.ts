@@ -355,8 +355,14 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     for(let index=0;index<nodes.length-1;index++){
       const row=Math.floor(index/columns),col=index%columns,nextRow=Math.floor((index+1)/columns),nextCol=(index+1)%columns;
       const x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY),nx=startX+nextCol*(boxW+gapX),ny=startY+nextRow*(boxH+gapY);
-      if(row===nextRow)slide.addShape(p.ShapeType.line,{x:x+boxW,y:y+boxH/2,w:gapX,h:0,line:{color:blue,pt:2.2,endArrowType:"triangle"}});
-      else slide.addShape(p.ShapeType.line,{x:x+boxW/2,y:y+boxH,w:nx+boxW/2-(x+boxW/2),h:ny-y-boxH,line:{color:blue,pt:2.2,endArrowType:"triangle"}});
+      if(row===nextRow)
+        slide.addShape(p.ShapeType.line,{
+          x:x+boxW,
+          y:y+boxH/2,
+          w:gapX,
+          h:0,
+          line:{color:blue,pt:2.2,endArrowType:"triangle"},
+        });
     }
     nodes.forEach((node,index)=>{const row=Math.floor(index/columns),col=index%columns,x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);slide.addShape(p.ShapeType.roundRect,{x,y,w:boxW,h:boxH,rectRadius:.05,fill:{color:index%2?pale:"F1E5C5"},line:{color:gold,pt:1.2},shadow:{type:"outer",color:"000000",opacity:.1,blur:1,angle:45,distance:.5}});slide.addText(short(node,52),{x:x+.18,y:y+.16,w:boxW-.36,h:boxH-.32,fontSize:17,bold:true,color:navy,align:"center",valign:"mid",margin:0,fit:"shrink"});});
     if(diagram.caption||section.body)slide.addText(short(diagram.caption||section.body,320),{x:1.0,y:rows===1?4.34:5.55,w:image?8.15:11.1,h:.72,fontSize:17,color:muted,align:"center",margin:0,fit:"shrink"});
