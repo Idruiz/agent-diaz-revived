@@ -324,7 +324,10 @@ export function normalizeArtifactPlan(
         `Added a deterministic source note to chart '${section.chart.title}'.`,
       );
     }
-    if (section.speakerNotes.trim().length < 20)
+    if (
+      kind === "presentation" &&
+      section.speakerNotes.trim().length < 20
+    )
       record(
         "short_speaker_notes_warning",
         `Speaker notes for '${section.heading}' are shorter than 20 characters; retained as a warning.`,
