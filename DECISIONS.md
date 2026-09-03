@@ -92,3 +92,34 @@ REASON: Step 3's safety rail forbids modifying `openai-agent.ts`. Production sti
 - Step 5: remove `repairDocumentBuffer()` and post-serialization DOCX XML editing.
 - Step 6: remove hard-coded website page splitting and repeated base64 image embedding.
 - Step 7: add `images.judgeCalls` to the orchestration-level `llmCalls` receipt total while touching `openai-agent.ts`.
+
+## Step 4 — RECONCILE and PPTX layouts
+DECISION: Run deterministic RECONCILE after image resolution and before PPTX layout.
+REASON: Visible copy must be reconciled against assets that were actually delivered, not against planned or requested assets.
+
+DECISION: When an image is absent, visible sentences/bullets/activity text that explicitly reference an image/photo/map are moved into speaker notes while unrelated visible copy remains.
+REASON: The original deck told students to inspect visuals that were not present. This preserves the authoring context without leaving a false audience-facing instruction.
+
+DECISION: Treat any fetched image that is not physically placed by a PPTX layout as a BUILD invariant violation.
+REASON: Fetching and then silently discarding assets caused the false title-slide count and wasted retrieval cost. The builder now records placement through the same helper used for actual embedding.
+
+DECISION: Add photo-capable variants for activity, chart, table, and diagram layouts.
+REASON: Layout precedence must not discard an image merely because the section also contains a structured activity or data/diagram visual.
+
+DECISION: Use five deterministic activity templates: four-corners quadrants, speed-dating rotation, guided step rail, discussion prompt cards, and independent checklist.
+REASON: The prior generic activity template produced cloned slides and excessive empty canvas. The exact French regression requires at least three distinct templates and now exercises three.
+
+DECISION: Compute the title-slide visual count from `placedImageQueries.size` only after all content slides have been laid out.
+REASON: The cover/title must report delivered assets, never fetched or planned assets.
+
+DECISION: Document a Step 4 exception for “real speaker-note paragraphs.” PptxGenJS 4.0.1 serializes all slide-note text into one notes-body `<a:p>`; multiple `addNotes()` calls are concatenated inside that single paragraph. Preserve native CRLF-separated note blocks and do not patch notes XML after serialization.
+REASON: Producing multiple OOXML note paragraphs would require either post-serialization OOXML surgery, explicitly prohibited by the overhaul and protected by the AST guard, or replacing/patching the generator dependency outside Step 4’s allowed file scope. The regression proves native CRLF block separation and preserves the no-XML-rewrite safety rail. Desktop note rendering remains a consumer-validation risk.
+
+DECISION: Validate the built presentation against the reconciled plan and record `presentation.{placedAssets,activityTemplates,reconciliations,titleCounts}` in the receipt.
+REASON: Verification and receipt claims must describe the artifact that was actually built after reconciliation.
+
+## Deferred
+- Step 5: remove `repairDocumentBuffer()`, render DOCX activities, and record truncations.
+- Step 6: replace website hard-coded page splitting and base64 image duplication.
+- Step 7: reconcile image-judge calls into the global LLM-call count and add teaching evidence steering.
+- Step 8: record layout/empty-canvas/source-topicality scores and all consumer gates.
