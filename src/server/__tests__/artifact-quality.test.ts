@@ -565,7 +565,7 @@ describe("artifact quality gates", () => {
     zip.addFile("about.html", Buffer.from(page("index.html")));
     zip.addFile("attributions.html", Buffer.from(page("index.html")));
     zip.writeZip(target);
-    expect(() => assertWebsitePackage(target)).toThrow(/broken internal link/);
+    expect(() => assertWebsitePackage(target)).toThrow(/broken internal resource/);
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
