@@ -1837,7 +1837,7 @@ describe("agent production paths", () => {
       "resp_still_invalid_plan",
     );
     expect(secondRepairRequest.input).toContain(
-      "[presentation_sections_missing] Presentation needs at least 7 content sections",
+      "[presentation_visual_coverage_low] Presentation has 5 visual sections; target is 6.",
     );
     expect(db.getJob(job.id)).toMatchObject({
       status: "completed",
