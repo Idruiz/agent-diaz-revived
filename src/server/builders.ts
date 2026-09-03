@@ -8,7 +8,16 @@ import type { ArtifactPlan, JobKind } from "../shared/contracts.js";
 import type { Config } from "./config.js";
 import { atomicWrite, safeJoin } from "./files.js";
 import { chartPng, chartSvg, diagramPng, diagramSvg } from "./visuals.js";
-import { fetchCommonsImage, type RealImage } from "./real-images.js";
+import {
+  downloadCommonsCandidate,
+  searchCommonsCandidates,
+  type CommonsImageCandidate,
+  type RealImage,
+} from "./real-images.js";
+import {
+  judgeImageCandidates,
+  type ImageJudgeSection,
+} from "./image-judge.js";
 import { log } from "./log.js";
 import {
   ArtifactPipelineError,
@@ -22,34 +31,196 @@ const PptxGenJS=((PptxGenModule as any).default??PptxGenModule) as typeof PptxGe
 export interface BuiltFile { name:string; mime:string; path:string; size:number; validationReceipt:ArtifactValidationReceipt; }
 const slug=(s:string)=>s.normalize("NFKD").replace(/[^a-zA-Z0-9]+/g,"_").replace(/^_|_$/g,"").slice(0,80)||"artifact";
 const escapeHtml=(s:string)=>s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
-const wait=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
-async function collectImages(plan:ArtifactPlan,limit=10):Promise<Map<string,RealImage>>{
-  const queries=[...new Set(plan.sections.map(s=>s.imageQuery).filter((q):q is string=>!!q))].slice(0,limit);
-  const images=new Map<string,RealImage>(),failed:string[]=[];
-  for(let start=0;start<queries.length;start+=2){
-    await Promise.all(queries.slice(start,start+2).map(async(query,offset)=>{
-      const index=start+offset;
-      try{
-        images.set(query,await fetchCommonsImage(query));
-        log("info","artifact.image_retrieved",{query,index:index+1,total:queries.length});
-      }catch(error){
-        failed.push(query);
-        log("warn","artifact.image_retrieval_failed",{query,error:error instanceof Error?error.message:String(error)});
+export interface ImageResolutionReceipt {
+  requested: number;
+  fetched: number;
+  judged: number;
+  judgeCalls: number;
+  rejectedWithReasons: Array<{
+    sectionIndex: number;
+    query: string;
+    candidateId: string | null;
+    title: string | null;
+    reason: string;
+  }>;
+  placed: number;
+}
+
+interface CollectedImages {
+  images: Map<string, RealImage>;
+  metrics: ImageResolutionReceipt;
+}
+
+const meaningfulWords = (value: string) =>
+  value
+    .replace(/[^\p{L}\p{N}\s-]+/gu, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 3)
+    .slice(0, 7)
+    .join(" ");
+
+const inferAudience = (prompt: string) => {
+  const grade = prompt.match(/\bgrade\s*(\d{1,2})\b/i);
+  if (grade) return `Grade ${grade[1]} classroom`;
+  if (/\b(?:teach|teaching|lesson|students?|classroom|practice)\b/i.test(prompt))
+    return "school classroom audience";
+  return "general audience";
+};
+
+async function collectImages(
+  config: Config,
+  plan: ArtifactPlan,
+  prompt = "",
+  limit = 10,
+): Promise<CollectedImages> {
+  const requests = plan.sections
+    .map((section, sectionIndex) => ({ section, sectionIndex }))
+    .filter(
+      (item): item is {
+        section: ArtifactPlan["sections"][number] & { imageQuery: string };
+        sectionIndex: number;
+      } => Boolean(item.section.imageQuery),
+    )
+    .slice(0, limit);
+  const rejectedWithReasons: ImageResolutionReceipt["rejectedWithReasons"] = [];
+  const judgeSections: ImageJudgeSection[] = [];
+
+  for (const { section, sectionIndex } of requests) {
+    const query = section.imageQuery;
+    const candidateMap = new Map<string, CommonsImageCandidate>();
+    const searchQueries = [
+      query,
+      section.heading,
+      [section.heading, meaningfulWords(section.body)]
+        .filter(Boolean)
+        .join(" "),
+    ].filter(
+      (value, index, all) =>
+        Boolean(value.trim()) &&
+        all.findIndex(
+          (candidate) =>
+            candidate.toLocaleLowerCase() === value.toLocaleLowerCase(),
+        ) === index,
+    );
+
+    for (const searchQuery of searchQueries) {
+      if (candidateMap.size >= 8) break;
+      try {
+        const result = await searchCommonsCandidates(
+          searchQuery,
+          8 - candidateMap.size,
+        );
+        for (const candidate of result.candidates)
+          if (!candidateMap.has(candidate.id))
+            candidateMap.set(candidate.id, candidate);
+        for (const rejected of result.rejected)
+          rejectedWithReasons.push({
+            sectionIndex,
+            query,
+            candidateId: rejected.candidateId,
+            title: rejected.title,
+            reason: rejected.reason,
+          });
+      } catch (error) {
+        rejectedWithReasons.push({
+          sectionIndex,
+          query,
+          candidateId: null,
+          title: null,
+          reason: `Candidate search failed for '${searchQuery}': ${error instanceof Error ? error.message : String(error)}`,
+        });
       }
-    }));
-    if(start+2<queries.length)await wait(800);
+      if (candidateMap.size >= 4) break;
+    }
+
+    judgeSections.push({
+      sectionIndex,
+      heading: section.heading,
+      body: section.body,
+      audience: inferAudience(prompt),
+      query,
+      candidates: [...candidateMap.values()].slice(0, 8),
+    });
   }
-  for(const query of failed){
-    if(images.has(query))continue;
-    await wait(1200);
-    try{
-      images.set(query,await fetchCommonsImage(query));
-      log("info","artifact.image_retry_retrieved",{query,total:queries.length});
-    }catch(error){
-      log("warn","artifact.image_retry_failed",{query,error:error instanceof Error?error.message:String(error)});
+
+  const judged = await judgeImageCandidates(config, judgeSections);
+  const images = new Map<string, RealImage>();
+  let fetched = 0;
+
+  for (const section of judgeSections) {
+    const decision = judged.decisions.find(
+      (item) => item.sectionIndex === section.sectionIndex,
+    );
+    const chosen = decision?.chosenCandidate
+      ? section.candidates.find(
+          (candidate) => candidate.id === decision.chosenCandidate,
+        )
+      : undefined;
+
+    for (const candidate of section.candidates) {
+      if (chosen?.id === candidate.id) continue;
+      rejectedWithReasons.push({
+        sectionIndex: section.sectionIndex,
+        query: section.query,
+        candidateId: candidate.id,
+        title: candidate.title,
+        reason: decision?.reason
+          ? `Not selected by image judge: ${decision.reason}`
+          : "Not selected by image judge.",
+      });
+    }
+
+    if (!chosen) {
+      rejectedWithReasons.push({
+        sectionIndex: section.sectionIndex,
+        query: section.query,
+        candidateId: null,
+        title: null,
+        reason:
+          decision?.reason ||
+          "No candidate met the qualitative relevance bar.",
+      });
+      continue;
+    }
+
+    try {
+      const image = await downloadCommonsCandidate(chosen);
+      images.set(section.query, image);
+      fetched++;
+      log("info", "artifact.image_judged_retrieved", {
+        query: section.query,
+        sectionIndex: section.sectionIndex,
+        candidateId: chosen.id,
+        title: chosen.title,
+      });
+    } catch (error) {
+      rejectedWithReasons.push({
+        sectionIndex: section.sectionIndex,
+        query: section.query,
+        candidateId: chosen.id,
+        title: chosen.title,
+        reason: `Chosen candidate download failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      log("warn", "artifact.image_chosen_download_failed", {
+        query: section.query,
+        sectionIndex: section.sectionIndex,
+        candidateId: chosen.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
-  return images;
+
+  return {
+    images,
+    metrics: {
+      requested: requests.length,
+      fetched,
+      judged: judgeSections.length,
+      judgeCalls: judged.judgeCalls,
+      rejectedWithReasons,
+      placed: 0,
+    },
+  };
 }
 
 const imageDataUri=(image:RealImage)=>`data:${image.mime};base64,${image.bytes.toString("base64")}`;
@@ -64,14 +235,14 @@ function noteBlock(notes:string|undefined,sources:string[]):string{
 
 async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
-  const images=await collectImages({...plan,sections:contentSections},10);
-  const requestedImages=contentSections.filter(section=>section.imageQuery).length;
-  if(requestedImages>=3&&images.size<Math.min(3,requestedImages))
-    throw new ArtifactPipelineError(
-      "ASSET",
-      `Presentation photography validation failed: retrieved ${images.size} of ${requestedImages} requested licensed images`,
-      { ruleOrPart: "presentation-images" },
-    );
+  const collectedImages=await collectImages(
+    config,
+    {...plan,sections:contentSections},
+    prompt,
+    10,
+  );
+  const images=collectedImages.images;
+  const placedImageQueries=new Set<string>();
   const p=new PptxGenJS(); p.layout="LAYOUT_WIDE"; p.author="Agent Díaz"; p.subject=plan.title; p.title=plan.title;
   p.theme={headFontFace:"Aptos Display",bodyFontFace:"Aptos"};
   const bg="F7F3EA",ink="17202A",gold="C99A2E",navy="17324D",blue="2F739C",muted="5A6772",white="FFFFFF",pale="E7EEF2";
@@ -165,6 +336,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     else if(section.table)addNativeTable(slide,section);
     else if(section.diagram)addNativeDiagram(slide,section);
     else if(image){
+      if(section.imageQuery)placedImageQueries.add(section.imageQuery);
       const fullBleed=index%4===2;
       if(fullBleed){
         slide.addImage({data:imageDataUri(image),x:0,y:0,w:13.333,h:7.5,sizing:{type:"cover",w:13.333,h:7.5},altText:image.title});
@@ -203,19 +375,21 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     target,
     jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
   );
+  collectedImages.metrics.placed=placedImageQueries.size;
+  (validationReceipt as ArtifactValidationReceipt & {images:ImageResolutionReceipt}).images=collectedImages.metrics;
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:raw.length,validationReceipt};
 }
 
 async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId=""):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
-  const images=await collectImages({...plan,sections:contentSections},10);
-  const requestedImages=contentSections.filter(section=>section.imageQuery).length;
-  if(requestedImages>0&&images.size<Math.min(requestedImages,1))
-    throw new ArtifactPipelineError(
-      "ASSET",
-      `Document photography validation failed: retrieved ${images.size} of ${requestedImages} requested licensed images`,
-      { ruleOrPart: "document-images" },
-    );
+  const collectedImages=await collectImages(
+    config,
+    {...plan,sections:contentSections},
+    prompt,
+    10,
+  );
+  const images=collectedImages.images;
+  const placedImageQueries=new Set<string>();
   const noBorder={style:BorderStyle.NONE,size:0,color:"FFFFFF"};
   const cellBorders={top:noBorder,bottom:{style:BorderStyle.SINGLE,size:4,color:"D9E0E4"},left:noBorder,right:noBorder,insideHorizontal:noBorder,insideVertical:noBorder};
   const tableWidths=(headers:string[],rows:string[][])=>{
@@ -253,6 +427,7 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
       const png=await diagramPng(section.diagram);
       children.push(new Paragraph({spacing:{before:180,after:120},children:[new ImageRun({data:png,transformation:{width:560,height:235},type:"png",altText:{title:section.diagram.title,description:section.diagram.caption||section.diagram.title,name:section.diagram.title}})],alignment:AlignmentType.CENTER}));
     }else if(section.imageQuery&&images.has(section.imageQuery)){
+      placedImageQueries.add(section.imageQuery);
       const image=images.get(section.imageQuery)!,dimensions=imageDimensions(image);
       children.push(
         new Paragraph({spacing:{before:220,after:80},children:[new ImageRun({data:image.bytes,transformation:dimensions,type:image.extension as "jpg"|"png",altText:{title:image.title,description:`${image.title} by ${image.creator}`,name:image.title}})],alignment:AlignmentType.CENTER}),
@@ -288,6 +463,8 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     target,
     jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
   );
+  collectedImages.metrics.placed=placedImageQueries.size;
+  (validationReceipt as ArtifactValidationReceipt & {images:ImageResolutionReceipt}).images=collectedImages.metrics;
   return{name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",path:target,size:buf.length,validationReceipt};
 }
 
@@ -300,17 +477,12 @@ async function website(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promi
     {slug:"insights",title:"Insights",description:"Key evidence and findings",sectionHeadings:thirds[1]!.map(s=>s.heading)},
     {slug:"resources",title:"Resources",description:"Practical details and references",sectionHeadings:thirds[2]!.map(s=>s.heading)}
   ];
-  const images=await collectImages(plan,12);
-  const requestedPhotos=new Set(contentSections.map(s=>s.imageQuery).filter(Boolean)).size;
-  if(requestedPhotos>0&&images.size<Math.min(3,requestedPhotos))
-    throw new ArtifactPipelineError(
-      "ASSET",
-      `Website photography validation failed: retrieved ${images.size} of ${requestedPhotos} requested licensed images`,
-      { ruleOrPart: "website-images" },
-    );
+  const collectedImages=await collectImages(config,plan,prompt,12);
+  const images=collectedImages.images;
+  const placedImageQueries=new Set<string>();
   const fileName=(page:(typeof pages)[number])=>page.slug==="index"?"index.html":`${page.slug}.html`;
   const nav=(active:string)=>`<nav aria-label="Primary"><strong>${escapeHtml(plan.title)}</strong>${pages.map(p=>`<a href="${fileName(p)}"${p.slug===active?' aria-current="page"':""}>${escapeHtml(p.title)}</a>`).join("")}<a href="attributions.html"${active==="attributions"?' aria-current="page"':""}>Credits</a></nav>`;
-  const renderSection=(s:ArtifactPlan["sections"][number],index:number)=>{const img=s.imageQuery?images.get(s.imageQuery):undefined;return `<section class="${img?`with-photo${index%2?" flip":""}`:""}"><div class="copy"><h2>${escapeHtml(s.heading)}</h2><p>${escapeHtml(s.body)}</p>${s.bullets.length?`<ul>${s.bullets.map(b=>`<li>${escapeHtml(b)}</li>`).join("")}</ul>`:""}</div>${img?`<figure class="photo"><img src="${imageDataUri(img)}" alt="${escapeHtml(img.title)}" loading="lazy"><figcaption>${escapeHtml(img.title)} — ${escapeHtml(img.creator)} · ${escapeHtml(img.license)} · <a href="${escapeHtml(img.sourceUrl)}">source</a></figcaption></figure>`:""}${s.table?`<figure class="table-wrap"><figcaption>${escapeHtml(s.table.title)}</figcaption><div class="table"><table><thead><tr>${s.table.headers.map(h=>`<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${s.table.rows.map(r=>`<tr>${r.map(v=>`<td>${escapeHtml(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></figure>`:""}${s.chart?`<figure class="viz">${chartSvg(s.chart)}</figure>`:""}${s.diagram?`<figure class="viz">${diagramSvg(s.diagram)}</figure>`:""}</section>`};
+  const renderSection=(s:ArtifactPlan["sections"][number],index:number)=>{const img=s.imageQuery?images.get(s.imageQuery):undefined;if(img&&s.imageQuery)placedImageQueries.add(s.imageQuery);return `<section class="${img?`with-photo${index%2?" flip":""}`:""}"><div class="copy"><h2>${escapeHtml(s.heading)}</h2><p>${escapeHtml(s.body)}</p>${s.bullets.length?`<ul>${s.bullets.map(b=>`<li>${escapeHtml(b)}</li>`).join("")}</ul>`:""}</div>${img?`<figure class="photo"><img src="${imageDataUri(img)}" alt="${escapeHtml(img.title)}" loading="lazy"><figcaption>${escapeHtml(img.title)} — ${escapeHtml(img.creator)} · ${escapeHtml(img.license)} · <a href="${escapeHtml(img.sourceUrl)}">source</a></figcaption></figure>`:""}${s.table?`<figure class="table-wrap"><figcaption>${escapeHtml(s.table.title)}</figcaption><div class="table"><table><thead><tr>${s.table.headers.map(h=>`<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${s.table.rows.map(r=>`<tr>${r.map(v=>`<td>${escapeHtml(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></figure>`:""}${s.chart?`<figure class="viz">${chartSvg(s.chart)}</figure>`:""}${s.diagram?`<figure class="viz">${diagramSvg(s.diagram)}</figure>`:""}</section>`};
   const fallbackHero=[...images.values()][0];
   const shell=(title:string,description:string,active:string,body:string,heroImage=fallbackHero)=>`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="${escapeHtml(description)}"><meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><title>${escapeHtml(title)} · ${escapeHtml(plan.title)}</title><style>${css}</style></head><body>${nav(active)}<header class="hero"${heroImage?` style="background-image:url('${imageDataUri(heroImage)}')"`:""}><div class="eyebrow">Agent Díaz field guide</div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p></header><main>${body}</main><footer>Created with Agent Díaz · <a href="attributions.html">Sources and image credits</a></footer></body></html>`;
   const htmlPages=pages.map(page=>{const wanted=new Set(page.sectionHeadings),sections=contentSections.filter(s=>wanted.has(s.heading)),pageHero=sections.map(s=>s.imageQuery?images.get(s.imageQuery):undefined).find((image):image is RealImage=>!!image);return {name:fileName(page),html:shell(page.title,page.description,page.slug,sections.map(renderSection).join(""),pageHero)}});
@@ -323,7 +495,7 @@ async function website(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promi
     plan,
     target,
     jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
-  );return{name,mime:"application/zip",path:target,size:buf.length,validationReceipt};
+  );collectedImages.metrics.placed=placedImageQueries.size;(validationReceipt as ArtifactValidationReceipt & {images:ImageResolutionReceipt}).images=collectedImages.metrics;return{name,mime:"application/zip",path:target,size:buf.length,validationReceipt};
 }
 
 export async function buildArtifact(
