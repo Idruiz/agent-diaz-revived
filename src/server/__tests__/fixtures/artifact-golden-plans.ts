@@ -263,7 +263,7 @@ export const spanishCultureDocumentGolden: ArtifactGoldenCase = {
           "Los horarios y las formas de compartir comida varían, pero la comida ofrece un contexto real para hablar de gustos y rutinas.",
         bullets: [
           "Me gusta compartir una comida.",
-          "En mi familia cenamos a ___ .",
+          "En mi familia cenamos a las ocho.",
         ],
         speakerNotes: "",
         requirementIds: ["R1"],
