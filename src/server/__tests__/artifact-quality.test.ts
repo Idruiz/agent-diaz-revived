@@ -17,6 +17,10 @@ import {
 import type { ArtifactPlan } from "../../shared/contracts";
 import type { Config } from "../config";
 import { buildArtifact } from "../builders";
+import {
+  hasVisibleVisualReference,
+  reconcilePresentationPlan,
+} from "../reconcile";
 
 const exactPrompt =
   "create a taching presentation slide deck to teach the present tense in french, connect it to french culture and include slides to get the students to practice such as speed dating and 4 corners";
@@ -78,6 +82,7 @@ function frenchTeachingPlan(): ArtifactPlan {
           headers: ["Pronom", "Forme", "Exemple"],
           rows: [["je", "parle", "Je parle français."], ["nous", "parlons", "Nous parlons au café."]],
         },
+        imageQuery: "French classroom conjugation practice",
       },
       {
         ...base("Verbes essentiels", "Être, avoir, aller and faire support practical communication in the present.", ["R1"]),
@@ -110,6 +115,7 @@ function frenchTeachingPlan(): ArtifactPlan {
           sentenceFrames: ["D'habitude, je…", "Le week-end, nous…"],
           cornerLabels: [],
         },
+        imageQuery: "French students conversation classroom",
       },
       {
         ...base("Billet de sortie", "Students produce and check two original present-tense sentences connected to a cultural context.", ["R1", "R2"]),
@@ -130,6 +136,28 @@ function frenchTeachingPlan(): ArtifactPlan {
 }
 
 describe("artifact quality gates", () => {
+  it("moves absent-image references out of visible presentation copy during RECONCILE", () => {
+    const plan = frenchTeachingPlan();
+    plan.sections[0]!.body =
+      "Regardez l'image et décrivez la scène. Les élèves utilisent ensuite le présent pour parler de leur routine.";
+    const result = reconcilePresentationPlan(plan, new Set());
+    expect(result.reconciliations).toHaveLength(1);
+    expect(result.reconciliations[0]).toMatchObject({
+      sectionIndex: 0,
+      heading: "Objectifs et mise en route",
+    });
+    expect(
+      hasVisibleVisualReference(result.plan.sections[0]!.body),
+    ).toBe(false);
+    expect(result.plan.sections[0]!.body).toContain(
+      "Les élèves utilisent ensuite le présent",
+    );
+    expect(result.plan.sections[0]!.speakerNotes).toContain(
+      "Regardez l'image",
+    );
+  });
+
+
   it("preserves a BUILD specimen in diagnostics instead of deleting evidence", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-build-diag-"));
     const filePath = path.join(root, "broken.pptx");
@@ -274,6 +302,29 @@ describe("artifact quality gates", () => {
       generatorVersion: "pptxgenjs 4.0.1",
     });
     expect(out.validationReceipt.knownBenignFindings).toHaveLength(1);
+    const receipt = out.validationReceipt as any;
+    expect(receipt.images).toMatchObject({
+      requested: 5,
+      fetched: 5,
+      placed: 5,
+    });
+    expect(receipt.presentation).toMatchObject({
+      placedAssets: 5,
+      titleCounts: {
+        contentSlides: 7,
+        licensedVisuals: 5,
+      },
+    });
+    expect(receipt.presentation.activityTemplates).toEqual(
+      expect.arrayContaining([
+        "four-corners-quadrants",
+        "speed-dating-rotation",
+        "independent-checklist",
+      ]),
+    );
+    expect(receipt.presentation.activityTemplates).toHaveLength(3);
+    expect(slideText).toContain("7 ideas · 5 licensed visuals");
+    expect(notesText).not.toMatch(/<a:t>[^<]*\n/);
     expect(out.validationReceipt.knownBenignFindings[0]).toMatchObject({
       id: "Sch_UnexpectedElementContentExpectingComplex",
       path: "/ppt/presentation.xml",
