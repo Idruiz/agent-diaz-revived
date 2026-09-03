@@ -356,32 +356,89 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
       slide.addText(short(section.body,220),{x:9.58,y:5.12,w:2.46,h:.78,fontSize:13.5,bold:true,color:navy,margin:0,fit:"shrink",valign:"mid"});
     }
   };
-  const addActivitySlide=(slide:any,section:ArtifactPlan["sections"][number])=>{
+  const addActivitySlide=(
+    slide:any,
+    section:ArtifactPlan["sections"][number],
+    image?:RealImage,
+  )=>{
     const activity=section.activity!;
+    const photoBox=image?{x:10.0,y:1.48,w:2.25,h:1.42}:null;
+    const placeActivityPhoto=()=>{
+      if(image&&photoBox)
+        placePhoto(slide,section,image,photoBox,{x:10.0,y:2.97,w:2.25,h:.16});
+    };
+
     if(activity.type==="four_corners"){
-      slide.addText(short(section.body,260),{x:.88,y:1.38,w:11.55,h:.54,fontSize:19,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
+      usedActivityTemplates.add("four-corners-quadrants");
+      slide.addText(short(section.body,260),{x:.88,y:1.38,w:image?8.75:11.55,h:.54,fontSize:19,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
       const labels=activity.cornerLabels.slice(0,4),colors=["F1E5C5","E7EEF2","E4EFE6","F3E4DF"];
       labels.forEach((label,index)=>{
-        const column=index%2,row=Math.floor(index/2),x=.92+column*6.02,y=2.08+row*1.54;
-        slide.addText(label,{x,y,w:5.5,h:1.14,shape:p.ShapeType.roundRect,rectRadius:.06,fill:{color:colors[index]!},line:{color:index%2?blue:gold,pt:1.4},fontSize:22,bold:true,color:navy,align:"center",valign:"mid",margin:.16,fit:"shrink"});
+        const column=index%2,row=Math.floor(index/2),x=.92+column*(image?4.48:6.02),y=2.08+row*1.54;
+        slide.addText(label,{x,y,w:image?4.05:5.5,h:1.14,shape:p.ShapeType.roundRect,rectRadius:.06,fill:{color:colors[index]!},line:{color:index%2?blue:gold,pt:1.4},fontSize:image?19:22,bold:true,color:navy,align:"center",valign:"mid",margin:.16,fit:"shrink"});
       });
-      slide.addText(activity.directions.map((text,index)=>({text:`${index+1}. ${short(text,130)}`,options:{breakLine:index<activity.directions.length-1}})),{x:.92,y:5.22,w:7.35,h:.82,fontSize:13,color:ink,margin:.12,fit:"shrink"});
-      slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,130),options:{bullet:{indent:14},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:8.52,y:5.12,w:3.8,h:1.03,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:13,bold:true,color:white,margin:.18,fit:"shrink"});
-      return;
+      slide.addText(activity.directions.map((text,index)=>({text:`${index+1}. ${short(text,130)}`,options:{breakLine:index<activity.directions.length-1}})),{x:.92,y:5.22,w:image?5.85:7.35,h:.82,fontSize:13,color:ink,margin:.12,fit:"shrink"});
+      slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,130),options:{bullet:{indent:14},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:image?6.98:8.52,y:5.12,w:image?2.6:3.8,h:1.03,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:12.5,bold:true,color:white,margin:.18,fit:"shrink"});
+      placeActivityPhoto();
+      return "four-corners-quadrants";
     }
+
     if(activity.type==="speed_dating"){
+      usedActivityTemplates.add("speed-dating-rotation");
       slide.addText(`${activity.durationMinutes} MIN\nROTATIONS`,{x:.88,y:1.46,w:2.15,h:1.08,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:20,bold:true,color:white,align:"center",valign:"mid",margin:.12});
       slide.addText(activity.directions.slice(0,5).map((text,index)=>({text:`${index+1}. ${short(text,115)}`,options:{breakLine:index<Math.min(5,activity.directions.length)-1}})),{x:.92,y:2.72,w:2.86,h:2.35,fontSize:14,color:ink,margin:.08,fit:"shrink"});
+      const promptRight=image?9.55:12.12,promptW=(promptRight-4.02-.38)/2;
       activity.prompts.slice(0,6).forEach((text,index)=>{
-        const column=index%2,row=Math.floor(index/2),x=4.02+column*4.25,y=1.48+row*1.28;
-        slide.addText([{text:String(index+1).padStart(2,"0"),options:{bold:true,color:gold,breakLine:true}},{text:short(text,150),options:{bold:true,color:navy}}],{x,y,w:3.86,h:1.02,shape:p.ShapeType.roundRect,fill:{color:index%2?"EEF3F5":"F7EED7"},line:{color:index%2?blue:gold,pt:1},fontSize:14,margin:.14,fit:"shrink"});
+        const column=index%2,row=Math.floor(index/2),x=4.02+column*(promptW+.38),y=1.48+row*1.28;
+        slide.addText([{text:String(index+1).padStart(2,"0"),options:{bold:true,color:gold,breakLine:true}},{text:short(text,150),options:{bold:true,color:navy}}],{x,y,w:promptW,h:1.02,shape:p.ShapeType.roundRect,fill:{color:index%2?"EEF3F5":"F7EED7"},line:{color:index%2?blue:gold,pt:1},fontSize:13.5,margin:.14,fit:"shrink"});
       });
-      slide.addText(activity.sentenceFrames.slice(0,4).map((text,index)=>({text:short(text,140),options:{bullet:{indent:14},breakLine:index<Math.min(4,activity.sentenceFrames.length)-1}})),{x:4.02,y:5.46,w:8.1,h:.74,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:13,bold:true,color:white,margin:.14,fit:"shrink"});
-      return;
+      slide.addText(activity.sentenceFrames.slice(0,4).map((text,index)=>({text:short(text,140),options:{bullet:{indent:14},breakLine:index<Math.min(4,activity.sentenceFrames.length)-1}})),{x:4.02,y:5.46,w:image?5.55:8.1,h:.74,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:13,bold:true,color:white,margin:.14,fit:"shrink"});
+      placeActivityPhoto();
+      return "speed-dating-rotation";
     }
-    slide.addText(short(section.body,320),{x:.92,y:1.5,w:11.4,h:.62,fontSize:20,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
-    slide.addText(activity.directions.slice(0,6).map((text,index)=>({text:`${index+1}. ${short(text,160)}`,options:{breakLine:index<Math.min(6,activity.directions.length)-1}})),{x:1.02,y:2.32,w:5.35,h:3.3,shape:p.ShapeType.roundRect,fill:{color:pale},line:{color:blue,pt:1},fontSize:16,color:ink,margin:.22,fit:"shrink"});
-    slide.addText(activity.prompts.slice(0,8).map((text,index)=>({text:short(text,150),options:{bullet:{indent:16},breakLine:index<Math.min(8,activity.prompts.length)-1}})),{x:6.72,y:2.32,w:5.35,h:3.3,shape:p.ShapeType.roundRect,fill:{color:"F7EED7"},line:{color:gold,pt:1},fontSize:16,color:ink,margin:.22,fit:"shrink"});
+
+    if(activity.type==="guided_practice"){
+      usedActivityTemplates.add("guided-step-rail");
+      slide.addText(short(section.body,280),{x:.9,y:1.42,w:image?8.75:11.4,h:.56,fontSize:19,bold:true,color:navy,margin:0,fit:"shrink"});
+      activity.directions.slice(0,5).forEach((text,index)=>{
+        const y=2.16+index*.72;
+        slide.addText(String(index+1).padStart(2,"0"),{x:.92,y,w:.52,h:.44,fontSize:16,bold:true,color:white,align:"center",valign:"mid",shape:p.ShapeType.ellipse,fill:{color:blue},line:{color:blue},margin:0});
+        slide.addText(short(text,125),{x:1.62,y:y-.02,w:3.25,h:.48,fontSize:14.2,color:ink,margin:0,fit:"shrink",valign:"mid"});
+      });
+      activity.prompts.slice(0,6).forEach((text,index)=>{
+        const column=index%2,row=Math.floor(index/2),x=5.15+column*(image?2.2:3.25),y=2.06+row*1.18;
+        slide.addText(short(text,135),{x,y,w:image?1.95:2.95,h:.92,shape:p.ShapeType.roundRect,fill:{color:index%2?"F7EED7":"EEF3F5"},line:{color:index%2?gold:blue,pt:1},fontSize:13.5,bold:true,color:navy,margin:.14,fit:"shrink",valign:"mid"});
+      });
+      if(activity.sentenceFrames.length)slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,120),options:{breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:5.15,y:5.63,w:image?4.2:6.3,h:.64,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:12.5,bold:true,color:white,margin:.12,fit:"shrink"});
+      placeActivityPhoto();
+      return "guided-step-rail";
+    }
+
+    if(activity.type==="discussion"){
+      usedActivityTemplates.add("discussion-prompt-cards");
+      slide.addText(short(section.body,300),{x:.92,y:1.42,w:image?8.75:11.35,h:.56,fontSize:19,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
+      activity.prompts.slice(0,6).forEach((text,index)=>{
+        const column=index%2,row=Math.floor(index/2),x=.98+column*(image?4.3:5.75),y=2.16+row*1.16;
+        const w=image?3.92:5.36;
+        slide.addText(short(text,150),{x,y,w,h:.86,shape:p.ShapeType.roundRect,fill:{color:index%2?"EEF3F5":"F7EED7"},line:{color:index%2?blue:gold,pt:1.1},fontSize:14.5,bold:true,color:navy,margin:.15,fit:"shrink",valign:"mid"});
+      });
+      slide.addText(activity.directions.slice(0,4).map((text,index)=>({text:`${index+1}. ${short(text,120)}`,options:{breakLine:index<Math.min(4,activity.directions.length)-1}})),{x:.98,y:5.78,w:image?5.2:6.5,h:.58,fontSize:11.8,color:muted,margin:0,fit:"shrink"});
+      if(activity.sentenceFrames.length)slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,120),options:{bullet:{indent:12},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:image?6.5:7.75,y:5.54,w:image?3.0:4.4,h:.78,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:12.2,bold:true,color:white,margin:.13,fit:"shrink"});
+      placeActivityPhoto();
+      return "discussion-prompt-cards";
+    }
+
+    usedActivityTemplates.add("independent-checklist");
+    slide.addText(short(section.body,300),{x:.92,y:1.42,w:image?8.75:11.4,h:.56,fontSize:19,bold:true,color:navy,margin:0,fit:"shrink"});
+    slide.addShape(p.ShapeType.roundRect,{x:.98,y:2.12,w:3.3,h:3.72,rectRadius:.06,fill:{color:pale},line:{color:blue,pt:1}});
+    slide.addText("CHECKLIST",{x:1.24,y:2.4,w:2.72,h:.28,fontSize:11,bold:true,charSpacing:1.4,color:blue,margin:0});
+    slide.addText(activity.directions.slice(0,6).map((text,index)=>({text:`☐ ${short(text,135)}`,options:{breakLine:index<Math.min(6,activity.directions.length)-1}})),{x:1.24,y:2.88,w:2.72,h:2.4,fontSize:13.8,color:ink,margin:0,fit:"shrink"});
+    activity.prompts.slice(0,6).forEach((text,index)=>{
+      const y=2.12+index*.67;
+      slide.addText(short(text,165),{x:4.62,y,w:image?4.85:7.35,h:.53,shape:p.ShapeType.roundRect,fill:{color:index%2?"FFFFFF":"F7EED7"},line:{color:index%2?"D6DEE3":gold,pt:.8},fontSize:13.5,bold:true,color:navy,margin:.12,fit:"shrink",valign:"mid"});
+    });
+    if(activity.sentenceFrames.length)slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,120),options:{breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:4.62,y:6.1,w:image?4.85:7.35,h:.42,fontSize:11.5,bold:true,color:blue,margin:0,fit:"shrink"});
+    placeActivityPhoto();
+    return "independent-checklist";
   };
   const title=p.addSlide(); title.background={color:navy};
   title.addShape(p.ShapeType.rect,{x:0,y:0,w:.18,h:7.5,fill:{color:gold},line:{color:gold}});
