@@ -7,6 +7,7 @@ import type { Config } from "./config.js";
 import type { Db } from "./db.js";
 import {
   ArtifactPlanSchema,
+  type ArtifactPlan,
   type JobKind,
   type MessageView,
   type ModelMode,
@@ -15,10 +16,12 @@ import { personaProfile } from "../shared/personas.js";
 import { buildArtifact } from "./builders.js";
 import {
   ArtifactPipelineError,
+  artifactPlanQualityViolations,
   asArtifactPipelineError,
-  assertArtifactPlanQuality,
   type ArtifactAttemptReceipt,
   type ArtifactFailureClass,
+  type ArtifactNormalizationReceipt,
+  type ArtifactPlanViolation,
 } from "./artifact-quality.js";
 import { log } from "./log.js";
 import { getSkillForKind } from "./skills.js";
@@ -159,13 +162,9 @@ const artifactProviderSectionSchema = artifactSectionSchema.extend({
   imageQuery: artifactSectionSchema.shape.imageQuery.unwrap().nullable(),
 });
 
-function artifactPlanProviderSchema(kind?: JobKind) {
-  const sections =
-    kind === "presentation"
-      ? z.array(artifactProviderSectionSchema).min(7).max(11)
-      : z.array(artifactProviderSectionSchema).min(1).max(30);
+function artifactPlanProviderSchema(_kind?: JobKind) {
   return ArtifactPlanSchema.extend({
-    sections,
+    sections: z.array(artifactProviderSectionSchema).min(1).max(30),
     pages: ArtifactPlanSchema.shape.pages.unwrap().nullable(),
   });
 }
@@ -236,71 +235,347 @@ function artifactInstructions(kind: JobKind): string {
   return `Create a complete ${kind} plan. Use web search when current or factual claims benefit from verification. For analysis, use the python tool on every uploaded dataset and base all numerical claims on executed results. Return JSON only with: title, subtitle, requirements[{id:R1..Rn,text,mandatory}], sections[{heading,body,bullets,speakerNotes,requirementIds,layout:auto|title|standard|comparison|process|timeline|gallery|data|conjugation|guided_practice|speed_dating|four_corners|exit_ticket,activity{type:speed_dating|four_corners|guided_practice|independent_practice|discussion|exit_ticket,durationMinutes,directions,prompts,sentenceFrames,cornerLabels},imageQuery,table{title,headers,rows},chart{title,type:bar|line|pie|donut,labels,series[{name,values}],unit,sourceNote},diagram{title,nodes,caption}}], pages[{slug,title,description,sectionHeadings}], sources[{title,url}]. Extract every explicit user instruction and named deliverable feature into the requirements list; assign stable IDs and cover every mandatory ID in section requirementIds. Use null for imageQuery, table, chart, diagram, or pages when that field does not apply. Every material factual claim must be supported. Never invent numbers. Body and bullets must contain finished audience-facing content, not directions, placeholders, production notes, or visual descriptions. For teaching decks, model classroom activities as activity objects rather than mentioning them in ordinary bullets. Speed Dating needs at least four prompts, three operational directions, and two target-language sentence frames. Four Corners needs exactly four labels, a decision prompt, movement/discussion directions, and at least two sentence frames.${visualPolicy}`;
 }
 
+const CULTURE_REQUIREMENT_RE =
+  /(?:\bcultur(?:e|al|a|as|ales|el|elle|ally)\b|文化|ثقاف|문화|культур)/i;
+
+function sectionVisualCount(section: ArtifactPlan["sections"][number]): number {
+  return [
+    section.table,
+    section.chart,
+    section.diagram,
+    section.imageQuery,
+  ].filter(Boolean).length;
+}
+
+export function normalizeArtifactPlan(
+  kind: JobKind,
+  input: ArtifactPlan,
+  _prompt = "",
+): {
+  plan: ArtifactPlan;
+  normalizations: ArtifactNormalizationReceipt[];
+} {
+  const plan = structuredClone(input);
+  const normalizations: ArtifactNormalizationReceipt[] = [];
+  const record = (code: string, detail: string) =>
+    normalizations.push({ code, detail });
+
+  const usedRequirementIds = new Set<string>();
+  let nextRequirement = 1;
+  for (const requirement of plan.requirements) {
+    if (!usedRequirementIds.has(requirement.id)) {
+      usedRequirementIds.add(requirement.id);
+      continue;
+    }
+    while (usedRequirementIds.has(`R${nextRequirement}`))
+      nextRequirement++;
+    const previous = requirement.id;
+    requirement.id = `R${nextRequirement++}`;
+    usedRequirementIds.add(requirement.id);
+    record(
+      "renumber_duplicate_requirement",
+      `Renumbered duplicate requirement ${previous} to ${requirement.id}.`,
+    );
+  }
+
+  const validRequirementIds = new Set(
+    plan.requirements.map((requirement) => requirement.id),
+  );
+  for (const section of plan.sections) {
+    const original = [...section.requirementIds];
+    section.requirementIds = section.requirementIds.filter((id) =>
+      validRequirementIds.has(id),
+    );
+    const removed = original.filter(
+      (id) => !section.requirementIds.includes(id),
+    );
+    if (removed.length)
+      record(
+        "strip_unknown_requirement_ids",
+        `Removed unknown requirement IDs ${removed.join(", ")} from '${section.heading}'.`,
+      );
+  }
+
+  const seenQueries = new Set<string>();
+  for (const section of plan.sections) {
+    const query = section.imageQuery?.trim();
+    if (!query) continue;
+    const key = query.toLocaleLowerCase();
+    if (seenQueries.has(key)) {
+      section.imageQuery = undefined;
+      record(
+        "dedupe_image_query",
+        `Removed duplicate image query '${query}' from '${section.heading}'.`,
+      );
+    } else {
+      section.imageQuery = query;
+      seenQueries.add(key);
+    }
+  }
+
+  for (const section of plan.sections) {
+    if (section.chart && !section.chart.sourceNote?.trim()) {
+      section.chart.sourceNote = "Values from evidence dossier";
+      record(
+        "default_chart_source_note",
+        `Added a deterministic source note to chart '${section.chart.title}'.`,
+      );
+    }
+    if (section.speakerNotes.trim().length < 20)
+      record(
+        "short_speaker_notes_warning",
+        `Speaker notes for '${section.heading}' are shorter than 20 characters; retained as a warning.`,
+      );
+  }
+
+  const limits =
+    kind === "presentation"
+      ? { min: 7, max: 11 }
+      : ["research", "document", "analysis"].includes(kind)
+        ? { min: 5, max: 12 }
+        : { min: 1, max: 30 };
+
+  const combinedLength = (
+    first: ArtifactPlan["sections"][number],
+    second: ArtifactPlan["sections"][number],
+  ) =>
+    first.heading.length +
+    first.body.length +
+    first.bullets.join(" ").length +
+    second.heading.length +
+    second.body.length +
+    second.bullets.join(" ").length;
+
+  while (plan.sections.length > limits.max) {
+    const candidates = plan.sections
+      .slice(0, -1)
+      .map((section, index) => ({
+        index,
+        first: section,
+        second: plan.sections[index + 1]!,
+      }))
+      .filter(({ first, second }) => !first.activity && !second.activity)
+      .sort((a, b) => {
+        const aConflict =
+          sectionVisualCount(a.first) > 0 &&
+          sectionVisualCount(a.second) > 0
+            ? 1
+            : 0;
+        const bConflict =
+          sectionVisualCount(b.first) > 0 &&
+          sectionVisualCount(b.second) > 0
+            ? 1
+            : 0;
+        return (
+          aConflict - bConflict ||
+          combinedLength(a.first, a.second) -
+            combinedLength(b.first, b.second)
+        );
+      });
+    const candidate = candidates[0];
+    if (!candidate) break;
+    const { first, second, index } = candidate;
+    const visualConflict =
+      sectionVisualCount(first) > 0 && sectionVisualCount(second) > 0;
+    const merged: ArtifactPlan["sections"][number] = {
+      ...first,
+      heading: `${first.heading} / ${second.heading}`.slice(0, 180),
+      body: `${first.body}\n\n${second.body}`.slice(0, 8000),
+      bullets: [...first.bullets, ...second.bullets].slice(0, 12),
+      speakerNotes: [first.speakerNotes, second.speakerNotes]
+        .filter(Boolean)
+        .join("\n\n")
+        .slice(0, 2000),
+      requirementIds: [
+        ...new Set([
+          ...first.requirementIds,
+          ...second.requirementIds,
+        ]),
+      ].slice(0, 30),
+      table: first.table ?? second.table,
+      chart: first.chart ?? second.chart,
+      diagram: first.diagram ?? second.diagram,
+      imageQuery: first.imageQuery ?? second.imageQuery,
+      activity: undefined,
+    };
+    plan.sections.splice(index, 2, merged);
+    record(
+      "merge_excess_sections",
+      `Merged adjacent non-activity sections '${first.heading}' and '${second.heading}' to enforce the ${limits.max}-section maximum.`,
+    );
+    if (visualConflict)
+      record(
+        "merge_visual_conflict_warning",
+        `Both merged sections carried primary visuals; retained the first available visual in the merged section.`,
+      );
+  }
+
+  return { plan, normalizations };
+}
+
+export function collectArtifactPlanViolations(
+  kind: JobKind,
+  plan: ArtifactPlan,
+  minVisuals: number,
+  prompt = "",
+): ArtifactPlanViolation[] {
+  const violations: ArtifactPlanViolation[] = [];
+  const push = (
+    code: string,
+    message: string,
+    mandatory: boolean,
+  ) => violations.push({ code, message, mandatory });
+  const visualCount = plan.sections.filter(
+    (section) => sectionVisualCount(section) > 0,
+  ).length;
+  const imageQueries = plan.sections
+    .map((section) => section.imageQuery?.trim())
+    .filter((query): query is string => Boolean(query));
+
+  if (visualCount < minVisuals)
+    push(
+      "visual_coverage_low",
+      `Artifact plan validation found ${visualCount} meaningful visual sections; target is ${minVisuals}.`,
+      false,
+    );
+
+  if (kind === "presentation") {
+    if (plan.sections.length < 7)
+      push(
+        "presentation_sections_missing",
+        `Presentation needs at least 7 content sections; received ${plan.sections.length}.`,
+        true,
+      );
+    const targetVisuals = Math.max(
+      minVisuals,
+      Math.ceil(plan.sections.length / 2),
+    );
+    if (visualCount < targetVisuals)
+      push(
+        "presentation_visual_coverage_low",
+        `Presentation has ${visualCount} visual sections; target is ${targetVisuals}.`,
+        false,
+      );
+    if (imageQueries.length < 3)
+      push(
+        "presentation_photo_briefs_low",
+        `Presentation has ${imageQueries.length} licensed-image briefs; target is 3.`,
+        false,
+      );
+  }
+
+  if (
+    ["research", "document"].includes(kind) &&
+    imageQueries.length < 1
+  )
+    push(
+      "document_photo_brief_missing",
+      "Document has no licensed-image brief.",
+      false,
+    );
+
+  if (kind === "website") {
+    if (!plan.pages || plan.pages.length < 3)
+      push(
+        "website_pages_missing",
+        "Website requires at least three planned pages.",
+        true,
+      );
+    const headings = new Set(plan.sections.map((section) => section.heading));
+    const assigned = new Set(
+      plan.pages?.flatMap((page) => page.sectionHeadings) ?? [],
+    );
+    for (const heading of headings)
+      if (!assigned.has(heading))
+        push(
+          "website_section_unassigned",
+          `Website section '${heading}' is not assigned to a page.`,
+          true,
+        );
+    if (
+      plan.sections.filter((section) => section.imageQuery).length < 4
+    )
+      push(
+        "website_photo_briefs_low",
+        "Website has fewer than four documentary photo briefs.",
+        false,
+      );
+  }
+
+  if (CULTURE_REQUIREMENT_RE.test(prompt)) {
+    const cultureRequirements = plan.requirements.filter(
+      (requirement) =>
+        requirement.mandatory &&
+        CULTURE_REQUIREMENT_RE.test(requirement.text),
+    );
+    if (!cultureRequirements.length)
+      push(
+        "culture_requirement_missing",
+        "The request contains a cultural requirement but the extracted requirements do not include a mandatory cultural requirement.",
+        true,
+      );
+    else if (
+      !cultureRequirements.some((requirement) =>
+        plan.sections.some((section) =>
+          section.requirementIds.includes(requirement.id),
+        ),
+      )
+    )
+      push(
+        "culture_requirement_uncovered",
+        "The mandatory cultural requirement is not covered by any section requirementIds.",
+        true,
+      );
+  }
+
+  violations.push(...artifactPlanQualityViolations(kind, prompt, plan));
+  return violations;
+}
+
 export function validateArtifactPlan(
   kind: JobKind,
-  plan: any,
+  plan: ArtifactPlan,
   minVisuals: number,
   prompt = "",
 ): void {
-  const visualCount = plan.sections.filter(
-    (s: any) => s.table || s.chart || s.diagram || s.imageQuery,
-  ).length;
-  if (visualCount < minVisuals)
-    throw new Error(
-      `Artifact plan validation failed: expected at least ${minVisuals} meaningful visuals, received ${visualCount}`,
+  const violations = collectArtifactPlanViolations(
+    kind,
+    plan,
+    minVisuals,
+    prompt,
+  );
+  if (!violations.length) return;
+  throw new ArtifactPipelineError(
+    "PLAN_CONTENT",
+    `Artifact plan content violations:\n${violations
+      .map(
+        (violation) =>
+          `- [${violation.code}] ${violation.message}`,
+      )
+      .join("\n")}`,
+    { ruleOrPart: "plan-content" },
+  );
+}
+
+class ArtifactPlanContentError extends ArtifactPipelineError {
+  constructor(
+    readonly violations: ArtifactPlanViolation[],
+    readonly normalizedPlan: ArtifactPlan | null,
+    readonly normalizations: ArtifactNormalizationReceipt[],
+    message?: string,
+  ) {
+    super(
+      "PLAN_CONTENT",
+      message ??
+        `Artifact plan content violations:\n${violations
+          .map(
+            (violation) =>
+              `- [${violation.code}] ${violation.message}`,
+          )
+          .join("\n")}`,
+      { ruleOrPart: "plan-content" },
     );
-  const imageQueries = plan.sections
-    .map((section: any) => section.imageQuery?.trim())
-    .filter(Boolean);
-  if (new Set(imageQueries.map((query: string) => query.toLocaleLowerCase())).size !== imageQueries.length)
-    throw new Error("Artifact plan validation failed: image queries must be distinct");
-  for (const section of plan.sections) {
-    if (section.imageQuery && section.imageQuery.trim().split(/\s+/).length < 3)
-      throw new Error(
-        `Artifact plan validation failed: image query '${section.imageQuery}' is too vague`,
-      );
-    if (section.chart && !section.chart.sourceNote?.trim())
-      throw new Error(
-        `Artifact plan validation failed: chart '${section.chart.title}' has no source note`,
-      );
   }
-  if (kind === "presentation") {
-    if (plan.sections.length < 7 || plan.sections.length > 11)
-      throw new Error(
-        "Presentation plan validation failed: expected 7-11 content sections",
-      );
-    const requiredVisuals = Math.max(minVisuals, Math.ceil(plan.sections.length / 2));
-    if (visualCount < requiredVisuals)
-      throw new Error(
-        `Presentation plan validation failed: expected ${requiredVisuals} visual sections, received ${visualCount}`,
-      );
-    if (imageQueries.length < 3)
-      throw new Error(
-        `Presentation plan validation failed: expected at least 3 licensed-image briefs, received ${imageQueries.length}`,
-      );
-  }
-  if (["research", "document"].includes(kind) && imageQueries.length < 1)
-    throw new Error(
-      "Document plan validation failed: at least one licensed-image brief is required",
-    );
-  if (kind === "website") {
-    if (!plan.pages || plan.pages.length < 3)
-      throw new Error(
-        "Website plan validation failed: at least three pages are required",
-      );
-    const headings = new Set(plan.sections.map((s: any) => s.heading));
-    const assigned = new Set(plan.pages.flatMap((p: any) => p.sectionHeadings));
-    for (const heading of headings)
-      if (!assigned.has(heading))
-        throw new Error(
-          `Website plan validation failed: section '${heading}' is not assigned to a page`,
-        );
-    if (plan.sections.filter((s: any) => s.imageQuery).length < 4)
-      throw new Error(
-        "Website plan validation failed: at least four documentary photo queries are required",
-      );
-  }
-  assertArtifactPlanQuality(kind, prompt, plan);
 }
 
 function parseArtifactPlan(
@@ -308,13 +583,71 @@ function parseArtifactPlan(
   output: string,
   minVisuals: number,
   prompt = "",
-) {
-  const raw = omitNullObjectFields(
-    JSON.parse(output.replace(/^```json\s*|```$/g, "")),
+  allowNonMandatoryWarnings = false,
+): {
+  plan: ArtifactPlan;
+  normalizations: ArtifactNormalizationReceipt[];
+} {
+  let parsed: ArtifactPlan;
+  try {
+    const raw = omitNullObjectFields(
+      JSON.parse(output.replace(/^\`\`\`json\s*|\`\`\`$/g, "")),
+    );
+    parsed = ArtifactPlanSchema.parse(raw);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const violations = error.issues.map((issue, index) => ({
+        code: `schema_${index + 1}`,
+        message: `${issue.path.join(".") || "plan"}: ${issue.message}`,
+        mandatory: true,
+      }));
+      throw new ArtifactPlanContentError(
+        violations,
+        null,
+        [],
+        `Artifact plan schema violations:\n${violations
+          .map(
+            (violation) =>
+              `- [${violation.code}] ${violation.message}`,
+          )
+          .join("\n")}`,
+      );
+    }
+    throw error;
+  }
+
+  const normalized = normalizeArtifactPlan(kind, parsed, prompt);
+  const violations = collectArtifactPlanViolations(
+    kind,
+    normalized.plan,
+    minVisuals,
+    prompt,
   );
-  const plan = ArtifactPlanSchema.parse(raw);
-  validateArtifactPlan(kind, plan, minVisuals, prompt);
-  return plan;
+  const blocking = allowNonMandatoryWarnings
+    ? violations.filter((violation) => violation.mandatory)
+    : violations;
+  if (blocking.length)
+    throw new ArtifactPlanContentError(
+      blocking,
+      normalized.plan,
+      normalized.normalizations,
+    );
+
+  const downgraded = allowNonMandatoryWarnings
+    ? violations
+        .filter((violation) => !violation.mandatory)
+        .map((violation) => ({
+          code: `downgraded_${violation.code}`,
+          detail: `Downgraded after two bounded plan-repair calls: ${violation.message}`,
+        }))
+    : [];
+  return {
+    plan: normalized.plan,
+    normalizations: [
+      ...normalized.normalizations,
+      ...downgraded,
+    ],
+  };
 }
 
 function errorMessage(error: unknown): string {
