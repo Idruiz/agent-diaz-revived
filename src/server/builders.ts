@@ -23,6 +23,7 @@ import { reconcilePresentationPlan } from "./reconcile.js";
 import { log } from "./log.js";
 import {
   ArtifactPipelineError,
+  estimatePptxEmptyCanvasRatio,
   validateBuiltArtifact,
   type ArtifactValidationReceipt,
 } from "./artifact-quality.js";
@@ -59,6 +60,11 @@ export interface PresentationBuildReceipt {
   titleCounts: {
     contentSlides: number;
     licensedVisuals: number;
+  };
+  layoutFitting: {
+    retried: boolean;
+    before: number[] | null;
+    after: number[];
   };
 }
 
@@ -263,6 +269,59 @@ const imageDataUri=(image:RealImage)=>`data:${image.mime};base64,${image.bytes.t
 const isSourcesHeading=(heading:string)=>/^(sources|references|bibliography|works cited)$/i.test(heading.trim());
 const short=(value:string,max:number)=>value.length<=max?value:`${value.slice(0,Math.max(1,max-1)).trimEnd()}…`;
 
+type PptxTextValue = string | Array<{ text: string; options?: Record<string, unknown> }>;
+
+function textValue(value: PptxTextValue): string {
+  if (typeof value === "string") return value;
+  return value
+    .map((run) => `${run.text}${run.options?.breakLine ? "\n" : ""}`)
+    .join("");
+}
+
+function estimatedTextHeight(
+  value: PptxTextValue,
+  width: number,
+  fontSize: number,
+  margin: number,
+  lineHeight = 1.2,
+): number {
+  const charsPerLine = Math.max(
+    8,
+    Math.floor((Math.max(0.2, width - margin * 2) * 72) / (fontSize * 0.54)),
+  );
+  const lines = textValue(value)
+    .split("\n")
+    .reduce(
+      (total, line) => total + Math.max(1, Math.ceil(line.length / charsPerLine)),
+      0,
+    );
+  return lines * ((fontSize * lineHeight) / 72) + margin * 2;
+}
+
+function addModelText(
+  slide: any,
+  value: PptxTextValue,
+  options: Record<string, any>,
+  bounds: { minHeight?: number; maxHeight?: number; lineHeight?: number } = {},
+): void {
+  const fontSize = Number(options.fontSize ?? 18);
+  const margin = typeof options.margin === "number" ? options.margin : 0.08;
+  const estimated = estimatedTextHeight(
+    value,
+    Number(options.w),
+    fontSize,
+    margin,
+    bounds.lineHeight,
+  );
+  const maxHeight = bounds.maxHeight ?? Number(options.h ?? estimated);
+  const minHeight = bounds.minHeight ?? Math.min(maxHeight, 0.18);
+  slide.addText(value, {
+    ...options,
+    h: Math.max(minHeight, Math.min(maxHeight, estimated)),
+    fit: "shrink",
+  });
+}
+
 function noteParagraphs(
   notes: string | undefined,
   sources: string[],
@@ -297,263 +356,298 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     new Set(images.keys()),
   );
   const contentSections=reconciled.plan.sections;
-  const placedImageQueries=new Set<string>();
-  const usedActivityTemplates=new Set<string>();
-  const p=new PptxGenJS(); p.layout="LAYOUT_WIDE"; p.author="Agent Díaz"; p.subject=plan.title; p.title=plan.title;
-  p.theme={headFontFace:"Aptos Display",bodyFontFace:"Aptos"};
-  const bg="F7F3EA",ink="17202A",gold="C99A2E",navy="17324D",blue="2F739C",muted="5A6772",white="FFFFFF",pale="E7EEF2";
-  const sourceChunks=plan.sources.length?Array.from({length:Math.ceil(plan.sources.length/8)},(_,index)=>plan.sources.slice(index*8,index*8+8)):[];
-  const totalSlides=1+contentSections.length+sourceChunks.length;
-  const addFooter=(slide:any,index:number)=>{
-    slide.addShape(p.ShapeType.line,{x:.72,y:7.02,w:11.9,h:0,line:{color:"D5CEC0",pt:.6}});
-    slide.addText("AGENT DÍAZ",{x:.75,y:7.09,w:1.6,h:.18,fontSize:8,bold:true,charSpacing:1.4,color:muted,margin:0});
-    slide.addText(String(index).padStart(2,"0"),{x:11.95,y:7.06,w:.62,h:.22,fontSize:9,bold:true,color:muted,align:"right",margin:0});
-  };
-  const addHeading=(slide:any,heading:string,kicker?:string)=>{
-    if(kicker)slide.addText(kicker.toUpperCase(),{x:.72,y:.34,w:2.2,h:.22,fontSize:9,bold:true,charSpacing:1.5,color:gold,margin:0});
-    slide.addText(short(heading,92),{x:.72,y:.62,w:11.8,h:.72,fontSize:28,bold:true,color:navy,margin:0,breakLine:false,fit:"shrink"});
-  };
-  const addNarrative=(slide:any,section:ArtifactPlan["sections"][number],box:{x:number;y:number;w:number;h:number},dark=false)=>{
-    const color=dark?white:ink,secondary=dark?"E8EEF3":muted;
-    if(section.body)slide.addText(short(section.body,460),{x:box.x,y:box.y,w:box.w,h:Math.min(1.45,box.h*.35),fontSize:section.bullets.length?18:24,bold:!section.bullets.length,color,margin:0,breakLine:false,fit:"shrink",valign:"mid"});
-    if(section.bullets.length)slide.addText(section.bullets.slice(0,5).map((text,index)=>({text:short(text,180),options:{bullet:{indent:18},breakLine:index<section.bullets.slice(0,5).length-1}})),{x:box.x,y:box.y+1.42,w:box.w,h:Math.max(1,box.h-1.42),fontSize:17,color:secondary,margin:0,paraSpaceAfter:9,breakLine:false,fit:"shrink",valign:"top"});
-  };
-  const addPhoto=(slide:any,image:RealImage,box:{x:number;y:number;w:number;h:number})=>{
-    slide.addShape(p.ShapeType.roundRect,{x:box.x-.04,y:box.y-.04,w:box.w+.08,h:box.h+.08,rectRadius:.08,fill:{color:white},line:{color:white},shadow:{type:"outer",color:"000000",opacity:.16,blur:2,angle:45,distance:1}});
-    slide.addImage({data:imageDataUri(image),x:box.x,y:box.y,w:box.w,h:box.h,sizing:{type:"cover",w:box.w,h:box.h},altText:image.title});
-  };
-  const placePhoto=(slide:any,section:ArtifactPlan["sections"][number],image:RealImage,box:{x:number;y:number;w:number;h:number},captionBox?:{x:number;y:number;w:number;h:number})=>{
-    addPhoto(slide,image,box);
-    if(section.imageQuery)placedImageQueries.add(section.imageQuery);
-    const caption=captionBox??{x:box.x,y:box.y+box.h+.08,w:box.w,h:.18};
-    slide.addText(short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:caption.x,y:caption.y,w:caption.w,h:caption.h,fontSize:6.6,color:muted,margin:0,fit:"shrink",align:"right"});
-  };
-  const addRenderedChart=async(
-    slide:any,
-    section:ArtifactPlan["sections"][number],
-    image?:RealImage,
-  )=>{
-    const chart=section.chart!,png=await chartPng(chart);
-    slide.addText(short(chart.title,120),{x:.82,y:1.42,w:11.4,h:.36,fontSize:17,bold:true,color:navy,margin:0,fit:"shrink"});
-    const chartW=image?7.55:8.65;
-    slide.addImage({data:`data:image/png;base64,${png.toString("base64")}`,x:.82,y:1.92,w:chartW,h:4.72,altText:chart.title});
-    const cardX=image?8.62:9.72,cardW=image?3.72:2.82;
-    slide.addShape(p.ShapeType.roundRect,{x:cardX,y:2.06,w:cardW,h:image?1.62:2.15,rectRadius:.06,fill:{color:pale},line:{color:pale}});
-    slide.addText(short(section.body,260),{x:cardX+.22,y:2.3,w:cardW-.44,h:image?1.1:1.55,fontSize:image?14.5:16,bold:true,color:navy,margin:0,fit:"shrink",valign:"mid"});
-    if(image)placePhoto(slide,section,image,{x:8.72,y:4.02,w:3.48,h:1.92},{x:8.72,y:6.02,w:3.48,h:.18});
-    if(chart.sourceNote)slide.addText(short(chart.sourceNote,180),{x:.84,y:6.62,w:image?7.5:8.7,h:.22,fontSize:8,color:muted,margin:0,fit:"shrink"});
-  };
-  const addNativeDiagram=(
-    slide:any,
-    section:ArtifactPlan["sections"][number],
-    image?:RealImage,
-  )=>{
-    const diagram=section.diagram!,nodes=diagram.nodes.slice(0,8);
-    const availableW=image?8.55:11.5;
-    const columns=Math.min(image?3:4,nodes.length),rows=Math.ceil(nodes.length/columns),boxW=image?2.35:2.55,boxH=1.05,gapX=.38,gapY=.72,startX=.82+(availableW-(columns*boxW+(columns-1)*gapX))/2,startY=2.05;
-    slide.addText(short(diagram.title,120),{x:.82,y:1.42,w:image?8.55:11.4,h:.36,fontSize:17,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
-    for(let index=0;index<nodes.length-1;index++){
-      const row=Math.floor(index/columns),col=index%columns,nextRow=Math.floor((index+1)/columns),nextCol=(index+1)%columns;
-      const x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY),nx=startX+nextCol*(boxW+gapX),ny=startY+nextRow*(boxH+gapY);
-      if(row===nextRow)
-        slide.addShape(p.ShapeType.line,{
-          x:x+boxW,
-          y:y+boxH/2,
-          w:gapX,
-          h:0,
-          line:{color:blue,pt:2.2,endArrowType:"triangle"},
+  const sourceChunks=plan.sources.length
+    ?Array.from({length:Math.ceil(plan.sources.length/8)},(_,index)=>plan.sources.slice(index*8,index*8+8))
+    :[];
+  const name=`${slug(plan.title)}.pptx`,target=safeJoin(config.artifactDir,name);
+  let beforeRatios:number[]|null=null;
+
+  const renderAttempt=async(scaled:boolean)=>{
+    const placedImageQueries=new Set<string>();
+    const usedActivityTemplates=new Set<string>();
+    const contentSlideNumbers:number[]=[];
+    const p=new PptxGenJS();
+    p.layout="LAYOUT_WIDE";
+    p.author="Agent Díaz";
+    p.subject=plan.title;
+    p.title=plan.title;
+    p.theme={headFontFace:"Aptos Display",bodyFontFace:"Aptos"};
+    const bg="F7F3EA",ink="17202A",gold="C99A2E",navy="17324D",blue="2F739C",muted="5A6772",white="FFFFFF",pale="E7EEF2";
+    let slideNumber=0;
+
+    const addFooter=(slide:any,index:number)=>{
+      slide.addShape(p.ShapeType.line,{x:.72,y:7.02,w:11.9,h:0,line:{color:"D5CEC0",pt:.6}});
+      slide.addText("AGENT DÍAZ",{x:.75,y:7.09,w:1.6,h:.18,fontSize:8,bold:true,charSpacing:1.4,color:muted,margin:0});
+      slide.addText(String(index).padStart(2,"0"),{x:11.95,y:7.06,w:.62,h:.22,fontSize:9,bold:true,color:muted,align:"right",margin:0});
+    };
+    const addHeading=(slide:any,heading:string,kicker?:string)=>{
+      if(kicker)slide.addText(kicker.toUpperCase(),{x:.72,y:.34,w:2.2,h:.22,fontSize:9,bold:true,charSpacing:1.5,color:gold,margin:0});
+      addModelText(slide,short(heading,92),{x:.72,y:.62,w:11.8,fontSize:28,bold:true,color:navy,margin:0,breakLine:false},{minHeight:.38,maxHeight:.72});
+    };
+    const addContentShell=(slide:any,heading:string,kicker:string)=>{
+      slideNumber++;
+      contentSlideNumbers.push(slideNumber);
+      slide.background={color:bg};
+      slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:.1,fill:{color:gold},line:{color:gold}});
+      addHeading(slide,heading,kicker);
+      if(scaled)slide.addShape(p.ShapeType.roundRect,{x:.75,y:1.5,w:11.85,h:5.3,rectRadius:.04,fill:{color:white},line:{color:"E4DED2",pt:.5}});
+    };
+    const addNarrative=(slide:any,section:ArtifactPlan["sections"][number],box:{x:number;y:number;w:number;h:number},dark=false)=>{
+      const color=dark?white:ink,secondary=dark?"E8EEF3":muted;
+      const bodyValue=short(section.body,460);
+      const bodyMax=section.bullets.length?Math.min(1.55,box.h*.36):box.h;
+      if(section.body)addModelText(slide,bodyValue,{x:box.x,y:box.y,w:box.w,fontSize:section.bullets.length?18:24,bold:!section.bullets.length,color,margin:0,breakLine:false,valign:"mid"},{minHeight:.42,maxHeight:bodyMax});
+      if(section.bullets.length){
+        const runs=section.bullets.slice(0,5).map((text,index)=>({text:short(text,180),options:{bullet:{indent:18},breakLine:index<section.bullets.slice(0,5).length-1}}));
+        addModelText(slide,runs,{x:box.x,y:box.y+bodyMax+.16,w:box.w,fontSize:17,color:secondary,margin:0,paraSpaceAfter:9,breakLine:false,valign:"top"},{minHeight:.75,maxHeight:Math.max(.75,box.h-bodyMax-.16)});
+      }
+    };
+    const addPhoto=(slide:any,image:RealImage,box:{x:number;y:number;w:number;h:number})=>{
+      slide.addShape(p.ShapeType.roundRect,{x:box.x-.04,y:box.y-.04,w:box.w+.08,h:box.h+.08,rectRadius:.08,fill:{color:white},line:{color:white},shadow:{type:"outer",color:"000000",opacity:.16,blur:2,angle:45,distance:1}});
+      slide.addImage({data:imageDataUri(image),x:box.x,y:box.y,w:box.w,h:box.h,sizing:{type:"cover",w:box.w,h:box.h},altText:image.title});
+    };
+    const placePhoto=(slide:any,section:ArtifactPlan["sections"][number],image:RealImage,box:{x:number;y:number;w:number;h:number},captionBox?:{x:number;y:number;w:number;h:number})=>{
+      addPhoto(slide,image,box);
+      if(section.imageQuery)placedImageQueries.add(section.imageQuery);
+      const caption=captionBox??{x:box.x,y:box.y+box.h+.08,w:box.w,h:.18};
+      addModelText(slide,short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:caption.x,y:caption.y,w:caption.w,fontSize:6.6,color:muted,margin:0,align:"right"},{minHeight:.1,maxHeight:caption.h});
+    };
+    const addStructuredPhoto=(slide:any,section:ArtifactPlan["sections"][number],image?:RealImage)=>{
+      if(!image)return;
+      placePhoto(slide,section,image,{x:10.18,y:2.02,w:2.25,h:3.55},{x:10.18,y:5.68,w:2.25,h:.25});
+    };
+    const addRenderedChart=async(slide:any,section:ArtifactPlan["sections"][number],image?:RealImage)=>{
+      const chart=section.chart!,png=await chartPng(chart),visualW=image?9.08:11.85;
+      addModelText(slide,short(chart.title,120),{x:.75,y:1.5,w:visualW,fontSize:18,bold:true,color:navy,margin:0},{minHeight:.3,maxHeight:.5});
+      slide.addImage({data:`data:image/png;base64,${png.toString("base64")}`,x:.75,y:2.02,w:visualW,h:4.45,altText:chart.title});
+      if(image)addStructuredPhoto(slide,section,image);
+      if(chart.sourceNote)addModelText(slide,short(chart.sourceNote,180),{x:.78,y:6.5,w:visualW,fontSize:8,color:muted,margin:0},{minHeight:.12,maxHeight:.24});
+    };
+    const addNativeDiagram=(slide:any,section:ArtifactPlan["sections"][number],image?:RealImage)=>{
+      const diagram=section.diagram!,nodes=diagram.nodes.slice(0,8),availableW=image?9.08:11.85;
+      const columns=Math.min(4,nodes.length),rows=Math.ceil(nodes.length/columns),gapX=.28,gapY=.34;
+      const boxW=(availableW-(columns-1)*gapX)/columns;
+      const boxH=Math.max(1.35,(3.55-(rows-1)*gapY)/rows);
+      const startX=.75,startY=2.0;
+      addModelText(slide,short(diagram.title,120),{x:.75,y:1.5,w:availableW,fontSize:18,bold:true,color:navy,align:"center",margin:0},{minHeight:.3,maxHeight:.5});
+      for(let index=0;index<nodes.length-1;index++){
+        const row=Math.floor(index/columns),col=index%columns,nextRow=Math.floor((index+1)/columns);
+        if(row===nextRow){
+          const x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);
+          slide.addShape(p.ShapeType.line,{x:x+boxW,y:y+boxH/2,w:gapX,h:0,line:{color:blue,pt:2.2,endArrowType:"triangle"}});
+        }
+      }
+      nodes.forEach((node,index)=>{
+        const row=Math.floor(index/columns),col=index%columns,x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);
+        slide.addShape(p.ShapeType.roundRect,{x,y,w:boxW,h:boxH,rectRadius:.05,fill:{color:index%2?pale:"F1E5C5"},line:{color:gold,pt:1.2},shadow:{type:"outer",color:"000000",opacity:.1,blur:1,angle:45,distance:.5}});
+        addModelText(slide,short(node,100),{x:x+.15,y:y+.12,w:boxW-.3,fontSize:20,bold:true,color:navy,align:"center",valign:"mid",margin:.04},{minHeight:.36,maxHeight:boxH-.24});
+      });
+      if(diagram.caption||section.body)addModelText(slide,short(diagram.caption||section.body,320),{x:.9,y:5.95,w:availableW-.3,fontSize:17,color:muted,align:"center",margin:0},{minHeight:.3,maxHeight:.7});
+      if(image)addStructuredPhoto(slide,section,image);
+    };
+    const addNativeTable=(slide:any,section:ArtifactPlan["sections"][number],rows:string[][],chunkIndex:number,chunkCount:number,image?:RealImage)=>{
+      const table=section.table!,visualW=image&&chunkIndex===0?9.08:11.85;
+      const title=chunkCount>1?`${table.title} (${chunkIndex+1}/${chunkCount})`:table.title;
+      addModelText(slide,short(title,140),{x:.75,y:1.5,w:visualW,fontSize:18,bold:true,color:navy,margin:0},{minHeight:.3,maxHeight:.5});
+      const fontSize=rows.length<=4?18:rows.length<=6?16:14;
+      const rowH=Math.max(.43,Math.min(.72,4.65/(rows.length+1)));
+      const headers=table.headers.map(text=>({text:short(text,100),options:{bold:true,color:white,fill:{color:navy},margin:.08}}));
+      const tableRows=rows.map((row,rowIndex)=>row.map(text=>({text:short(text,300),options:{fill:{color:rowIndex%2?"F2F5F6":white},color:ink,margin:.07}})));
+      slide.addTable([headers,...tableRows],{x:.75,y:2.02,w:visualW,h:Math.max(3.18,rowH*(rows.length+1)),border:{type:"solid",color:"CCD4D9",pt:.7},fontFace:"Aptos",fontSize,rowH,margin:.06,valign:"middle",autoFit:false});
+      if(image&&chunkIndex===0)addStructuredPhoto(slide,section,image);
+    };
+    const addActivitySlide=(slide:any,section:ArtifactPlan["sections"][number],image?:RealImage)=>{
+      const activity=section.activity!;
+      if(activity.type==="four_corners"){
+        usedActivityTemplates.add("four-corners-quadrants");
+        addModelText(slide,short(section.body,300),{x:.9,y:1.5,w:image?9.55:11.55,fontSize:19,bold:true,color:navy,align:"center",margin:0},{minHeight:.34,maxHeight:.62});
+        const labels=activity.cornerLabels.slice(0,4),colors=["F1E5C5","E7EEF2","E4EFE6","F3E4DF"];
+        labels.forEach((label,index)=>{
+          const column=index%2,row=Math.floor(index/2),x=.9+column*5.9,y=2.68+row*1.27;
+          slide.addShape(p.ShapeType.roundRect,{x,y,w:5.62,h:1.22,rectRadius:.06,fill:{color:colors[index]!},line:{color:index%2?blue:gold,pt:1.4}});
+          addModelText(slide,label,{x:x+.2,y:y+.16,w:5.22,fontSize:22,bold:true,color:navy,align:"center",valign:"mid",margin:.04},{minHeight:.38,maxHeight:.9});
         });
-    }
-    nodes.forEach((node,index)=>{const row=Math.floor(index/columns),col=index%columns,x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);slide.addShape(p.ShapeType.roundRect,{x,y,w:boxW,h:boxH,rectRadius:.05,fill:{color:index%2?pale:"F1E5C5"},line:{color:gold,pt:1.2},shadow:{type:"outer",color:"000000",opacity:.1,blur:1,angle:45,distance:.5}});slide.addText(short(node,52),{x:x+.18,y:y+.16,w:boxW-.36,h:boxH-.32,fontSize:17,bold:true,color:navy,align:"center",valign:"mid",margin:0,fit:"shrink"});});
-    if(diagram.caption||section.body)slide.addText(short(diagram.caption||section.body,320),{x:1.0,y:rows===1?4.34:5.55,w:image?8.15:11.1,h:.72,fontSize:17,color:muted,align:"center",margin:0,fit:"shrink"});
-    if(image)placePhoto(slide,section,image,{x:9.58,y:1.92,w:2.85,h:3.1},{x:9.58,y:5.14,w:2.85,h:.18});
-  };
-  const addNativeTable=(
-    slide:any,
-    section:ArtifactPlan["sections"][number],
-    image?:RealImage,
-  )=>{
-    const table=section.table!,headers=table.headers.map(text=>({text,options:{bold:true,color:white,fill:{color:navy},margin:.08}})),rows=table.rows.slice(0,image?12:16).map((row,rowIndex)=>row.map(text=>({text:short(text,160),options:{fill:{color:rowIndex%2?"F2F5F6":white},color:ink,margin:.07}})));
-    slide.addText(short(table.title,120),{x:.78,y:1.4,w:image?8.3:11.6,h:.36,fontSize:17,bold:true,color:navy,margin:0,fit:"shrink"});
-    slide.addTable([headers,...rows],{x:.78,y:1.88,w:image?8.25:11.78,h:4.86,border:{type:"solid",color:"CCD4D9",pt:.7},fontFace:"Aptos",fontSize:image?10.4:11,rowH:.32,margin:.06,valign:"middle",autoFit:false});
-    if(image){
-      placePhoto(slide,section,image,{x:9.35,y:1.92,w:2.92,h:2.55},{x:9.35,y:4.56,w:2.92,h:.18});
-      slide.addShape(p.ShapeType.roundRect,{x:9.35,y:4.92,w:2.92,h:1.24,rectRadius:.05,fill:{color:pale},line:{color:pale}});
-      slide.addText(short(section.body,220),{x:9.58,y:5.12,w:2.46,h:.78,fontSize:13.5,bold:true,color:navy,margin:0,fit:"shrink",valign:"mid"});
-    }
-  };
-  const addActivitySlide=(
-    slide:any,
-    section:ArtifactPlan["sections"][number],
-    image?:RealImage,
-  )=>{
-    const activity=section.activity!;
-    const photoBox=image?{x:10.0,y:1.48,w:2.25,h:1.42}:null;
-    const placeActivityPhoto=()=>{
-      if(image&&photoBox)
-        placePhoto(slide,section,image,photoBox,{x:10.0,y:2.97,w:2.25,h:.16});
+        const directions=activity.directions.map((text,index)=>({text:`${index+1}. ${short(text,180)}`,options:{breakLine:index<activity.directions.length-1}}));
+        addModelText(slide,directions,{x:.92,y:5.35,w:7.35,fontSize:13,color:ink,margin:.08},{minHeight:.42,maxHeight:1.15});
+        if(activity.sentenceFrames.length){
+          slide.addShape(p.ShapeType.roundRect,{x:8.52,y:5.26,w:3.9,h:1.18,rectRadius:.05,fill:{color:navy},line:{color:navy}});
+          const frames=activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,180),options:{bullet:{indent:14},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}}));
+          addModelText(slide,frames,{x:8.72,y:5.43,w:3.5,fontSize:12.5,bold:true,color:white,margin:.04},{minHeight:.32,maxHeight:.84});
+        }
+        if(image)placePhoto(slide,section,image,{x:10.72,y:1.48,w:1.68,h:.92},{x:10.72,y:2.43,w:1.68,h:.15});
+        return;
+      }
+      if(activity.type==="speed_dating"){
+        usedActivityTemplates.add("speed-dating-rotation");
+        slide.addShape(p.ShapeType.roundRect,{x:.82,y:1.5,w:2.18,h:.72,rectRadius:.05,fill:{color:navy},line:{color:navy}});
+        addModelText(slide,`${activity.durationMinutes} MIN · ROTATIONS`,{x:1.0,y:1.69,w:1.82,fontSize:15,bold:true,color:white,align:"center",valign:"mid",margin:0},{minHeight:.24,maxHeight:.34});
+        const directions=activity.directions.slice(0,5).map((text,index)=>({text:`${index+1}. ${short(text,180)}`,options:{breakLine:index<Math.min(5,activity.directions.length)-1}}));
+        addModelText(slide,directions,{x:.86,y:2.38,w:11.62,fontSize:13.5,color:ink,margin:.06},{minHeight:.45,maxHeight:.78});
+        const prompts=activity.prompts.slice(0,6),columns=prompts.length===2?2:Math.min(2,prompts.length),rows=Math.ceil(prompts.length/columns);
+        const frameCount=Math.min(4,activity.sentenceFrames.length),frameFont=13,lineHeight=(frameFont*1.2)/72;
+        const frameH=Math.max(.5,frameCount*lineHeight+.26),frameY=6.68-frameH;
+        const gridTop=3.28,gridBottom=frameY-.18,gap=.2,cardH=(gridBottom-gridTop-(rows-1)*gap)/rows,cardW=(11.62-(columns-1)*.28)/columns;
+        prompts.forEach((text,index)=>{
+          const column=index%columns,row=Math.floor(index/columns),x=.86+column*(cardW+.28),y=gridTop+row*(cardH+gap);
+          slide.addShape(p.ShapeType.roundRect,{x,y,w:cardW,h:cardH,rectRadius:.05,fill:{color:index%2?"EEF3F5":"F7EED7"},line:{color:index%2?blue:gold,pt:1}});
+          const value:[{text:string;options:Record<string,unknown>},{text:string;options:Record<string,unknown>}]=[{text:String(index+1).padStart(2,"0"),options:{bold:true,color:gold,breakLine:true}},{text:short(text,250),options:{bold:true,color:navy}}];
+          addModelText(slide,value,{x:x+.15,y:y+.12,w:cardW-.3,fontSize:14,margin:.04,valign:"mid"},{minHeight:.28,maxHeight:cardH-.24});
+        });
+        if(frameCount){
+          slide.addShape(p.ShapeType.roundRect,{x:.86,y:frameY,w:image?9.05:11.62,h:frameH,rectRadius:.05,fill:{color:navy},line:{color:navy}});
+          const frames=activity.sentenceFrames.slice(0,frameCount).map((text,index)=>({text:short(text,200),options:{bullet:{indent:14},breakLine:index<frameCount-1}}));
+          addModelText(slide,frames,{x:1.06,y:frameY+.1,w:image?8.65:11.22,fontSize:frameFont,bold:true,color:white,margin:.04},{minHeight:.25,maxHeight:frameH-.2});
+        }
+        if(image)placePhoto(slide,section,image,{x:10.16,y:frameY,w:2.32,h:frameH},{x:10.16,y:6.7,w:2.32,h:.14});
+        return;
+      }
+
+      const template=activity.type==="guided_practice"?"guided-step-rail":activity.type==="discussion"?"discussion-prompt-cards":"independent-checklist";
+      usedActivityTemplates.add(template);
+      addModelText(slide,short(section.body,360),{x:.9,y:1.5,w:11.5,fontSize:19,bold:true,color:navy,align:activity.type==="discussion"?"center":"left",margin:0},{minHeight:.34,maxHeight:.68});
+      const directions=activity.directions.slice(0,6),prompts=activity.prompts.slice(0,6);
+      slide.addShape(p.ShapeType.roundRect,{x:.9,y:2.35,w:3.55,h:3.9,rectRadius:.06,fill:{color:pale},line:{color:blue,pt:1}});
+      slide.addText("DIRECTIONS",{x:1.16,y:2.62,w:2.95,h:.25,fontSize:11,bold:true,charSpacing:1.4,color:blue,margin:0});
+      const directionRuns=directions.map((text,index)=>({text:`${index+1}. ${short(text,160)}`,options:{breakLine:index<directions.length-1}}));
+      addModelText(slide,directionRuns,{x:1.16,y:3.04,w:2.95,fontSize:13.5,color:ink,margin:.04},{minHeight:.5,maxHeight:2.85});
+      const promptW=image?5.1:7.6,promptX=4.72,promptGap=.16,promptBottom=activity.sentenceFrames.length?5.72:6.25;
+      const promptH=Math.max(.38,(promptBottom-2.35-(prompts.length-1)*promptGap)/Math.max(1,prompts.length));
+      prompts.forEach((text,index)=>{
+        const y=2.35+index*(promptH+promptGap);
+        slide.addShape(p.ShapeType.roundRect,{x:promptX,y,w:promptW,h:promptH,rectRadius:.04,fill:{color:index%2?white:"F7EED7"},line:{color:index%2?"D6DEE3":gold,pt:.8}});
+        addModelText(slide,short(text,240),{x:promptX+.16,y:y+.1,w:promptW-.32,fontSize:13.5,bold:true,color:navy,margin:.03,valign:"mid"},{minHeight:.24,maxHeight:promptH-.2});
+      });
+      if(activity.sentenceFrames.length){
+        const frames=activity.sentenceFrames.slice(0,4).map((text,index)=>({text:short(text,180),options:{breakLine:index<Math.min(4,activity.sentenceFrames.length)-1}}));
+        addModelText(slide,frames,{x:4.72,y:5.88,w:promptW,fontSize:12,bold:true,color:blue,margin:0},{minHeight:.25,maxHeight:.66});
+      }
+      if(image)placePhoto(slide,section,image,{x:10.12,y:2.35,w:2.3,h:3.2},{x:10.12,y:5.66,w:2.3,h:.18});
     };
 
-    if(activity.type==="four_corners"){
-      usedActivityTemplates.add("four-corners-quadrants");
-      slide.addText(short(section.body,260),{x:.88,y:1.38,w:image?8.75:11.55,h:.54,fontSize:19,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
-      const labels=activity.cornerLabels.slice(0,4),colors=["F1E5C5","E7EEF2","E4EFE6","F3E4DF"];
-      labels.forEach((label,index)=>{
-        const column=index%2,row=Math.floor(index/2),x=.92+column*(image?4.48:6.02),y=2.08+row*1.54;
-        slide.addText(label,{x,y,w:image?4.05:5.5,h:1.14,shape:p.ShapeType.roundRect,rectRadius:.06,fill:{color:colors[index]!},line:{color:index%2?blue:gold,pt:1.4},fontSize:image?19:22,bold:true,color:navy,align:"center",valign:"mid",margin:.16,fit:"shrink"});
-      });
-      slide.addText(activity.directions.map((text,index)=>({text:`${index+1}. ${short(text,130)}`,options:{breakLine:index<activity.directions.length-1}})),{x:.92,y:5.22,w:image?5.85:7.35,h:.82,fontSize:13,color:ink,margin:.12,fit:"shrink"});
-      slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,130),options:{bullet:{indent:14},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:image?6.98:8.52,y:5.12,w:image?2.6:3.8,h:1.03,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:12.5,bold:true,color:white,margin:.18,fit:"shrink"});
-      placeActivityPhoto();
-      return "four-corners-quadrants";
-    }
+    const title=p.addSlide();
+    slideNumber++;
+    title.background={color:navy};
+    title.addShape(p.ShapeType.rect,{x:0,y:0,w:.18,h:7.5,fill:{color:gold},line:{color:gold}});
+    title.addShape(p.ShapeType.arc,{x:9.15,y:.35,w:3.65,h:3.65,rotate:18,fill:{color:gold,transparency:78},line:{color:gold,transparency:100}});
+    title.addText("VISUAL BRIEF",{x:.82,y:1.06,w:2.8,h:.24,fontSize:10,bold:true,charSpacing:2,color:gold,margin:0});
+    addModelText(title,short(plan.title,160),{x:.82,y:1.55,w:10.6,fontFace:"Aptos Display",fontSize:42,bold:true,color:white,margin:0,breakLine:false,valign:"middle"},{minHeight:.7,maxHeight:1.65});
+    if(plan.subtitle)addModelText(title,short(plan.subtitle,240),{x:.85,y:3.62,w:8.9,fontSize:20,color:"DDE6ED",margin:0},{minHeight:.34,maxHeight:.92});
+    addNotesParagraphs(title,["Opening slide"]);
 
-    if(activity.type==="speed_dating"){
-      usedActivityTemplates.add("speed-dating-rotation");
-      slide.addText(`${activity.durationMinutes} MIN\nROTATIONS`,{x:.88,y:1.46,w:2.15,h:1.08,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:20,bold:true,color:white,align:"center",valign:"mid",margin:.12});
-      slide.addText(activity.directions.slice(0,5).map((text,index)=>({text:`${index+1}. ${short(text,115)}`,options:{breakLine:index<Math.min(5,activity.directions.length)-1}})),{x:.92,y:2.72,w:2.86,h:2.35,fontSize:14,color:ink,margin:.08,fit:"shrink"});
-      const promptRight=image?9.55:12.12,promptW=(promptRight-4.02-.38)/2;
-      activity.prompts.slice(0,6).forEach((text,index)=>{
-        const column=index%2,row=Math.floor(index/2),x=4.02+column*(promptW+.38),y=1.48+row*1.28;
-        slide.addText([{text:String(index+1).padStart(2,"0"),options:{bold:true,color:gold,breakLine:true}},{text:short(text,150),options:{bold:true,color:navy}}],{x,y,w:promptW,h:1.02,shape:p.ShapeType.roundRect,fill:{color:index%2?"EEF3F5":"F7EED7"},line:{color:index%2?blue:gold,pt:1},fontSize:13.5,margin:.14,fit:"shrink"});
-      });
-      slide.addText(activity.sentenceFrames.slice(0,4).map((text,index)=>({text:short(text,140),options:{bullet:{indent:14},breakLine:index<Math.min(4,activity.sentenceFrames.length)-1}})),{x:4.02,y:5.46,w:image?5.55:8.1,h:.74,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:13,bold:true,color:white,margin:.14,fit:"shrink"});
-      placeActivityPhoto();
-      return "speed-dating-rotation";
-    }
+    for(const [index,section] of contentSections.entries()){
+      const image=section.imageQuery?images.get(section.imageQuery):undefined;
+      const tableChunks=section.table
+        ?Array.from({length:Math.ceil(section.table.rows.length/8)},(_,chunkIndex)=>section.table!.rows.slice(chunkIndex*8,chunkIndex*8+8))
+        :null;
+      if(tableChunks){
+        for(const [chunkIndex,rows] of tableChunks.entries()){
+          const slide=p.addSlide();
+          addContentShell(slide,section.heading,`Part ${String(index+1).padStart(2,"0")}`);
+          addNativeTable(slide,section,rows,chunkIndex,tableChunks.length,chunkIndex===0?image:undefined);
+          addFooter(slide,slideNumber);
+          addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,[...(chunkIndex===0&&image&&section.imageQuery?[image.sourceUrl]:[])]));
+        }
+        continue;
+      }
 
-    if(activity.type==="guided_practice"){
-      usedActivityTemplates.add("guided-step-rail");
-      slide.addText(short(section.body,280),{x:.9,y:1.42,w:image?8.75:11.4,h:.56,fontSize:19,bold:true,color:navy,margin:0,fit:"shrink"});
-      activity.directions.slice(0,5).forEach((text,index)=>{
-        const y=2.16+index*.72;
-        slide.addText(String(index+1).padStart(2,"0"),{x:.92,y,w:.52,h:.44,fontSize:16,bold:true,color:white,align:"center",valign:"mid",shape:p.ShapeType.ellipse,fill:{color:blue},line:{color:blue},margin:0});
-        slide.addText(short(text,125),{x:1.62,y:y-.02,w:3.25,h:.48,fontSize:14.2,color:ink,margin:0,fit:"shrink",valign:"mid"});
-      });
-      activity.prompts.slice(0,6).forEach((text,index)=>{
-        const column=index%2,row=Math.floor(index/2),x=5.15+column*(image?2.2:3.25),y=2.06+row*1.18;
-        slide.addText(short(text,135),{x,y,w:image?1.95:2.95,h:.92,shape:p.ShapeType.roundRect,fill:{color:index%2?"F7EED7":"EEF3F5"},line:{color:index%2?gold:blue,pt:1},fontSize:13.5,bold:true,color:navy,margin:.14,fit:"shrink",valign:"mid"});
-      });
-      if(activity.sentenceFrames.length)slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,120),options:{breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:5.15,y:5.63,w:image?4.2:6.3,h:.64,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:12.5,bold:true,color:white,margin:.12,fit:"shrink"});
-      placeActivityPhoto();
-      return "guided-step-rail";
-    }
-
-    if(activity.type==="discussion"){
-      usedActivityTemplates.add("discussion-prompt-cards");
-      slide.addText(short(section.body,300),{x:.92,y:1.42,w:image?8.75:11.35,h:.56,fontSize:19,bold:true,color:navy,align:"center",margin:0,fit:"shrink"});
-      activity.prompts.slice(0,6).forEach((text,index)=>{
-        const column=index%2,row=Math.floor(index/2),x=.98+column*(image?4.3:5.75),y=2.16+row*1.16;
-        const w=image?3.92:5.36;
-        slide.addText(short(text,150),{x,y,w,h:.86,shape:p.ShapeType.roundRect,fill:{color:index%2?"EEF3F5":"F7EED7"},line:{color:index%2?blue:gold,pt:1.1},fontSize:14.5,bold:true,color:navy,margin:.15,fit:"shrink",valign:"mid"});
-      });
-      slide.addText(activity.directions.slice(0,4).map((text,index)=>({text:`${index+1}. ${short(text,120)}`,options:{breakLine:index<Math.min(4,activity.directions.length)-1}})),{x:.98,y:5.78,w:image?5.2:6.5,h:.58,fontSize:11.8,color:muted,margin:0,fit:"shrink"});
-      if(activity.sentenceFrames.length)slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,120),options:{bullet:{indent:12},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:image?6.5:7.75,y:5.54,w:image?3.0:4.4,h:.78,shape:p.ShapeType.roundRect,fill:{color:navy},line:{color:navy},fontSize:12.2,bold:true,color:white,margin:.13,fit:"shrink"});
-      placeActivityPhoto();
-      return "discussion-prompt-cards";
-    }
-
-    usedActivityTemplates.add("independent-checklist");
-    slide.addText(short(section.body,300),{x:.92,y:1.42,w:image?8.75:11.4,h:.56,fontSize:19,bold:true,color:navy,margin:0,fit:"shrink"});
-    slide.addShape(p.ShapeType.roundRect,{x:.98,y:2.12,w:3.3,h:3.72,rectRadius:.06,fill:{color:pale},line:{color:blue,pt:1}});
-    slide.addText("CHECKLIST",{x:1.24,y:2.4,w:2.72,h:.28,fontSize:11,bold:true,charSpacing:1.4,color:blue,margin:0});
-    slide.addText(activity.directions.slice(0,6).map((text,index)=>({text:`☐ ${short(text,135)}`,options:{breakLine:index<Math.min(6,activity.directions.length)-1}})),{x:1.24,y:2.88,w:2.72,h:2.4,fontSize:13.8,color:ink,margin:0,fit:"shrink"});
-    activity.prompts.slice(0,6).forEach((text,index)=>{
-      const y=2.12+index*.67;
-      slide.addText(short(text,165),{x:4.62,y,w:image?4.85:7.35,h:.53,shape:p.ShapeType.roundRect,fill:{color:index%2?"FFFFFF":"F7EED7"},line:{color:index%2?"D6DEE3":gold,pt:.8},fontSize:13.5,bold:true,color:navy,margin:.12,fit:"shrink",valign:"mid"});
-    });
-    if(activity.sentenceFrames.length)slide.addText(activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,120),options:{breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}})),{x:4.62,y:6.1,w:image?4.85:7.35,h:.42,fontSize:11.5,bold:true,color:blue,margin:0,fit:"shrink"});
-    placeActivityPhoto();
-    return "independent-checklist";
-  };
-  const title=p.addSlide(); title.background={color:navy};
-  title.addShape(p.ShapeType.rect,{x:0,y:0,w:.18,h:7.5,fill:{color:gold},line:{color:gold}});
-  title.addShape(p.ShapeType.arc,{x:9.15,y:.35,w:3.65,h:3.65,rotate:18,fill:{color:gold,transparency:78},line:{color:gold,transparency:100}});
-  title.addText("VISUAL BRIEF",{x:.82,y:1.06,w:2.8,h:.24,fontSize:10,bold:true,charSpacing:2,color:gold,margin:0});
-  title.addText(short(plan.title,130),{x:.82,y:1.55,w:10.6,h:1.65,fontFace:"Aptos Display",fontSize:42,bold:true,color:white,margin:0,breakLine:false,fit:"shrink",valign:"middle"});
-  if(plan.subtitle)title.addText(short(plan.subtitle,220),{x:.85,y:3.62,w:8.9,h:.92,fontSize:20,color:"DDE6ED",margin:0,fit:"shrink"});
-  addNotesParagraphs(title,["Opening slide"]);
-  for(const [index,section] of contentSections.entries()){
-    const slide=p.addSlide(),slideNumber=index+2;slide.background={color:bg};
-    slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:.1,fill:{color:gold},line:{color:gold}});
-    addHeading(slide,section.heading,`Part ${String(index+1).padStart(2,"0")}`);
-    const image=section.imageQuery?images.get(section.imageQuery):undefined;
-    if(section.activity)addActivitySlide(slide,section,image);
-    else if(section.chart)await addRenderedChart(slide,section,image);
-    else if(section.table)addNativeTable(slide,section,image);
-    else if(section.diagram)addNativeDiagram(slide,section,image);
-    else if(image){
-      const fullBleed=index%4===2;
-      if(fullBleed){
+      const fullBleed=Boolean(image&&!section.activity&&!section.chart&&!section.diagram&&index%4===2);
+      const slide=p.addSlide();
+      slideNumber++;
+      contentSlideNumbers.push(slideNumber);
+      slide.background={color:bg};
+      if(fullBleed&&image){
         slide.addImage({data:imageDataUri(image),x:0,y:0,w:13.333,h:7.5,sizing:{type:"cover",w:13.333,h:7.5},altText:image.title});
         if(section.imageQuery)placedImageQueries.add(section.imageQuery);
         slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:7.5,fill:{color:navy,transparency:22},line:{color:navy,transparency:100}});
         slide.addShape(p.ShapeType.rect,{x:.66,y:.66,w:6.15,h:5.62,fill:{color:navy,transparency:12},line:{color:white,transparency:100}});
-        slide.addText(short(section.heading,92),{x:.98,y:1.05,w:5.55,h:1.05,fontSize:34,bold:true,color:white,margin:0,fit:"shrink"});
+        addModelText(slide,short(section.heading,92),{x:.98,y:1.05,w:5.55,fontSize:34,bold:true,color:white,margin:0},{minHeight:.52,maxHeight:1.05});
         addNarrative(slide,section,{x:1,y:2.3,w:5.3,h:3.35},true);
-        slide.addText(short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:7.05,y:7.12,w:5.5,h:.16,fontSize:6.5,color:white,align:"right",margin:0,fit:"shrink"});
+        addModelText(slide,short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:7.05,y:6.76,w:5.5,fontSize:6.5,color:white,align:"right",margin:0},{minHeight:.1,maxHeight:.14});
       }else{
-        const imageLeft=index%2===1,imageBox={x:imageLeft ? .72 : 7.02,y:1.5,w:5.58,h:4.92},textBox={x:imageLeft ? 6.72 : .78,y:1.66,w:5.45,h:4.7};
-        placePhoto(slide,section,image,imageBox,{x:imageBox.x,y:6.5,w:imageBox.w,h:.2});addNarrative(slide,section,textBox);
+        slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:.1,fill:{color:gold},line:{color:gold}});
+        addHeading(slide,section.heading,`Part ${String(index+1).padStart(2,"0")}`);
+        if(scaled)slide.addShape(p.ShapeType.roundRect,{x:.75,y:1.5,w:11.85,h:5.3,rectRadius:.04,fill:{color:white},line:{color:"E4DED2",pt:.5}});
+        if(section.activity)addActivitySlide(slide,section,image);
+        else if(section.chart)await addRenderedChart(slide,section,image);
+        else if(section.diagram)addNativeDiagram(slide,section,image);
+        else if(image){
+          const imageLeft=index%2===1;
+          const imageBox={x:imageLeft ? .75 : 7.02,y:1.5,w:5.58,h:4.92};
+          const textBox={x:imageLeft ? 6.72 : .78,y:1.66,w:5.45,h:4.7};
+          placePhoto(slide,section,image,imageBox,{x:imageBox.x,y:6.5,w:imageBox.w,h:.2});
+          addNarrative(slide,section,textBox);
+        }else{
+          slide.addText(String(index+1).padStart(2,"0"),{x:.76,y:1.55,w:2.1,h:1.3,fontSize:74,bold:true,color:"E4D7B3",margin:0});
+          slide.addShape(p.ShapeType.line,{x:3.05,y:1.92,w:0,h:4.15,line:{color:gold,pt:2}});
+          addNarrative(slide,section,{x:3.52,y:1.67,w:8.55,h:4.65});
+        }
+        addFooter(slide,slideNumber);
       }
-    }else{
-      slide.addText(String(index+1).padStart(2,"0"),{x:.76,y:1.55,w:2.1,h:1.3,fontSize:74,bold:true,color:"E4D7B3",margin:0});
-      slide.addShape(p.ShapeType.line,{x:3.05,y:1.92,w:0,h:4.15,line:{color:gold,pt:2}});
-      addNarrative(slide,section,{x:3.52,y:1.67,w:8.55,h:4.65});
+      const noteSources=[...(image&&section.imageQuery&&placedImageQueries.has(section.imageQuery)?[image.sourceUrl]:[]),...(section.chart?.sourceNote?[section.chart.sourceNote]:[])];
+      addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,noteSources));
     }
-    addFooter(slide,slideNumber);
-    const noteSources=[
-      ...(image&&section.imageQuery&&placedImageQueries.has(section.imageQuery)?[image.sourceUrl]:[]),
-      ...(section.chart?.sourceNote?[section.chart.sourceNote]:[]),
-    ];
-    addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,noteSources));
-  }
 
-  const unplacedFetched=[...images.keys()].filter(query=>!placedImageQueries.has(query));
-  if(unplacedFetched.length)
-    throw new ArtifactPipelineError(
-      "BUILD",
-      `Presentation layout discarded fetched images: ${unplacedFetched.join(", ")}`,
-      {ruleOrPart:"pptx-image-placement"},
-    );
-  title.addText(
-    `${contentSections.length} ideas · ${placedImageQueries.size} licensed visuals`,
-    {x:.85,y:6.72,w:4.8,h:.22,fontSize:9,bold:true,charSpacing:.8,color:"B9C8D3",margin:0},
-  );
+    const unplacedFetched=[...images.keys()].filter(query=>!placedImageQueries.has(query));
+    if(unplacedFetched.length)throw new ArtifactPipelineError("BUILD",`Presentation layout discarded fetched images: ${unplacedFetched.join(", ")}`,{ruleOrPart:"pptx-image-placement"});
+    addModelText(title,`${contentSlideNumbers.length} ideas · ${placedImageQueries.size} licensed visuals`,{x:.85,y:6.72,w:4.8,fontSize:9,bold:true,charSpacing:.8,color:"B9C8D3",margin:0},{minHeight:.14,maxHeight:.22});
 
-  for(const [chunkIndex,chunk] of sourceChunks.entries()){
-    const slide=p.addSlide(),slideNumber=2+contentSections.length+chunkIndex;slide.background={color:bg};
-    addHeading(slide,sourceChunks.length>1?`Sources ${chunkIndex+1} of ${sourceChunks.length}`:"Sources","Evidence trail");
-    chunk.forEach((source,index)=>{const y=1.48+index*.66;slide.addText(String(chunkIndex*8+index+1).padStart(2,"0"),{x:.78,y,w:.42,h:.23,fontSize:10,bold:true,color:gold,margin:0});slide.addText(short(source.title,180),{x:1.35,y:y-.02,w:4.15,h:.28,fontSize:13,bold:true,color:navy,margin:0,fit:"shrink"});slide.addText(short(source.url,150),{x:5.7,y:y-.02,w:6.45,h:.3,fontSize:10,color:blue,margin:0,fit:"shrink",hyperlink:{url:source.url}});});
-    addFooter(slide,slideNumber);
-    addNotesParagraphs(slide,noteParagraphs("",chunk.map(source=>source.url)));
+    for(const [chunkIndex,chunk] of sourceChunks.entries()){
+      const slide=p.addSlide();
+      slideNumber++;
+      slide.background={color:bg};
+      slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:.1,fill:{color:gold},line:{color:gold}});
+      addHeading(slide,sourceChunks.length>1?`Sources ${chunkIndex+1} of ${sourceChunks.length}`:"Sources","Evidence trail");
+      chunk.forEach((source,index)=>{
+        const y=1.48+index*.66;
+        slide.addText(String(chunkIndex*8+index+1).padStart(2,"0"),{x:.78,y,w:.42,h:.23,fontSize:10,bold:true,color:gold,margin:0});
+        addModelText(slide,short(source.title,180),{x:1.35,y:y-.02,w:4.15,fontSize:13,bold:true,color:navy,margin:0},{minHeight:.2,maxHeight:.32});
+        addModelText(slide,short(source.url,150),{x:5.7,y:y-.02,w:6.45,fontSize:10,color:blue,margin:0,hyperlink:{url:source.url}},{minHeight:.18,maxHeight:.3});
+      });
+      addFooter(slide,slideNumber);
+      addNotesParagraphs(slide,noteParagraphs("",chunk.map(source=>source.url)));
+    }
+
+    const raw=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer);
+    if(raw.length<5000)throw new ArtifactPipelineError("BUILD","PPTX validation failed: output too small",{ruleOrPart:"pptx-size"});
+    atomicWrite(target,raw);
+    return{raw,placedImageQueries,usedActivityTemplates,contentSlideNumbers};
+  };
+
+  for(const scaled of [false,true]){
+    const rendered=await renderAttempt(scaled);
+    const ratios=estimatePptxEmptyCanvasRatio(target).bySlide;
+    try{
+      const validationReceipt=await validateBuiltArtifact(
+        "presentation",
+        prompt,
+        reconciled.plan,
+        target,
+        jobId
+          ?{root:path.join(config.storageRoot,"diagnostics"),jobId,presentationContentSlides:rendered.contentSlideNumbers}
+          :{presentationContentSlides:rendered.contentSlideNumbers},
+      );
+      collectedImages.metrics.placed=rendered.placedImageQueries.size;
+      const enrichedReceipt=validationReceipt as ArtifactValidationReceipt&{images:ImageResolutionReceipt;presentation:PresentationBuildReceipt};
+      enrichedReceipt.images=collectedImages.metrics;
+      enrichedReceipt.presentation={
+        placedAssets:rendered.placedImageQueries.size,
+        activityTemplates:[...rendered.usedActivityTemplates].sort(),
+        reconciliations:reconciled.reconciliations,
+        titleCounts:{contentSlides:rendered.contentSlideNumbers.length,licensedVisuals:rendered.placedImageQueries.size},
+        layoutFitting:{retried:scaled,before:beforeRatios,after:ratios},
+      };
+      return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:rendered.raw.length,validationReceipt};
+    }catch(error){
+      const classified=error instanceof ArtifactPipelineError?error:null;
+      if(!scaled&&classified?.failureClass==="BUILD"&&classified.ruleOrPart==="pptx-empty-canvas"){
+        beforeRatios=ratios;
+        log("warn","artifact.presentation_layout_retry",{jobId:jobId||null,beforeRatios,strategy:"scaled-content-area"});
+        continue;
+      }
+      throw error;
+    }
   }
-  const name=`${slug(plan.title)}.pptx`, target=safeJoin(config.artifactDir,name);
-  const raw=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer); if(raw.length<5000)throw new Error("PPTX validation failed: output too small");
-  atomicWrite(target,raw);
-  const validationReceipt=await validateBuiltArtifact(
-    "presentation",
-    prompt,
-    reconciled.plan,
-    target,
-    jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
-  );
-  collectedImages.metrics.placed=placedImageQueries.size;
-  const enrichedReceipt=validationReceipt as ArtifactValidationReceipt & {
-    images:ImageResolutionReceipt;
-    presentation:PresentationBuildReceipt;
-  };
-  enrichedReceipt.images=collectedImages.metrics;
-  enrichedReceipt.presentation={
-    placedAssets:placedImageQueries.size,
-    activityTemplates:[...usedActivityTemplates].sort(),
-    reconciliations:reconciled.reconciliations,
-    titleCounts:{
-      contentSlides:contentSections.length,
-      licensedVisuals:placedImageQueries.size,
-    },
-  };
-  return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:raw.length,validationReceipt};
+  throw new ArtifactPipelineError("BUILD","Presentation layout fitting exhausted without a validated artifact",{ruleOrPart:"pptx-empty-canvas"});
 }
 
 async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId=""):Promise<BuiltFile>{

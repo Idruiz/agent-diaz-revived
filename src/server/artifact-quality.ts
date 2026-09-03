@@ -8,6 +8,10 @@ import AdmZip from "adm-zip";
 import { validateFile } from "@xarsh/ooxml-validator";
 import type { ArtifactPlan, JobKind } from "../shared/contracts.js";
 import { log } from "./log.js";
+import {
+  FOUR_CORNERS_LABEL_REPAIR_MESSAGE,
+  isGenericFourCornersLabel,
+} from "./reconcile.js";
 
 const PLACEHOLDER_RE = /\b(?:tbd|lorem ipsum|placeholder|insert (?:text|content|image)|add (?:content|details)|coming soon)\b|\[(?:insert|add|todo)[^\]]*\]/i;
 const TODO_PLACEHOLDER_RE = /\bTODO\b/;
@@ -246,6 +250,11 @@ function activityQualityViolations(
         "four_corners_labels",
         "Artifact quality validation failed: Four Corners requires exactly four corner labels",
       );
+    else if (activity.cornerLabels.some(isGenericFourCornersLabel))
+      push(
+        "four_corners_labels_generic",
+        FOUR_CORNERS_LABEL_REPAIR_MESSAGE,
+      );
     if (activity.prompts.length < 1)
       push(
         "four_corners_prompt",
@@ -329,6 +338,11 @@ export function artifactPlanQualityViolations(
   }
 
   if (kind === "presentation") {
+    if (plan.sections.length > 14)
+      push(
+        "presentation_sections_excess",
+        `Presentation supports at most 14 content sections; received ${plan.sections.length}.`,
+      );
     const activityTypes = new Set(
       plan.sections
         .map((section) => section.activity?.type)
@@ -665,7 +679,7 @@ function qualityLayoutSignature(
   return `${section.layout ?? "standard"}:${primitive}`;
 }
 
-function estimatePptxEmptyCanvasRatio(filePath: string): {
+export function estimatePptxEmptyCanvasRatio(filePath: string): {
   average: number | null;
   bySlide: number[];
   method: string;
@@ -694,19 +708,58 @@ function estimatePptxEmptyCanvasRatio(filePath: string): {
     );
   const bySlide = slides.map((entry) => {
     const xml = entry.getData().toString("utf8");
-    let occupied = 0;
+    const rectangles: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
     for (const match of xml.matchAll(
-      /<a:xfrm\b[^>]*>[\s\S]*?<a:off\b[^>]*\bx="(-?\d+)"[^>]*\by="(-?\d+)"[^>]*\/>[\s\S]*?<a:ext\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"[^>]*\/>[\s\S]*?<\/a:xfrm>/g,
+      /<(a|p):xfrm\b[^>]*>[\s\S]*?<a:off\b[^>]*\bx="(-?\d+)"[^>]*\by="(-?\d+)"[^>]*\/>[\s\S]*?<a:ext\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"[^>]*\/>[\s\S]*?<\/\1:xfrm>/g,
     )) {
-      const width = Number(match[3]);
-      const height = Number(match[4]);
+      const x = Number(match[2]);
+      const y = Number(match[3]);
+      const width = Number(match[4]);
+      const height = Number(match[5]);
       if (
+        Number.isFinite(x) &&
+        Number.isFinite(y) &&
         Number.isFinite(width) &&
         Number.isFinite(height) &&
         width > 0 &&
         height > 0
       )
-        occupied += width * height;
+        rectangles.push({
+          x1: Math.max(0, x),
+          y1: Math.max(0, y),
+          x2: Math.min(slideWidth, x + width),
+          y2: Math.min(slideHeight, y + height),
+        });
+    }
+    const xEdges = [
+      ...new Set(rectangles.flatMap((rectangle) => [rectangle.x1, rectangle.x2])),
+    ].sort((a, b) => a - b);
+    let occupied = 0;
+    for (let index = 0; index < xEdges.length - 1; index++) {
+      const left = xEdges[index]!;
+      const right = xEdges[index + 1]!;
+      if (right <= left) continue;
+      const intervals = rectangles
+        .filter((rectangle) => rectangle.x1 < right && rectangle.x2 > left)
+        .map((rectangle) => [rectangle.y1, rectangle.y2] as const)
+        .filter(([top, bottom]) => bottom > top)
+        .sort((a, b) => a[0] - b[0]);
+      let vertical = 0;
+      let start = -1;
+      let end = -1;
+      for (const [top, bottom] of intervals) {
+        if (start < 0) {
+          start = top;
+          end = bottom;
+        } else if (top <= end) end = Math.max(end, bottom);
+        else {
+          vertical += end - start;
+          start = top;
+          end = bottom;
+        }
+      }
+      if (start >= 0) vertical += end - start;
+      occupied += (right - left) * vertical;
     }
     return roundedRatio(1 - Math.min(1, occupied / slideArea));
   });
@@ -720,7 +773,7 @@ function estimatePptxEmptyCanvasRatio(filePath: string): {
         : null,
     bySlide,
     method:
-      "Estimated from serialized PPTX a:xfrm box areas; overlapping boxes are not unioned.",
+      "Estimated from the union of serialized PPTX a:xfrm/p:xfrm visual boxes.",
   };
 }
 
@@ -781,7 +834,11 @@ export async function validateBuiltArtifact(
   prompt: string,
   plan: ArtifactPlan,
   filePath: string,
-  diagnostics?: { root: string; jobId: string },
+  diagnostics?: {
+    root?: string;
+    jobId?: string;
+    presentationContentSlides?: number[];
+  },
 ): Promise<ArtifactValidationReceipt> {
   try {
     const buffer = fs.readFileSync(filePath);
@@ -789,6 +846,33 @@ export async function validateBuiltArtifact(
     else if (["document", "analysis", "research"].includes(kind))
       assertDocumentPackage(buffer);
     else if (kind === "website") assertWebsitePackage(filePath);
+
+    if (kind === "presentation") {
+      const ratios = estimatePptxEmptyCanvasRatio(filePath).bySlide;
+      const contentSlides =
+        diagnostics?.presentationContentSlides ??
+        plan.sections.map((_, index) => index + 2);
+      const failures = contentSlides
+        .map((slideNumber) => ({
+          slideNumber,
+          ratio: ratios[slideNumber - 1],
+        }))
+        .filter(
+          (item): item is { slideNumber: number; ratio: number } =>
+            typeof item.ratio === "number" && item.ratio > 0.55,
+        );
+      if (failures.length)
+        throw new ArtifactPipelineError(
+          "BUILD",
+          `Presentation empty-canvas gate failed: ${failures
+            .map(
+              ({ slideNumber, ratio }) =>
+                `slide ${slideNumber} emptyCanvasRatio=${ratio.toFixed(3)}`,
+            )
+            .join(", ")}; maximum is 0.550.`,
+          { ruleOrPart: "pptx-empty-canvas" },
+        );
+    }
 
     let schemaValidator: string | null = null;
     let renderValidator: string | null = null;
@@ -871,6 +955,8 @@ export async function validateBuiltArtifact(
     const classified = asArtifactPipelineError(error, "BUILD", "artifact-build");
     if (
       diagnostics &&
+      diagnostics.root &&
+      diagnostics.jobId &&
       classified.failureClass === "BUILD" &&
       fs.existsSync(filePath)
     ) {

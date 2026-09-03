@@ -229,7 +229,7 @@ function isTransientProviderFailure(response: any): boolean {
 function artifactInstructions(kind: JobKind): string {
   const visualPolicy =
     kind === "presentation"
-      ? " Create 7-11 content sections. At least half of them must have exactly one primary visual. Give at least three sections distinct, concrete imageQuery values for relevant licensed photographs or explanatory scientific/historical illustrations; use a compact 3-7 word search phrase naming the visible subject and setting. Prefer imagery to generic process boxes. Use a chart only for exact values present in the evidence dossier and include its source in sourceNote. Keep visible slide copy concise: normally 2-4 bullets, with no bibliography section because the builder adds source slides."
+      ? " Create 7-14 content sections. At least half of them must have exactly one primary visual. Give at least three sections distinct, concrete imageQuery values for relevant licensed photographs or explanatory scientific/historical illustrations; use a compact 3-7 word search phrase naming the visible subject and setting. Prefer imagery to generic process boxes. Use a chart only for exact values present in the evidence dossier and include its source in sourceNote. Keep visible slide copy concise: normally 2-4 bullets, with no bibliography section because the builder adds source slides."
       : kind === "website"
         ? " Define 3-6 pages with unique lowercase slugs (use index for the home page), assign every section heading to a page, and give at least four sections distinct concrete imageQuery values for relevant documentary photographs. Do not request logos, AI images, text-heavy graphics, or identifiable private people."
         : kind === "research" || kind === "document"
@@ -331,88 +331,6 @@ export function normalizeArtifactPlan(
       record(
         "short_speaker_notes_warning",
         `Speaker notes for '${section.heading}' are shorter than 20 characters; retained as a warning.`,
-      );
-  }
-
-  const limits =
-    kind === "presentation"
-      ? { min: 7, max: 11 }
-      : ["research", "document", "analysis"].includes(kind)
-        ? { min: 5, max: 12 }
-        : { min: 1, max: 30 };
-
-  const combinedLength = (
-    first: ArtifactPlan["sections"][number],
-    second: ArtifactPlan["sections"][number],
-  ) =>
-    first.heading.length +
-    first.body.length +
-    first.bullets.join(" ").length +
-    second.heading.length +
-    second.body.length +
-    second.bullets.join(" ").length;
-
-  while (plan.sections.length > limits.max) {
-    const candidates = plan.sections
-      .slice(0, -1)
-      .map((section, index) => ({
-        index,
-        first: section,
-        second: plan.sections[index + 1]!,
-      }))
-      .filter(({ first, second }) => !first.activity && !second.activity)
-      .sort((a, b) => {
-        const aConflict =
-          sectionVisualCount(a.first) > 0 &&
-          sectionVisualCount(a.second) > 0
-            ? 1
-            : 0;
-        const bConflict =
-          sectionVisualCount(b.first) > 0 &&
-          sectionVisualCount(b.second) > 0
-            ? 1
-            : 0;
-        return (
-          aConflict - bConflict ||
-          combinedLength(a.first, a.second) -
-            combinedLength(b.first, b.second)
-        );
-      });
-    const candidate = candidates[0];
-    if (!candidate) break;
-    const { first, second, index } = candidate;
-    const visualConflict =
-      sectionVisualCount(first) > 0 && sectionVisualCount(second) > 0;
-    const merged: ArtifactPlan["sections"][number] = {
-      ...first,
-      heading: `${first.heading} / ${second.heading}`.slice(0, 180),
-      body: `${first.body}\n\n${second.body}`.slice(0, 8000),
-      bullets: [...first.bullets, ...second.bullets].slice(0, 12),
-      speakerNotes: [first.speakerNotes, second.speakerNotes]
-        .filter(Boolean)
-        .join("\n\n")
-        .slice(0, 2000),
-      requirementIds: [
-        ...new Set([
-          ...first.requirementIds,
-          ...second.requirementIds,
-        ]),
-      ].slice(0, 30),
-      table: first.table ?? second.table,
-      chart: first.chart ?? second.chart,
-      diagram: first.diagram ?? second.diagram,
-      imageQuery: first.imageQuery ?? second.imageQuery,
-      activity: undefined,
-    };
-    plan.sections.splice(index, 2, merged);
-    record(
-      "merge_excess_sections",
-      `Merged adjacent non-activity sections '${first.heading}' and '${second.heading}' to enforce the ${limits.max}-section maximum.`,
-    );
-    if (visualConflict)
-      record(
-        "merge_visual_conflict_warning",
-        `Both merged sections carried primary visuals; retained the first available visual in the merged section.`,
       );
   }
 

@@ -11,12 +11,14 @@ import {
   assertArtifactPlanQuality,
   assertPresentationPackage,
   assertWebsitePackage,
+  estimatePptxEmptyCanvasRatio,
   validateBuiltArtifact,
 } from "../artifact-quality";
 import type { ArtifactPlan } from "../../shared/contracts";
 import type { Config } from "../config";
 import { buildArtifact } from "../builders";
 import {
+  FOUR_CORNERS_LABEL_REPAIR_MESSAGE,
   hasVisibleVisualReference,
   reconcilePresentationPlan,
 } from "../reconcile";
@@ -49,6 +51,69 @@ const config = {
 } satisfies Config;
 fs.mkdirSync(config.artifactDir, { recursive: true });
 afterAll(() => fs.rmSync(artifactRoot, { recursive: true, force: true }));
+
+const EMU_PER_INCH = 914_400;
+
+interface TextShapeBox {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  shrinkFit: boolean;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function textShapeBoxes(xml: string): TextShapeBox[] {
+  return [...xml.matchAll(/<p:sp>([\s\S]*?)<\/p:sp>/g)]
+    .map((match): TextShapeBox | null => {
+      const shape = match[1]!;
+      if (!shape.includes("<p:txBody>")) return null;
+      const transform = shape.match(
+        /<a:xfrm\b[^>]*>[\s\S]*?<a:off\b[^>]*\bx="(-?\d+)"[^>]*\by="(-?\d+)"[^>]*\/>[\s\S]*?<a:ext\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"[^>]*\/>[\s\S]*?<\/a:xfrm>/,
+      );
+      if (!transform) return null;
+      return {
+        text: decodeXml(
+          [...shape.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
+            .map((text) => text[1])
+            .join(" ")
+            .trim(),
+        ),
+        x: Number(transform[1]),
+        y: Number(transform[2]),
+        width: Number(transform[3]),
+        height: Number(transform[4]),
+        shrinkFit: /<a:normAutofit\b/.test(shape),
+      };
+    })
+    .filter((shape): shape is TextShapeBox => Boolean(shape?.text));
+}
+
+function overlappingTextPairs(boxes: TextShapeBox[]): string[][] {
+  const overlaps: string[][] = [];
+  for (let left = 0; left < boxes.length; left++) {
+    for (let right = left + 1; right < boxes.length; right++) {
+      const a = boxes[left]!;
+      const b = boxes[right]!;
+      const overlapX =
+        Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+      const overlapY =
+        Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+      if (overlapX > 1_000 && overlapY > 1_000)
+        overlaps.push([a.text, b.text]);
+    }
+  }
+  return overlaps;
+}
 
 function frenchTeachingPlan(): ArtifactPlan {
   const base = (heading: string, body: string, requirementIds: string[]) => ({
@@ -190,6 +255,33 @@ describe("artifact quality gates", () => {
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).not.toThrow();
   });
 
+  it("rejects generic Four Corners labels with one batched PLAN_CONTENT repair message", () => {
+    for (const labels of [
+      ["Corner A", "Corner B", "Corner C", "Corner D"],
+      ["Choice 1", "Choice 2", "Choice 3", "Choice 4"],
+      ["A", "B", "C", "D"],
+    ]) {
+      const plan = frenchTeachingPlan();
+      plan.sections[4]!.activity!.cornerLabels = labels;
+      let thrown: unknown;
+      try {
+        assertArtifactPlanQuality("presentation", exactPrompt, plan);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(ArtifactPipelineError);
+      expect((thrown as ArtifactPipelineError).failureClass).toBe(
+        "PLAN_CONTENT",
+      );
+      expect((thrown as Error).message).toContain(
+        FOUR_CORNERS_LABEL_REPAIR_MESSAGE,
+      );
+      expect(
+        (thrown as Error).message.match(/Four Corners labels must be/g),
+      ).toHaveLength(1);
+    }
+  });
+
   it("rejects a generic manifest that does not extract the user's prompt", () => {
     const plan = frenchTeachingPlan();
     plan.requirements = [{ id: "R1", text: "Deliver the requested artifact", mandatory: false }];
@@ -301,10 +393,42 @@ describe("artifact quality gates", () => {
       .getEntry("ppt/presentation.xml")!
       .getData()
       .toString("utf8");
+    const slideEntries = zip
+      .getEntries()
+      .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
+      .sort((a, b) =>
+        a.entryName.localeCompare(b.entryName, undefined, { numeric: true }),
+      );
+    const boxesBySlide = slideEntries.map((entry) =>
+      textShapeBoxes(entry.getData().toString("utf8")),
+    );
 
     expect(slideText).toMatch(/Speed Dating/i);
     expect(slideText).toMatch(/Four Corners/i);
     expect(slideText).toMatch(/culture|francophone/i);
+    expect(
+      plan.sections.some((section) => section.heading.includes(" / ")),
+    ).toBe(false);
+    expect(boxesBySlide.flatMap(overlappingTextPairs)).toEqual([]);
+    const speedDatingBoxes = boxesBySlide.find((boxes) =>
+      boxes.some((box) => /Speed Dating/i.test(box.text)),
+    )!;
+    const frameBox = speedDatingBoxes.find((box) =>
+      box.text.includes("D'habitude, je"),
+    )!;
+    expect(frameBox.shrinkFit).toBe(true);
+    expect(frameBox.height / EMU_PER_INCH).toBeGreaterThanOrEqual(
+      (2 * 13 * 1.2) / 72,
+    );
+    const genericStaticText =
+      /^(?:AGENT DÍAZ|VISUAL BRIEF|DIRECTIONS|PART \d+|EVIDENCE TRAIL|\d{2})$/i;
+    expect(
+      boxesBySlide
+        .flat()
+        .filter((box) => !genericStaticText.test(box.text))
+        .filter((box) => !box.shrinkFit)
+        .map((box) => box.text),
+    ).toEqual([]);
     expect(
       zip.getEntries().filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName)),
     ).toHaveLength(9);
@@ -339,7 +463,15 @@ describe("artifact quality gates", () => {
         contentSlides: 7,
         licensedVisuals: 5,
       },
+      layoutFitting: {
+        retried: false,
+        before: null,
+      },
     });
+    const ratios = estimatePptxEmptyCanvasRatio(out.path).bySlide;
+    expect(receipt.presentation.layoutFitting.after).toEqual(ratios);
+    for (let slideNumber = 2; slideNumber <= 8; slideNumber++)
+      expect(ratios[slideNumber - 1]).toBeLessThanOrEqual(0.55);
     expect(receipt.presentation.activityTemplates).toEqual(
       expect.arrayContaining([
         "four-corners-quadrants",
@@ -378,6 +510,66 @@ describe("artifact quality gates", () => {
         path.join(reviewDir, "french-present-tense-regression.pptx"),
       );
     }
+  }, 20_000);
+
+  it("retries a sparse deck once with the same plan and publishes only ratios at or below 0.55", async () => {
+    const plan = frenchTeachingPlan();
+    for (const section of plan.sections) section.imageQuery = undefined;
+    plan.sections[1]!.table!.rows = Array.from(
+      { length: 10 },
+      (_, index) => [
+        `sujet ${index + 1}`,
+        `forme ${index + 1}`,
+        `exemple ${index + 1}`,
+      ],
+    );
+
+    const out = await buildArtifact(
+      config,
+      "presentation",
+      plan,
+      exactPrompt,
+    );
+    const receipt = out.validationReceipt as any;
+    expect(receipt.images).toMatchObject({
+      requested: 0,
+      judgeCalls: 0,
+      placed: 0,
+    });
+    expect(receipt.presentation.layoutFitting).toMatchObject({
+      retried: true,
+    });
+    expect(receipt.presentation.titleCounts.contentSlides).toBe(8);
+    const zip = new AdmZip(out.path);
+    const tableSlideText = zip
+      .getEntries()
+      .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
+      .map((entry) => entry.getData().toString("utf8"))
+      .filter((xml) => xml.includes("Parler au présent ("));
+    expect(tableSlideText).toHaveLength(2);
+    expect(tableSlideText[0]).toContain("sujet 8");
+    expect(tableSlideText[0]).not.toContain("sujet 9");
+    expect(tableSlideText[1]).toContain("sujet 9");
+    expect(tableSlideText[1]).toContain("sujet 10");
+    expect(
+      zip
+        .getEntries()
+        .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
+        .flatMap((entry) =>
+          overlappingTextPairs(
+            textShapeBoxes(entry.getData().toString("utf8")),
+          ),
+        ),
+    ).toEqual([]);
+    expect(
+      receipt.presentation.layoutFitting.before.some(
+        (ratio: number) => ratio > 0.55,
+      ),
+    ).toBe(true);
+    for (let slideNumber = 2; slideNumber <= 9; slideNumber++)
+      expect(
+        receipt.presentation.layoutFitting.after[slideNumber - 1],
+      ).toBeLessThanOrEqual(0.55);
   }, 20_000);
 
   it("rejects a deck that merely mentions Speed Dating without implementing the activity", () => {

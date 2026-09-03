@@ -352,7 +352,7 @@ describe("agent production paths", () => {
     });
   });
 
-  it("lets NORMALIZE own the presentation maximum while keeping a real minimum-content violation", () => {
+  it("keeps up to 14 presentation sections intact and sends larger plans to PLAN_CONTENT repair", () => {
     const format = artifactPlanTextFormat("presentation") as any;
     expect(format.schema.properties.sections).toMatchObject({
       minItems: 1,
@@ -380,14 +380,39 @@ describe("agent production paths", () => {
       pages: undefined,
       sources: [],
     });
-    const twelve = normalizeArtifactPlan(
+    const fourteen = normalizeArtifactPlan(
       "presentation",
-      planWithSections(12),
+      planWithSections(14),
     );
-    expect(twelve.plan.sections).toHaveLength(11);
-    expect(twelve.normalizations).toEqual(
+    expect(fourteen.plan.sections).toHaveLength(14);
+    expect(fourteen.normalizations).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: "merge_excess_sections" }),
+      ]),
+    );
+    expect(
+      fourteen.plan.sections.every(
+        (section) => !section.heading.includes(" / "),
+      ),
+    ).toBe(true);
+    const fifteen = normalizeArtifactPlan(
+      "presentation",
+      planWithSections(15),
+    );
+    expect(fifteen.plan.sections).toHaveLength(15);
+    expect(
+      collectArtifactPlanViolations(
+        "presentation",
+        fifteen.plan,
+        5,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "presentation_sections_excess",
+          mandatory: true,
+          message: expect.stringContaining("received 15"),
+        }),
       ]),
     );
     const six = normalizeArtifactPlan(
@@ -420,7 +445,7 @@ describe("agent production paths", () => {
     ).not.toThrow();
   });
 
-  it("normalizes four computable plan defects with zero plan-repair LLM calls and records them in the receipt", async () => {
+  it("normalizes three computable plan defects with zero plan-repair LLM calls and records them in the receipt", async () => {
     const { config, db } = harness();
     fs.mkdirSync(config.artifactDir, { recursive: true });
     const conversation = db.createConversation(
@@ -571,11 +596,15 @@ describe("agent production paths", () => {
     expect(artifact.receipt?.normalizations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: "dedupe_image_query" }),
-        expect.objectContaining({ code: "merge_excess_sections" }),
         expect.objectContaining({ code: "default_chart_source_note" }),
         expect.objectContaining({
           code: "strip_unknown_requirement_ids",
         }),
+      ]),
+    );
+    expect(artifact.receipt?.normalizations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "merge_excess_sections" }),
       ]),
     );
     db.close();

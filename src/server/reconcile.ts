@@ -15,6 +15,22 @@ export interface ReconciledPresentationPlan {
   reconciliations: PresentationReconciliation[];
 }
 
+const GENERIC_FOUR_CORNERS_LABEL_RE =
+  /^(?:corner|coin|option|choice)\s*[A-D1-4]$/i;
+
+export const FOUR_CORNERS_LABEL_REPAIR_MESSAGE =
+  "Four Corners labels must be the four choices themselves (e.g. the four verb forms), not Corner A–D.";
+
+export function isGenericFourCornersLabel(value: string): boolean {
+  const label = value.trim();
+  if (GENERIC_FOUR_CORNERS_LABEL_RE.test(label)) return true;
+  const meaningfulWords =
+    label
+      .normalize("NFKD")
+      .match(/[\p{L}\p{N}]+(?:['’’-][\p{L}\p{N}]+)*/gu) ?? [];
+  return meaningfulWords.length < 2;
+}
+
 function splitSentences(value: string): string[] {
   return value
     .split(/(?<=[.!?;:])\s+|\n+/u)

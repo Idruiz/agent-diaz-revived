@@ -268,3 +268,28 @@ REASON: The governing authorization explicitly forbids modifying or pushing `mai
 - Checkpoint-3 package uploaded.
 - Branch remains fast-forward-only from `main` with zero commits behind.
 - No merge, `main` update, Render deployment, or Render configuration change.
+
+## Step 10 — Deterministic presentation layout fitting
+DECISION: Route every model-authored PowerPoint text value through one `fit: "shrink"` helper whose height is estimated from width, font size, character count, explicit line breaks, line height, and margins.
+REASON: Model text must never enter an unbounded fixed-height text box, while deterministic estimation keeps layout fitting independent of additional LLM calls.
+
+DECISION: Give Speed Dating separate badge and directions rows, size its two-to-six prompt grid from the prompt count, and compute the sentence-frame band from frame count and line height.
+REASON: The production regression showed the badge colliding with directions and a clipped frame band.
+
+DECISION: Expand charts and native diagrams across the 0.75–12.6 by 1.5–6.8 inch content area; render diagram labels at 20 points; and split tables after eight data rows while selecting 14–18 point table text and at least 60% content-height coverage.
+REASON: Structured visuals should use the available canvas instead of remaining as small islands in a large slide.
+
+DECISION: Compute `emptyCanvasRatio` from the geometric union of serialized `a:xfrm` and `p:xfrm` boxes, fail content slides above 0.55 as `BUILD`, and retry exactly once with the same plan, assets, and deterministic scaled layout.
+REASON: Summing overlapping rectangles understated whitespace, while a same-plan retry prevents both sparse publication and unnecessary plan-repair/model calls.
+
+DECISION: Preserve both pre-retry and final per-slide ratios in `receipt.presentation.layoutFitting` and keep title/source slides out of the content-slide gate.
+REASON: The receipt must prove the actual corrective effect without misclassifying deliberately sparse cover and evidence-trail slides.
+
+DECISION: Remove section merging, accept at most 14 presentation sections, and classify counts above 14 as one mandatory `PLAN_CONTENT` violation containing the observed count.
+REASON: Merging changed headings into synthetic `" / "` titles and could discard the second section's visual semantics.
+
+DECISION: Reject generic or one-token Four Corners labels through the RECONCILE-owned predicate and the exact single repair message required by the plan-quality gate.
+REASON: Corner A–D describes room positions rather than the four audience-facing choices students must select.
+
+DECISION: Do not substitute the existing hand-authored French golden plan for the requested real-provider job fixture identified by artifact SHA prefix `95593b1b`.
+REASON: The exact job-backed plan is authoritative for Step 10's before/after comparison and is not present in Git history, the handover, or the public job response; exporting it requires authenticated access to the deployed Render data/provider record.
