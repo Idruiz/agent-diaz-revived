@@ -55,11 +55,7 @@ export function reconcilePresentationPlan(
     const imageAvailable =
       Boolean(requestedImage) &&
       placedImageQueries.has(requestedImage!);
-    const hasOtherVisual = Boolean(
-      section.chart || section.table || section.diagram,
-    );
-
-    if (imageAvailable || hasOtherVisual) return;
+    if (imageAvailable) return;
 
     const moved: string[] = [];
     const body = reconcileVisibleText(section.body);
