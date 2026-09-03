@@ -1714,7 +1714,8 @@ export class AgentRunner {
         });
         if (!this.db.listArtifacts(jobId).length) {
           const minVisuals = getSkillForKind(job.kind).minVisuals;
-          let plan: any;
+          let plan: ArtifactPlan;
+          let planNormalizations: ArtifactNormalizationReceipt[] = [];
           let repairAttempt = 0;
           let buildAttempt = 0;
 
@@ -1723,28 +1724,34 @@ export class AgentRunner {
 
             for (;;) {
               try {
-                plan = parseArtifactPlan(
+                const parsedPlan = parseArtifactPlan(
                   job.kind,
                   output,
                   minVisuals,
                   job.prompt,
+                  repairAttempt >= 2,
                 );
+                plan = parsedPlan.plan;
+                planNormalizations = parsedPlan.normalizations;
                 if (repairAttempt > 0)
                   log("info", "artifact.plan_repaired", {
                     jobId,
                     kind: job.kind,
-                    attempt: repairAttempt,
+                    repairCalls: repairAttempt,
                     sectionCount: plan.sections.length,
+                    normalizations: planNormalizations.length,
                   });
                 break;
               } catch (planError) {
-                repairAttempt++;
                 const validationError = errorMessage(planError);
-                const planFailure = new ArtifactPipelineError(
-                  "PLAN_CONTENT",
-                  validationError,
-                  { ruleOrPart: "plan-validation" },
-                );
+                const planFailure =
+                  planError instanceof ArtifactPipelineError
+                    ? planError
+                    : new ArtifactPipelineError(
+                        "PLAN_CONTENT",
+                        validationError,
+                        { ruleOrPart: "plan-validation" },
+                      );
                 const failureRecord = recordArtifactFailure(
                   planFailure,
                   output,
@@ -1754,7 +1761,7 @@ export class AgentRunner {
                 log("warn", "artifact.plan_validation_failed", {
                   jobId,
                   kind: job.kind,
-                  attempt: repairAttempt,
+                  repairCalls: repairAttempt,
                   sectionCount: planSectionCount(output),
                   fingerprint: failureRecord.fingerprint,
                   duplicateCount: failureRecord.duplicateCount,
@@ -1766,15 +1773,24 @@ export class AgentRunner {
                     `Repeated identical plan-validation fingerprint ${failureRecord.fingerprint}; stopping identical repair loop`,
                     { ruleOrPart: "plan-validation" },
                   );
+                if (repairAttempt >= 2)
+                  throw planFailure;
+
+                repairAttempt++;
                 this.db.updateJob(jobId, {
                   status: "running",
                   progress: Math.min(91, 83 + repairAttempt),
                   error: null,
-                  message: `Structuring artifact: validation found an issue; repairing automatically (attempt ${repairAttempt})`,
+                  message: `Structuring artifact: batched content repair ${repairAttempt} of 2`,
                 });
                 const parentResponseId = response.id as string;
                 if (repairAttempt > 1)
-                  await sleep(Math.min(12_000, 800 * 2 ** Math.min(repairAttempt - 2, 4)));
+                  await sleep(
+                    Math.min(
+                      12_000,
+                      800 * 2 ** Math.min(repairAttempt - 2, 4),
+                    ),
+                  );
                 if (this.db.getJob(jobId)?.status === "cancelled") return;
                 let repairResponse = await createPlanRepairResponse(
                   parentResponseId,
@@ -1783,7 +1799,7 @@ export class AgentRunner {
                 this.db.updateJob(jobId, {
                   providerResponseId: repairResponse.id,
                   error: null,
-                  message: `Structuring artifact: repair attempt ${repairAttempt} started`,
+                  message: `Structuring artifact: repair call ${repairAttempt} of 2 started`,
                 });
                 repairResponse = await this.awaitBackgroundResponse(
                   jobId,
@@ -1804,7 +1820,7 @@ export class AgentRunner {
                   log("warn", "artifact.plan_repair_empty", {
                     jobId,
                     kind: job.kind,
-                    attempt: repairAttempt,
+                    repairCalls: repairAttempt,
                   });
                   output = "{}";
                 }
@@ -1843,6 +1859,9 @@ export class AgentRunner {
                   ...latestRunState.attempts,
                 ];
               }
+              file.validationReceipt.normalizations = [
+                ...planNormalizations,
+              ];
               const id = crypto.randomUUID();
               this.db.addArtifact({
                 id,
