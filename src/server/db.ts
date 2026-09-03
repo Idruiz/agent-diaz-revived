@@ -13,7 +13,17 @@ import type {
   Persona,
 } from "../shared/contracts.js";
 import { log } from "./log.js";
-import type { ArtifactValidationReceipt } from "./artifact-quality.js";
+import type {
+  ArtifactAttemptReceipt,
+  ArtifactValidationReceipt,
+} from "./artifact-quality.js";
+
+export interface ArtifactRunState {
+  startedAt: string;
+  llmCalls: number;
+  maxLlmCalls: number;
+  attempts: ArtifactAttemptReceipt[];
+}
 
 export interface Db {
   raw: Database.Database;
@@ -42,6 +52,8 @@ export interface Db {
     > & { providerResponseId?: string | null },
   ): void;
   getProviderResponseId(id: string): string | null;
+  getArtifactRunState(id: string): ArtifactRunState | null;
+  setArtifactRunState(id: string, state: ArtifactRunState): void;
   addArtifact(row: {
     id: string;
     jobId: string;
@@ -277,6 +289,7 @@ export function openDatabase(config: Config): Db {
   ensureColumn("messages", "error", "error TEXT");
   ensureColumn("messages", "persona", "persona TEXT");
   ensureColumn("artifacts", "receipt_json", "receipt_json TEXT");
+  ensureColumn("jobs", "artifact_run_state_json", "artifact_run_state_json TEXT");
   const leakedVoiceTurns = raw
     .prepare(
       `SELECT rowid,id,conversation_id conversationId,created_at createdAt
@@ -449,6 +462,26 @@ export function openDatabase(config: Config): Db {
           .prepare("SELECT provider_response_id id FROM jobs WHERE id=?")
           .get(id) as any
       )?.id ?? null,
+    getArtifactRunState: (id) => {
+      const row = raw
+        .prepare(
+          "SELECT artifact_run_state_json state FROM jobs WHERE id=?",
+        )
+        .get(id) as { state: string | null } | undefined;
+      if (!row?.state) return null;
+      try {
+        return JSON.parse(row.state) as ArtifactRunState;
+      } catch {
+        return null;
+      }
+    },
+    setArtifactRunState: (id, state) => {
+      raw
+        .prepare(
+          "UPDATE jobs SET artifact_run_state_json=?,updated_at=? WHERE id=?",
+        )
+        .run(JSON.stringify(state), now(), id);
+    },
     addArtifact: (r) =>
       raw
         .prepare(
