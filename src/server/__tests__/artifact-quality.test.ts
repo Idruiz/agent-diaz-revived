@@ -486,11 +486,45 @@ describe("artifact quality gates", () => {
       path.join(process.cwd(), "src/server/artifact-quality.ts"),
       "utf8",
     );
+    const rewriteOffenders = (
+      fileName: string,
+      sourceText: string,
+    ): string[] => {
+      const sourceFile = ts.createSourceFile(
+        fileName,
+        sourceText,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const offenders: string[] = [];
+      const visit = (node: ts.Node): void => {
+        if (ts.isFunctionLike(node)) {
+          const functionText = node.getText(sourceFile);
+          if (
+            functionText.includes("word/document.xml") &&
+            /\.replace\s*\(/.test(functionText)
+          )
+            offenders.push(
+              `${fileName}:${
+                sourceFile.getLineAndCharacterOfPosition(
+                  node.getStart(sourceFile),
+                ).line + 1
+              }`,
+            );
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      return offenders;
+    };
+
     expect(buildersSource).not.toContain("repairDocumentBuffer");
     expect(qualitySource).not.toContain("repairDocumentBuffer");
-    expect(qualitySource).not.toMatch(
-      /word\/document\.xml[\s\S]{0,800}\.replace\s*\(/,
-    );
+    expect([
+      ...rewriteOffenders("builders.ts", buildersSource),
+      ...rewriteOffenders("artifact-quality.ts", qualitySource),
+    ]).toEqual([]);
   });
 
   it("keeps validation as a repair signal and never quarantines an invalid artifact", async () => {
