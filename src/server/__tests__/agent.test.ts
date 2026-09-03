@@ -1080,7 +1080,7 @@ describe("agent production paths", () => {
     db.close();
   }, 20_000);
 
-  it("enforces the six-call artifact LLM budget across repeated plan repairs", async () => {
+  it("bounds plan repair at two calls while retaining the six-call global artifact budget", async () => {
     const { config, db } = harness();
     const conversation = db.createConversation(
       crypto.randomUUID(),
@@ -1140,15 +1140,17 @@ describe("agent production paths", () => {
 
     await (runner as any).run(job.id);
 
-    expect(create).toHaveBeenCalledTimes(6);
+    expect(create).toHaveBeenCalledTimes(4);
     expect(db.getJob(job.id)).toMatchObject({
       status: "failed",
       message: "Artifact stopped: plan_content",
     });
-    expect(db.getJob(job.id)?.error).toMatch(/LLM-call budget exhausted/);
+    expect(db.getJob(job.id)?.error).toMatch(
+      /Presentation needs at least 7 content sections/,
+    );
     const state = db.getArtifactRunState(job.id);
-    expect(state).toMatchObject({ llmCalls: 6, maxLlmCalls: 6 });
-    expect(state?.attempts.length).toBeGreaterThanOrEqual(4);
+    expect(state).toMatchObject({ llmCalls: 4, maxLlmCalls: 6 });
+    expect(state?.attempts.length).toBeGreaterThanOrEqual(3);
     db.close();
   }, 20_000);
 
@@ -1821,21 +1823,21 @@ describe("agent production paths", () => {
     expect(firstRepairRequest.tools).toBeUndefined();
     expect(firstRepairRequest.previous_response_id).toBe("resp_invalid_plan");
     expect(firstRepairRequest.input).toContain(
-      "Presentation plan validation failed: expected 7-11 content sections",
+      "[presentation_sections_missing] Presentation needs at least 7 content sections",
     );
     expect(firstRepairRequest.instructions).toContain(
       "Do not research again, do not use tools",
     );
     expect(firstRepairRequest.text.format.schema.properties.sections).toMatchObject({
-      minItems: 7,
-      maxItems: 11,
+      minItems: 1,
+      maxItems: 30,
     });
     expect(secondRepairRequest.tools).toBeUndefined();
     expect(secondRepairRequest.previous_response_id).toBe(
       "resp_still_invalid_plan",
     );
     expect(secondRepairRequest.input).toContain(
-      "Presentation plan validation failed: expected 7-11 content sections",
+      "[presentation_sections_missing] Presentation needs at least 7 content sections",
     );
     expect(db.getJob(job.id)).toMatchObject({
       status: "completed",
