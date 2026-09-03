@@ -39,6 +39,49 @@ export interface ArtifactValidationFinding {
   incident: string;
 }
 
+export type ArtifactFailureClass =
+  | "PLAN_CONTENT"
+  | "PLAN_NORMALIZABLE"
+  | "ASSET"
+  | "BUILD"
+  | "INFRA";
+
+export interface ArtifactAttemptReceipt {
+  failureClass: ArtifactFailureClass;
+  fingerprint: string;
+  ruleOrPart: string;
+  planSha: string;
+  packageSha: string | null;
+  strategy: string;
+  diagnosticPath: string | null;
+  at: string;
+}
+
+export class ArtifactPipelineError extends Error {
+  readonly failureClass: ArtifactFailureClass;
+  readonly ruleOrPart: string;
+  readonly packageSha: string | null;
+  diagnosticPath: string | null;
+
+  constructor(
+    failureClass: ArtifactFailureClass,
+    message: string,
+    options: {
+      ruleOrPart?: string;
+      packageSha?: string | null;
+      diagnosticPath?: string | null;
+      cause?: unknown;
+    } = {},
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "ArtifactPipelineError";
+    this.failureClass = failureClass;
+    this.ruleOrPart = options.ruleOrPart ?? "unknown";
+    this.packageSha = options.packageSha ?? null;
+    this.diagnosticPath = options.diagnosticPath ?? null;
+  }
+}
+
 export interface ArtifactValidationReceipt {
   kind: JobKind;
   artifactSha256: string;
@@ -50,6 +93,23 @@ export interface ArtifactValidationReceipt {
   buildSha: string;
   generatorVersion: string;
   knownBenignFindings: ArtifactValidationFinding[];
+  llmCalls: number;
+  maxLlmCalls: number;
+  wallTimeMs: number;
+  attempts: ArtifactAttemptReceipt[];
+}
+
+export function asArtifactPipelineError(
+  error: unknown,
+  fallbackClass: ArtifactFailureClass = "BUILD",
+  fallbackPart = "unknown",
+): ArtifactPipelineError {
+  if (error instanceof ArtifactPipelineError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return new ArtifactPipelineError(fallbackClass, message, {
+    ruleOrPart: fallbackPart,
+    cause: error,
+  });
 }
 
 function currentBuildSha(): string {
@@ -338,23 +398,67 @@ async function renderOfficeArtifact(filePath: string): Promise<string | null> {
   const probe = await runProcess(command, ["--version"], 15_000).catch(() => null);
   if (!probe || probe.code !== 0) {
     if (process.env.NODE_ENV === "production")
-      throw new Error("Artifact render validation failed: LibreOffice is unavailable in production");
-    log("warn", "artifact.render_skipped", { filePath: path.basename(filePath), reason: "soffice unavailable outside production" });
+      throw new ArtifactPipelineError(
+        "INFRA",
+        "Artifact render validation blocked: LibreOffice is unavailable in production",
+        { ruleOrPart: "soffice-probe" },
+      );
+    log("warn", "artifact.render_skipped", {
+      filePath: path.basename(filePath),
+      reason: "soffice unavailable outside production",
+    });
     return null;
   }
-  const version = (probe.stdout || probe.stderr).trim().split(/\r?\n/)[0] || "LibreOffice";
+  const version =
+    (probe.stdout || probe.stderr).trim().split(/\r?\n/)[0] || "LibreOffice";
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-render-"));
   try {
     const profileUrl = pathToFileURL(path.join(tempDir, "profile")).href;
-    const result = await runProcess(command, [`-env:UserInstallation=${profileUrl}`, "--headless", "--convert-to", "pdf", "--outdir", tempDir, filePath], 90_000);
+    let result: { code: number; stdout: string; stderr: string };
+    try {
+      result = await runProcess(
+        command,
+        [
+          `-env:UserInstallation=${profileUrl}`,
+          "--headless",
+          "--convert-to",
+          "pdf",
+          "--outdir",
+          tempDir,
+          filePath,
+        ],
+        90_000,
+      );
+    } catch (error) {
+      throw new ArtifactPipelineError(
+        "INFRA",
+        `Artifact render validation blocked: ${error instanceof Error ? error.message : String(error)}`,
+        { ruleOrPart: "soffice-convert", cause: error },
+      );
+    }
     if (result.code !== 0)
-      throw new Error(`LibreOffice render failed: ${result.stderr || result.stdout}`);
+      throw new ArtifactPipelineError(
+        "BUILD",
+        `LibreOffice render rejected the artifact: ${result.stderr || result.stdout}`,
+        { ruleOrPart: "libreoffice-render" },
+      );
     const pdfPath = path.join(tempDir, `${path.parse(filePath).name}.pdf`);
     if (!fs.existsSync(pdfPath))
-      throw new Error("LibreOffice render failed: no PDF was produced");
+      throw new ArtifactPipelineError(
+        "INFRA",
+        "Artifact render validation blocked: LibreOffice produced no PDF",
+        { ruleOrPart: "soffice-output" },
+      );
     const pdf = fs.readFileSync(pdfPath);
-    if (pdf.length < 5_000 || pdf.subarray(0, 5).toString("ascii") !== "%PDF-")
-      throw new Error("LibreOffice render failed: output PDF is invalid or unexpectedly small");
+    if (
+      pdf.length < 5_000 ||
+      pdf.subarray(0, 5).toString("ascii") !== "%PDF-"
+    )
+      throw new ArtifactPipelineError(
+        "INFRA",
+        "Artifact render validation blocked: LibreOffice output is invalid or unexpectedly small",
+        { ruleOrPart: "soffice-output" },
+      );
     return version;
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -380,18 +484,34 @@ export async function validateBuiltArtifact(
   prompt: string,
   plan: ArtifactPlan,
   filePath: string,
+  diagnostics?: { root: string; jobId: string },
 ): Promise<ArtifactValidationReceipt> {
   try {
     const buffer = fs.readFileSync(filePath);
     if (kind === "presentation") assertPresentationPackage(buffer);
-    else if (["document", "analysis", "research"].includes(kind)) assertDocumentPackage(buffer);
+    else if (["document", "analysis", "research"].includes(kind))
+      assertDocumentPackage(buffer);
     else if (kind === "website") assertWebsitePackage(filePath);
 
     let schemaValidator: string | null = null;
     let renderValidator: string | null = null;
     const knownBenignFindings: ArtifactValidationFinding[] = [];
-    if (kind === "presentation" || ["document", "analysis", "research"].includes(kind)) {
-      const validation = await validateFile(filePath, { officeVersion: "Microsoft365" });
+    if (
+      kind === "presentation" ||
+      ["document", "analysis", "research"].includes(kind)
+    ) {
+      let validation: Awaited<ReturnType<typeof validateFile>>;
+      try {
+        validation = await validateFile(filePath, {
+          officeVersion: "Microsoft365",
+        });
+      } catch (error) {
+        throw new ArtifactPipelineError(
+          "INFRA",
+          `OOXML validator execution failed: ${error instanceof Error ? error.message : String(error)}`,
+          { ruleOrPart: "ooxml-validator", cause: error },
+        );
+      }
       schemaValidator = SCHEMA_VALIDATOR;
       const blockingErrors = [];
       for (const error of validation.errors ?? []) {
@@ -401,12 +521,20 @@ export async function validateBuiltArtifact(
       }
       if (blockingErrors.length) {
         const detail = blockingErrors
-          .map((error: any) =>
-            `${error.path ?? "package"}: ${error.description ?? error.id ?? "schema error"}`,
+          .map(
+            (error: any) =>
+              `${error.path ?? "package"}: ${error.description ?? error.id ?? "schema error"}`,
           )
           .join("; ");
-        throw new Error(
+        throw new ArtifactPipelineError(
+          "BUILD",
           `Microsoft 365 OOXML validation failed: ${detail || "unknown schema error"}`,
+          {
+            ruleOrPart:
+              blockingErrors[0]?.path ??
+              blockingErrors[0]?.xPath ??
+              "ooxml-schema",
+          },
         );
       }
       renderValidator = await renderOfficeArtifact(filePath);
@@ -430,17 +558,60 @@ export async function validateBuiltArtifact(
             ? DOCX_GENERATOR
             : "Agent Díaz deterministic HTML ZIP",
       knownBenignFindings,
+      llmCalls: 0,
+      maxLlmCalls: 0,
+      wallTimeMs: 0,
+      attempts: [],
     };
     log("info", "artifact.quality_passed", { ...receipt });
     return receipt;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (fs.existsSync(filePath)) fs.rmSync(filePath, { force: true });
-    log("warn", "artifact.validation_failed_retriable", {
+    const classified = asArtifactPipelineError(error, "BUILD", "artifact-build");
+    if (
+      diagnostics &&
+      classified.failureClass === "BUILD" &&
+      fs.existsSync(filePath)
+    ) {
+      const bytes = fs.readFileSync(filePath);
+      const packageSha = crypto.createHash("sha256").update(bytes).digest("hex");
+      const dir = path.join(diagnostics.root, diagnostics.jobId);
+      fs.mkdirSync(dir, { recursive: true });
+      const diagnosticName = `${Date.now()}-${kind}-${packageSha.slice(0, 12)}${path.extname(filePath)}`;
+      const diagnosticPath = path.join(dir, diagnosticName);
+      fs.copyFileSync(filePath, diagnosticPath);
+      fs.writeFileSync(
+        `${diagnosticPath}.json`,
+        JSON.stringify(
+          {
+            kind,
+            packageSha,
+            failureClass: classified.failureClass,
+            ruleOrPart: classified.ruleOrPart,
+            error: classified.message,
+            sourceName: path.basename(filePath),
+            capturedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+      );
+      classified.diagnosticPath = diagnosticPath;
+      log("warn", "artifact.diagnostic_preserved", {
+        jobId: diagnostics.jobId,
+        kind,
+        packageSha,
+        diagnosticPath,
+        reason: classified.message,
+      });
+    }
+    log("warn", "artifact.validation_failed", {
       file: path.basename(filePath),
       kind,
-      reason: message,
+      failureClass: classified.failureClass,
+      ruleOrPart: classified.ruleOrPart,
+      diagnosticPath: classified.diagnosticPath,
+      reason: classified.message,
     });
-    throw new Error(`Artifact validation failed and requires regeneration: ${message}`);
+    throw classified;
   }
 }
