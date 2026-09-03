@@ -1,0 +1,419 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import AdmZip from "adm-zip";
+import sharp from "sharp";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgentRunner, modelProfileFor } from "../openai-agent";
+import { openDatabase } from "../db";
+import { setImageJudgeProviderForTests } from "../image-judge";
+import type { Config } from "../config";
+import {
+  artifactGoldenCases,
+  type ArtifactGoldenCase,
+} from "./fixtures/artifact-golden-plans";
+
+const roots: string[] = [];
+
+function harness() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-golden-"));
+  roots.push(root);
+  const config = {
+    root,
+    storageRoot: root,
+    dataDir: path.join(root, "data"),
+    artifactDir: path.join(root, "artifacts"),
+    uploadDir: path.join(root, "uploads"),
+    NODE_ENV: "test",
+    PORT: 3000,
+    BASE_URL: "http://localhost:3000",
+    OPENAI_API_KEY: crypto.randomUUID(),
+    ADMIN_PASSWORD: crypto.randomUUID(),
+    OPENAI_MODEL: "gpt-5.6",
+    OPENAI_FAST_MODEL: "gpt-5.6-terra",
+    OPENAI_REALTIME_MODEL: "gpt-realtime-2.1-mini",
+    STORAGE_DIR: "",
+    SESSION_DAYS: 7,
+    MAX_UPLOAD_MB: 25,
+    IMAGE_PROVIDER: "wikimedia",
+    MCP_SERVER_URL: "",
+    MCP_SERVER_LABEL: "workspace",
+    MCP_AUTHORIZATION: "",
+  } satisfies Config;
+  fs.mkdirSync(config.artifactDir, { recursive: true });
+  fs.mkdirSync(config.uploadDir, { recursive: true });
+  return { config, db: openDatabase(config) };
+}
+
+function sourceText(plan: ArtifactGoldenCase["plan"]): string {
+  return plan.sources
+    .map((source) => `${source.title}: ${source.url}`)
+    .join("\n");
+}
+
+afterEach(() => {
+  setImageJudgeProviderForTests(null);
+  vi.restoreAllMocks();
+  for (const root of roots.splice(0))
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe("recorded artifact golden runs", () => {
+  it("runs French deck, Spanish culture document, CSV analysis, and three-page website through AgentRunner with honest receipts", async () => {
+    const imageBytes = await sharp({
+      create: {
+        width: 1200,
+        height: 800,
+        channels: 3,
+        background: "#2f739c",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const imageFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("commons.wikimedia.org/w/api.php")) {
+          const pages = Object.fromEntries(
+            Array.from({ length: 4 }, (_, index) => {
+              const id = 501 + index;
+              return [
+                id,
+                {
+                  pageid: id,
+                  title: `Golden topical image ${index + 1}`,
+                  categories: [
+                    { title: "Category:Education" },
+                    { title: "Category:Everyday life" },
+                  ],
+                  imageinfo: [
+                    {
+                      thumburl:
+                        "https://images.example.test/golden-shared.jpg",
+                      descriptionurl:
+                        `https://commons.wikimedia.org/wiki/File:Golden_topical_${index + 1}.jpg`,
+                      width: 1200,
+                      height: 800,
+                      extmetadata: {
+                        ObjectName: {
+                          value: `Golden topical image ${index + 1}`,
+                        },
+                        ImageDescription: {
+                          value:
+                            "A classroom-suitable documentary scene in the requested place and cultural context.",
+                        },
+                        Artist: {
+                          value: "Golden fixture photographer",
+                        },
+                        LicenseShortName: { value: "CC BY 4.0" },
+                      },
+                    },
+                  ],
+                },
+              ];
+            }),
+          );
+          return new Response(JSON.stringify({ query: { pages } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url === "https://images.example.test/golden-shared.jpg")
+          return new Response(imageBytes, {
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+          });
+        throw new Error(`Unexpected golden fetch: ${url}`);
+      });
+
+    const judge = vi.fn(async (sections: any[]) =>
+      sections.map((section) => ({
+        sectionIndex: section.sectionIndex,
+        chosenCandidate: section.candidates[0]?.id ?? null,
+        reason:
+          "The candidate metadata establishes the requested place, subject, and classroom suitability.",
+        fallbackQueries: [
+          section.heading,
+          section.query,
+        ] as [string, string],
+      })),
+    );
+    setImageJudgeProviderForTests(judge);
+
+    const completed: Array<{
+      golden: ArtifactGoldenCase;
+      receipt: any;
+      artifactPath: string;
+      providerCalls: number;
+    }> = [];
+
+    try {
+      for (const golden of artifactGoldenCases) {
+        const { config, db } = harness();
+        const conversation = db.createConversation(
+          crypto.randomUUID(),
+          `Golden ${golden.id}`,
+        );
+
+        let fileIds: string[] = [];
+        if (golden.kind === "analysis") {
+          const uploadId = crypto.randomUUID();
+          const csvPath = path.join(
+            config.uploadDir,
+            `${golden.id}.csv`,
+          );
+          fs.writeFileSync(csvPath, golden.csv ?? "");
+          db.addUpload({
+            id: uploadId,
+            name: `${golden.id}.csv`,
+            mime: "text/csv",
+            size: fs.statSync(csvPath).size,
+            path: csvPath,
+            openaiFileId: `file_${golden.id}`,
+          });
+          fileIds = [uploadId];
+        }
+
+        const job = db.createJob({
+          id: crypto.randomUUID(),
+          kind: golden.kind,
+          prompt: golden.prompt,
+          conversationId: conversation.id,
+          fileIds,
+          ...modelProfileFor("balanced"),
+        });
+
+        const create = vi.fn(async (request: any) =>
+          request.tools?.length
+            ? {
+                id: `resp_${golden.id}_evidence`,
+                status: "completed",
+                output_text: [
+                  "Recorded golden evidence dossier.",
+                  sourceText(golden.plan),
+                ].join("\n"),
+                output: [],
+              }
+            : {
+                id: `resp_${golden.id}_structure`,
+                status: "completed",
+                output_text: JSON.stringify(golden.plan),
+                output: [],
+              },
+        );
+        const runner = new AgentRunner(config, db);
+        (runner as any).client = {
+          responses: { create, retrieve: vi.fn() },
+        };
+
+        await (runner as any).run(job.id);
+
+        expect(create).toHaveBeenCalledTimes(2);
+        expect(db.getJob(job.id)).toMatchObject({
+          status: "completed",
+          progress: 100,
+          error: null,
+        });
+
+        const artifacts = db.listArtifacts(job.id);
+        expect(artifacts).toHaveLength(1);
+        const artifact = artifacts[0]!;
+        const artifactPath = path.join(config.artifactDir, artifact.name);
+        expect(fs.existsSync(artifactPath)).toBe(true);
+
+        const receipt = artifact.receipt as any;
+        expect(receipt).toMatchObject({
+          powerPointDesktopValidated: false,
+          wordDesktopValidated: false,
+          browserValidated: false,
+          attempts: [],
+          normalizations: [],
+          scores: {
+            layoutVariety: {
+              score: expect.any(Number),
+              distinctTemplates: expect.any(Number),
+              contentSections: golden.plan.sections.length,
+            },
+            emptyCanvasRatio: {
+              bySlide: expect.any(Array),
+              method: expect.any(String),
+            },
+            notesCoverage: {
+              score: expect.any(Number),
+              contentSections: golden.plan.sections.length,
+            },
+            sourceTopicality: {
+              score: null,
+              status: "pending_qualitative_review",
+            },
+          },
+        });
+        expect(receipt.scores.layoutVariety.score).toBeGreaterThanOrEqual(0);
+        expect(receipt.scores.layoutVariety.score).toBeLessThanOrEqual(1);
+        expect(receipt.scores.notesCoverage.score).toBeGreaterThanOrEqual(0);
+        expect(receipt.scores.notesCoverage.score).toBeLessThanOrEqual(1);
+
+        const expectedImages = golden.plan.sections.filter(
+          (section) => section.imageQuery,
+        ).length;
+        expect(receipt.images).toMatchObject({
+          requested: expectedImages,
+          fetched: expectedImages,
+          placed: expectedImages,
+        });
+        expect(receipt.images.fetched).toBe(receipt.images.placed);
+        expect(receipt.llmCalls).toBe(expectedImages > 0 ? 3 : 2);
+        expect(receipt.maxLlmCalls).toBe(6);
+
+        completed.push({
+          golden,
+          receipt,
+          artifactPath,
+          providerCalls: create.mock.calls.length,
+        });
+        db.close();
+      }
+    } finally {
+      imageFetch.mockRestore();
+    }
+
+    expect(completed).toHaveLength(4);
+    expect(judge).toHaveBeenCalledTimes(3);
+
+    const french = completed.find(
+      (entry) => entry.golden.id === "french-present-tense",
+    )!;
+    expect(french.receipt.presentation).toMatchObject({
+      placedAssets: 6,
+      reconciliations: [],
+      titleCounts: {
+        contentSlides: 7,
+        licensedVisuals: 6,
+      },
+    });
+    expect(french.receipt.presentation.activityTemplates).toEqual(
+      expect.arrayContaining([
+        "four-corners-quadrants",
+        "speed-dating-rotation",
+        "independent-checklist",
+      ]),
+    );
+    expect(
+      french.receipt.scores.emptyCanvasRatio.bySlide.length,
+    ).toBeGreaterThanOrEqual(8);
+    expect(
+      french.receipt.scores.emptyCanvasRatio.average,
+    ).toEqual(expect.any(Number));
+
+    const frenchZip = new AdmZip(french.artifactPath);
+    const frenchSlideText = frenchZip
+      .getEntries()
+      .filter((entry) =>
+        /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName),
+      )
+      .map((entry) => entry.getData().toString("utf8"))
+      .join("\n");
+    expect(frenchSlideText).toContain("Speed Dating en français");
+    expect(frenchSlideText).toContain(
+      "Four Corners : Qu’est-ce que tu préfères ?",
+    );
+    expect(frenchSlideText).toContain("7 ideas · 6 licensed visuals");
+
+    const spanish = completed.find(
+      (entry) => entry.golden.id === "spanish-culture-document",
+    )!;
+    expect(spanish.receipt.document).toEqual({
+      activitiesRendered: 1,
+      activityTypes: ["discussion"],
+      truncations: [],
+    });
+    const spanishXml = new AdmZip(spanish.artifactPath)
+      .getEntry("word/document.xml")!
+      .getData()
+      .toString("utf8");
+    for (const expected of [
+      "Conversación cultural",
+      "Elige un ejemplo del documento.",
+      "¿Qué ejemplo te parece más interesante?",
+      "En el documento, ___.",
+    ])
+      expect(spanishXml).toContain(expected);
+
+    const analysis = completed.find(
+      (entry) => entry.golden.id === "csv-analysis-report",
+    )!;
+    expect(analysis.receipt.images).toMatchObject({
+      requested: 0,
+      fetched: 0,
+      placed: 0,
+      judgeCalls: 0,
+    });
+    expect(analysis.receipt.document.truncations).toEqual([]);
+    const analysisXml = new AdmZip(analysis.artifactPath)
+      .getEntry("word/document.xml")!
+      .getData()
+      .toString("utf8");
+    expect(analysisXml).toContain("Monthly values");
+    expect(analysisXml).toContain("Jan");
+    expect(analysisXml).toContain("24");
+
+    const website = completed.find(
+      (entry) => entry.golden.id === "three-page-website",
+    )!;
+    expect(website.receipt.website).toMatchObject({
+      plannedPages: ["index", "examples", "discussion"],
+      renderedPages: 3,
+      sectionAssignments: 5,
+      uniqueImageFiles: 1,
+      sharedStylesheet: "assets/styles.css",
+      brokenInternalResources: 0,
+    });
+    const websiteZip = new AdmZip(website.artifactPath);
+    const websiteNames = websiteZip
+      .getEntries()
+      .map((entry) => entry.entryName);
+    for (const expected of [
+      "index.html",
+      "examples.html",
+      "discussion.html",
+      "attributions.html",
+      "assets/styles.css",
+    ])
+      expect(websiteNames).toContain(expected);
+    expect(
+      websiteNames.filter((name) =>
+        /^assets\/images\/[^/]+\.jpg$/.test(name),
+      ),
+    ).toHaveLength(1);
+
+    const pageExpectations = new Map([
+      [
+        "index.html",
+        ["What public space does", "Streets as places"],
+      ],
+      [
+        "examples.html",
+        ["Parks and edges", "Transit and gathering"],
+      ],
+      ["discussion.html", ["Discuss the design"]],
+    ]);
+    for (const [name, headings] of pageExpectations) {
+      const html = websiteZip
+        .getEntry(name)!
+        .getData()
+        .toString("utf8");
+      expect(html).not.toMatch(/data:image\//i);
+      expect(html).toContain('href="assets/styles.css"');
+      for (const heading of headings)
+        expect(html).toContain(`<h2>${heading}</h2>`);
+    }
+    expect(
+      websiteZip
+        .getEntry("discussion.html")!
+        .getData()
+        .toString("utf8"),
+    ).toContain("The design feature ___ may support ___");
+  }, 60_000);
+});
