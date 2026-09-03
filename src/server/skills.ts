@@ -1,7 +1,7 @@
 import type { JobKind } from "../shared/contracts.js";
 
 export const TEACHING_CONTENT_RESEARCH_INSTRUCTION =
-  "Research the content the students will encounter (cultural facts, authentic examples, places, foods, customs, sample sentences, image-worthy subjects with their real locations) and 3–5 credible sources for that content. Do not research pedagogy policy or curriculum documents unless the user asks for them.";
+  "Research the *content* the students will encounter (cultural facts, authentic examples, places, foods, customs, sample sentences, image-worthy subjects with their real locations) and 3–5 credible sources for that content. Do not research pedagogy policy or curriculum documents unless the user asks for them.";
 
 const TEACHING_REQUEST_RE =
   /\b(?:teach|teaching|lesson|students?|classroom|speed[\s-]*dating|(?:four|4)[\s-]*corners|exit[\s-]*ticket|worksheet|learning\s+(?:objective|activity)|grade\s*\d{1,2})\b/i;
