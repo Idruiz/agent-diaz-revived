@@ -259,8 +259,8 @@ function noteParagraphs(
 }
 
 function addNotesParagraphs(slide: any, paragraphs: string[]): void {
-  for (const paragraph of paragraphs)
-    if (paragraph.trim()) slide.addNotes(paragraph.trim());
+  const clean = paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean);
+  if (clean.length) slide.addNotes(clean.join("\r\n\r\n"));
 }
 
 async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
