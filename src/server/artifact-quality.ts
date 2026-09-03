@@ -330,7 +330,8 @@ export function artifactPlanQualityViolations(
   }
 
   if (kind === "website") {
-    const slugs = plan.pages?.map((page) => page.slug) ?? [];
+    const pages = plan.pages ?? [];
+    const slugs = pages.map((page) => page.slug);
     if (slugs.length !== new Set(slugs).size)
       push(
         "website_duplicate_slugs",
@@ -341,6 +342,36 @@ export function artifactPlanQualityViolations(
         "website_index_missing",
         "Artifact quality validation failed: website plan requires an index page",
       );
+
+    const knownHeadings = new Set(
+      plan.sections
+        .filter((section) => !/^(sources|references|bibliography|works cited)$/i.test(section.heading.trim()))
+        .map((section) => section.heading),
+    );
+    const assignmentCounts = new Map<string, number>();
+    for (const page of pages) {
+      for (const heading of page.sectionHeadings) {
+        if (!knownHeadings.has(heading))
+          push(
+            "website_unknown_section_assignment",
+            `Artifact quality validation failed: website page '${page.slug}' references unknown section '${heading}'`,
+          );
+        assignmentCounts.set(
+          heading,
+          (assignmentCounts.get(heading) ?? 0) + 1,
+        );
+      }
+    }
+    for (const heading of knownHeadings) {
+      const count = assignmentCounts.get(heading) ?? 0;
+      if (count !== 1)
+        push(
+          count === 0
+            ? "website_section_unassigned"
+            : "website_section_multiply_assigned",
+          `Artifact quality validation failed: website section '${heading}' must be assigned exactly once; found ${count} assignments`,
+        );
+    }
   }
 
   return violations;
@@ -462,12 +493,21 @@ export function assertWebsitePackage(filePath: string): void {
       throw new Error(`Website package validation failed: incomplete semantic shell in ${entry.entryName}`);
     if (PLACEHOLDER_RE.test(html))
       throw new Error(`Website package validation failed: placeholder content in ${entry.entryName}`);
-    for (const match of html.matchAll(/href="([^"]+)"/g)) {
+    if (/data:image\//i.test(html))
+      throw new Error(
+        `Website package validation failed: embedded base64 image found in ${entry.entryName}`,
+      );
+    for (const match of html.matchAll(/(?:href|src)="([^"]+)"/g)) {
       const href = match[1]!;
       if (/^(?:https?:|mailto:|tel:|#)/i.test(href)) continue;
-      const target = href.split("#")[0]!;
-      if (target && !names.has(target))
-        throw new Error(`Website package validation failed: broken internal link '${href}' in ${entry.entryName}`);
+      const target = href.split(/[?#]/)[0]!.replace(/^\.\//, "");
+      if (
+        target.includes("..") ||
+        (target && !names.has(target))
+      )
+        throw new Error(
+          `Website package validation failed: broken internal resource '${href}' in ${entry.entryName}`,
+        );
     }
   }
 }
