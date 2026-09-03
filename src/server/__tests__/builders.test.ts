@@ -131,6 +131,107 @@ describe("artifact builders", () => {
     expect(documentXml).toContain("<w:keepNext");
     expect(numberingXml).toContain('w:val="bullet"');
   });
+  it("renders every DOCX activity field with a real 2x2 Four Corners grid and no silent truncation", async () => {
+    const activityPlan = {
+      title: "Four Corners activity document",
+      subtitle: "Complete activity rendering",
+      requirements: [
+        {
+          id: "R1",
+          text: "Render every activity field in Word",
+          mandatory: true,
+        },
+      ],
+      sections: [
+        {
+          heading: "Four Corners",
+          body:
+            "Students move, justify a choice, and use complete target-language sentences.",
+          bullets: [
+            "Keep the four choices visible.",
+            "Record one reason from each corner.",
+          ],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "four_corners" as const,
+          activity: {
+            type: "four_corners" as const,
+            durationMinutes: 8,
+            directions: [
+              "Read all four choices.",
+              "Move to the corner that matches your answer.",
+              "Explain your choice to a partner.",
+            ],
+            prompts: [
+              "Quel lieu préfères-tu ?",
+              "Pourquoi préfères-tu ce lieu ?",
+            ],
+            sentenceFrames: [
+              "Je préfère ___ parce que ___.",
+              "Dans ce lieu, je ___.",
+            ],
+            cornerLabels: [
+              "le café",
+              "le marché",
+              "le musée",
+              "le parc",
+            ],
+          },
+        },
+      ],
+      pages: undefined,
+      sources: [],
+    };
+
+    const out = await buildArtifact(
+      config,
+      "document",
+      activityPlan,
+      "Create a Four Corners classroom activity document",
+    );
+    const zip = new AdmZip(out.path);
+    const documentXml = zip
+      .getEntry("word/document.xml")!
+      .getData()
+      .toString("utf8");
+
+    for (const visible of [
+      "Read all four choices.",
+      "Move to the corner that matches your answer.",
+      "Explain your choice to a partner.",
+      "Quel lieu préfères-tu ?",
+      "Pourquoi préfères-tu ce lieu ?",
+      "Je préfère ___ parce que ___.",
+      "Dans ce lieu, je ___.",
+      "le café",
+      "le marché",
+      "le musée",
+      "le parc",
+    ])
+      expect(documentXml).toContain(visible);
+
+    const fourCornersIndex = documentXml.indexOf("Four Corners");
+    expect(fourCornersIndex).toBeGreaterThanOrEqual(0);
+    const activityTableStart = documentXml.indexOf("<w:tbl", fourCornersIndex);
+    const activityTableEnd = documentXml.indexOf("</w:tbl>", activityTableStart);
+    const activityTableXml = documentXml.slice(
+      activityTableStart,
+      activityTableEnd + "</w:tbl>".length,
+    );
+    expect(activityTableXml.match(/<w:tr\b/g)).toHaveLength(2);
+    const rows = activityTableXml.match(/<w:tr\b[\s\S]*?<\/w:tr>/g) ?? [];
+    expect(rows).toHaveLength(2);
+    for (const row of rows)
+      expect(row.match(/<w:tc\b/g)).toHaveLength(2);
+
+    const receipt = out.validationReceipt as any;
+    expect(receipt.document).toEqual({
+      activitiesRendered: 1,
+      activityTypes: ["four_corners"],
+      truncations: [],
+    });
+  }, 15_000);
+
   it("packages phone-portable self-contained website pages", async () => {
     const out = await buildArtifact(config, "website", plan);
     const zip = new AdmZip(out.path);
