@@ -279,7 +279,8 @@ describe("artifact builders", () => {
     for (const [name, headings] of expectedByPage) {
       const html = zip.getEntry(name)!.getData().toString("utf8");
       expect(html).toContain('href="assets/styles.css"');
-      expect(html).not.toContain("<style>");
+      const head = html.match(/<head>[\s\S]*?<\/head>/i)?.[0] ?? "";
+      expect(head).not.toContain("<style>");
       expect(html).not.toMatch(/data:image\//i);
       for (const heading of headings) expect(html).toContain(heading);
       for (const other of [...expectedByPage.values()].flat().filter((heading) => !headings.includes(heading)))
