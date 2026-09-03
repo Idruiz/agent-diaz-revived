@@ -197,6 +197,21 @@ describe("artifact quality gates", () => {
     expect(() => assertArtifactPlanQuality("presentation", exactPrompt, plan)).toThrow(/prompt-specific mandatory requirements/);
   });
 
+  it("distinguishes Spanish todo from an uppercase TODO placeholder marker", () => {
+    const plan = frenchTeachingPlan();
+    plan.sections[0]!.body =
+      "La diversidad cultural existe en todo el país y cambia según la región.";
+    expect(() =>
+      assertArtifactPlanQuality("presentation", exactPrompt, plan),
+    ).not.toThrow();
+
+    plan.sections[0]!.body =
+      "TODO: add content about regional cultural diversity.";
+    expect(() =>
+      assertArtifactPlanQuality("presentation", exactPrompt, plan),
+    ).toThrow(/unfinished placeholder language/);
+  });
+
   it("builds the exact-prompt fixture with images, notes, native notesMaster ordering, and an auditable receipt", async () => {
     const plan = frenchTeachingPlan();
     const imageBytes = await sharp({
