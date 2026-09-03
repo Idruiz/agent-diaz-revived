@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -170,6 +171,7 @@ describe("recorded artifact golden runs", () => {
       artifactPath: string;
       providerCalls: number;
       checkpointName: string | null;
+      checkpointSha256: string | null;
     }> = [];
 
     try {
@@ -291,12 +293,19 @@ describe("recorded artifact golden runs", () => {
         expect(receipt.maxLlmCalls).toBe(6);
 
         let checkpointName: string | null = null;
+        let checkpointSha256: string | null = null;
         if (writeCheckpoint3) {
           checkpointName = checkpointArtifactName(golden, artifactPath);
-          fs.copyFileSync(
-            artifactPath,
-            path.join(checkpoint3Root, checkpointName),
+          const checkpointPath = path.join(
+            checkpoint3Root,
+            checkpointName,
           );
+          fs.copyFileSync(artifactPath, checkpointPath);
+          checkpointSha256 = crypto
+            .createHash("sha256")
+            .update(fs.readFileSync(checkpointPath))
+            .digest("hex");
+          expect(checkpointSha256).toBe(receipt.artifactSha256);
           fs.writeFileSync(
             path.join(checkpoint3Root, `${golden.id}.receipt.json`),
             JSON.stringify(receipt, null, 2) + "\n",
@@ -309,6 +318,7 @@ describe("recorded artifact golden runs", () => {
           artifactPath,
           providerCalls: create.mock.calls.length,
           checkpointName,
+          checkpointSha256,
         });
         db.close();
       }
@@ -498,6 +508,7 @@ describe("recorded artifact golden runs", () => {
           file: entry.checkpointName,
           receipt: `${entry.golden.id}.receipt.json`,
           artifactSha256: entry.receipt.artifactSha256,
+          exportedFileSha256: entry.checkpointSha256,
           bytes: entry.receipt.bytes,
           llmCalls: entry.receipt.llmCalls,
           maxLlmCalls: entry.receipt.maxLlmCalls,
@@ -529,6 +540,7 @@ describe("recorded artifact golden runs", () => {
         expect(
           fs.existsSync(path.join(checkpoint3Root, item.receipt)),
         ).toBe(true);
+        expect(item.exportedFileSha256).toBe(item.artifactSha256);
       }
     }
   }, 60_000);
