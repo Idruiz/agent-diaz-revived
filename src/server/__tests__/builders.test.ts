@@ -130,6 +130,13 @@ describe("artifact builders", () => {
     expect(documentXml).toContain("<w:titlePg");
     expect(documentXml).toContain("<w:keepNext");
     expect(numberingXml).toContain('w:val="bullet"');
+    const drawingIds = [
+      ...documentXml.matchAll(/<wp:docPr\b[^>]*\bid="([^"]+)"/g),
+    ].map((match) => match[1]!);
+    expect(drawingIds.length).toBeGreaterThanOrEqual(2);
+    expect(drawingIds.every((id) => /^\d+$/.test(id))).toBe(true);
+    expect(new Set(drawingIds).size).toBe(drawingIds.length);
+    expect(out.validationReceipt.generatorVersion).toBe("docx 9.7.1");
   });
   it("renders every DOCX activity field with a real 2x2 Four Corners grid and no silent truncation", async () => {
     const activityPlan = {
