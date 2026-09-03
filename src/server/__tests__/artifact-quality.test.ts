@@ -421,10 +421,20 @@ describe("artifact quality gates", () => {
     zip.addFile("[Content_Types].xml", Buffer.from("<Types/>"));
     zip.writeZip(target);
 
-    await expect(
-      validateBuiltArtifact("presentation", exactPrompt, frenchTeachingPlan(), target),
-    ).rejects.toThrow(/requires regeneration/);
-    expect(fs.existsSync(target)).toBe(false);
+    let thrown: unknown;
+    try {
+      await validateBuiltArtifact(
+        "presentation",
+        exactPrompt,
+        frenchTeachingPlan(),
+        target,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ArtifactPipelineError);
+    expect((thrown as ArtifactPipelineError).failureClass).toBe("BUILD");
+    expect(fs.existsSync(target)).toBe(true);
     expect(fs.existsSync(path.join(root, "_quarantine"))).toBe(false);
     fs.rmSync(root, { recursive: true, force: true });
   });
