@@ -562,7 +562,7 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
   let activitiesRendered=0;
   let nextDrawingId=1;
   const drawingAltText=(name:string,description:string,title=name)=>({
-    id:nextDrawingId++,
+    id:String(nextDrawingId++),
     name,
     description,
     title,
