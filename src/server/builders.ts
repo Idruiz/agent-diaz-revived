@@ -446,22 +446,21 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
   title.addText("VISUAL BRIEF",{x:.82,y:1.06,w:2.8,h:.24,fontSize:10,bold:true,charSpacing:2,color:gold,margin:0});
   title.addText(short(plan.title,130),{x:.82,y:1.55,w:10.6,h:1.65,fontFace:"Aptos Display",fontSize:42,bold:true,color:white,margin:0,breakLine:false,fit:"shrink",valign:"middle"});
   if(plan.subtitle)title.addText(short(plan.subtitle,220),{x:.85,y:3.62,w:8.9,h:.92,fontSize:20,color:"DDE6ED",margin:0,fit:"shrink"});
-  title.addText(`${contentSections.length} ideas · ${images.size} licensed visuals`,{x:.85,y:6.72,w:4.8,h:.22,fontSize:9,bold:true,charSpacing:.8,color:"B9C8D3",margin:0});
-  title.addNotes(noteBlock("Opening slide",[]));
+  addNotesParagraphs(title,["Opening slide"]);
   for(const [index,section] of contentSections.entries()){
     const slide=p.addSlide(),slideNumber=index+2;slide.background={color:bg};
     slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:.1,fill:{color:gold},line:{color:gold}});
     addHeading(slide,section.heading,`Part ${String(index+1).padStart(2,"0")}`);
     const image=section.imageQuery?images.get(section.imageQuery):undefined;
-    if(section.activity)addActivitySlide(slide,section);
-    else if(section.chart)await addRenderedChart(slide,section);
-    else if(section.table)addNativeTable(slide,section);
-    else if(section.diagram)addNativeDiagram(slide,section);
+    if(section.activity)addActivitySlide(slide,section,image);
+    else if(section.chart)await addRenderedChart(slide,section,image);
+    else if(section.table)addNativeTable(slide,section,image);
+    else if(section.diagram)addNativeDiagram(slide,section,image);
     else if(image){
-      if(section.imageQuery)placedImageQueries.add(section.imageQuery);
       const fullBleed=index%4===2;
       if(fullBleed){
         slide.addImage({data:imageDataUri(image),x:0,y:0,w:13.333,h:7.5,sizing:{type:"cover",w:13.333,h:7.5},altText:image.title});
+        if(section.imageQuery)placedImageQueries.add(section.imageQuery);
         slide.addShape(p.ShapeType.rect,{x:0,y:0,w:13.333,h:7.5,fill:{color:navy,transparency:22},line:{color:navy,transparency:100}});
         slide.addShape(p.ShapeType.rect,{x:.66,y:.66,w:6.15,h:5.62,fill:{color:navy,transparency:12},line:{color:white,transparency:100}});
         slide.addText(short(section.heading,92),{x:.98,y:1.05,w:5.55,h:1.05,fontSize:34,bold:true,color:white,margin:0,fit:"shrink"});
@@ -469,8 +468,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
         slide.addText(short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:7.05,y:7.12,w:5.5,h:.16,fontSize:6.5,color:white,align:"right",margin:0,fit:"shrink"});
       }else{
         const imageLeft=index%2===1,imageBox={x:imageLeft ? .72 : 7.02,y:1.5,w:5.58,h:4.92},textBox={x:imageLeft ? 6.72 : .78,y:1.66,w:5.45,h:4.7};
-        addPhoto(slide,image,imageBox);addNarrative(slide,section,textBox);
-        slide.addText(short(`${image.title} · ${image.creator} · ${image.license}`,180),{x:imageBox.x,y:6.5,w:imageBox.w,h:.2,fontSize:6.8,color:muted,margin:0,fit:"shrink"});
+        placePhoto(slide,section,image,imageBox,{x:imageBox.x,y:6.5,w:imageBox.w,h:.2});addNarrative(slide,section,textBox);
       }
     }else{
       slide.addText(String(index+1).padStart(2,"0"),{x:.76,y:1.55,w:2.1,h:1.3,fontSize:74,bold:true,color:"E4D7B3",margin:0});
@@ -478,14 +476,31 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
       addNarrative(slide,section,{x:3.52,y:1.67,w:8.55,h:4.65});
     }
     addFooter(slide,slideNumber);
-    const noteSources=[...(image?[image.sourceUrl]:[]),...(section.chart?.sourceNote?[section.chart.sourceNote]:[])];
-    const notes=noteBlock(section.speakerNotes,noteSources);if(notes)slide.addNotes(notes);
+    const noteSources=[
+      ...(image&&section.imageQuery&&placedImageQueries.has(section.imageQuery)?[image.sourceUrl]:[]),
+      ...(section.chart?.sourceNote?[section.chart.sourceNote]:[]),
+    ];
+    addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,noteSources));
   }
+
+  const unplacedFetched=[...images.keys()].filter(query=>!placedImageQueries.has(query));
+  if(unplacedFetched.length)
+    throw new ArtifactPipelineError(
+      "BUILD",
+      `Presentation layout discarded fetched images: ${unplacedFetched.join(", ")}`,
+      {ruleOrPart:"pptx-image-placement"},
+    );
+  title.addText(
+    `${contentSections.length} ideas · ${placedImageQueries.size} licensed visuals`,
+    {x:.85,y:6.72,w:4.8,h:.22,fontSize:9,bold:true,charSpacing:.8,color:"B9C8D3",margin:0},
+  );
+
   for(const [chunkIndex,chunk] of sourceChunks.entries()){
     const slide=p.addSlide(),slideNumber=2+contentSections.length+chunkIndex;slide.background={color:bg};
     addHeading(slide,sourceChunks.length>1?`Sources ${chunkIndex+1} of ${sourceChunks.length}`:"Sources","Evidence trail");
     chunk.forEach((source,index)=>{const y=1.48+index*.66;slide.addText(String(chunkIndex*8+index+1).padStart(2,"0"),{x:.78,y,w:.42,h:.23,fontSize:10,bold:true,color:gold,margin:0});slide.addText(short(source.title,180),{x:1.35,y:y-.02,w:4.15,h:.28,fontSize:13,bold:true,color:navy,margin:0,fit:"shrink"});slide.addText(short(source.url,150),{x:5.7,y:y-.02,w:6.45,h:.3,fontSize:10,color:blue,margin:0,fit:"shrink",hyperlink:{url:source.url}});});
-    addFooter(slide,slideNumber);slide.addNotes(noteBlock("",chunk.map(source=>source.url)));
+    addFooter(slide,slideNumber);
+    addNotesParagraphs(slide,noteParagraphs("",chunk.map(source=>source.url)));
   }
   const name=`${slug(plan.title)}.pptx`, target=safeJoin(config.artifactDir,name);
   const raw=Buffer.from(await p.write({outputType:"nodebuffer"}) as ArrayBuffer); if(raw.length<5000)throw new Error("PPTX validation failed: output too small");
@@ -493,12 +508,25 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
   const validationReceipt=await validateBuiltArtifact(
     "presentation",
     prompt,
-    plan,
+    reconciled.plan,
     target,
     jobId ? { root: path.join(config.storageRoot, "diagnostics"), jobId } : undefined,
   );
   collectedImages.metrics.placed=placedImageQueries.size;
-  (validationReceipt as ArtifactValidationReceipt & {images:ImageResolutionReceipt}).images=collectedImages.metrics;
+  const enrichedReceipt=validationReceipt as ArtifactValidationReceipt & {
+    images:ImageResolutionReceipt;
+    presentation:PresentationBuildReceipt;
+  };
+  enrichedReceipt.images=collectedImages.metrics;
+  enrichedReceipt.presentation={
+    placedAssets:placedImageQueries.size,
+    activityTemplates:[...usedActivityTemplates].sort(),
+    reconciliations:reconciled.reconciliations,
+    titleCounts:{
+      contentSlides:contentSections.length,
+      licensedVisuals:placedImageQueries.size,
+    },
+  };
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:raw.length,validationReceipt};
 }
 
