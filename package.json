@@ -15,6 +15,7 @@
     "check": "tsc --noEmit",
     "test": "vitest run --root .",
     "test:watch": "vitest --root .",
+    "checkpoint:3": "WRITE_CHECKPOINT_3=1 vitest run --root . src/server/__tests__/artifact-golden.test.ts",
     "audit:prod": "npm audit --omit=dev",
     "audit:reviewed": "node scripts/reviewed-audit.mjs",
     "smoke": "node scripts/runtime-smoke.mjs",
