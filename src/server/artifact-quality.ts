@@ -530,10 +530,11 @@ export async function validateBuiltArtifact(
           "BUILD",
           `Microsoft 365 OOXML validation failed: ${detail || "unknown schema error"}`,
           {
-            ruleOrPart:
-              blockingErrors[0]?.path ??
-              blockingErrors[0]?.xPath ??
-              "ooxml-schema",
+            ruleOrPart: String(
+              (blockingErrors[0] as any)?.path ??
+                (blockingErrors[0] as any)?.xPath ??
+                "ooxml-schema",
+            ),
           },
         );
       }
