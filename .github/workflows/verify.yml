@@ -34,6 +34,17 @@ jobs:
         run: npm run verify
       - name: Build containerized exact-prompt regression environment
         run: docker build --target regression --tag agent-diaz-regression:${{ github.sha }} .
+      - name: Generate checkpoint-3 golden matrix inside container
+        run: |
+          rm -rf storage/diagnostics/checkpoint-3
+          mkdir -p storage/diagnostics/checkpoint-3
+          docker run --rm \
+            -e CI=1 \
+            -e GITHUB_SHA=${{ github.sha }} \
+            -e WRITE_CHECKPOINT_3=1 \
+            -v "$PWD/storage/diagnostics/checkpoint-3:/app/storage/diagnostics/checkpoint-3" \
+            agent-diaz-regression:${{ github.sha }} \
+            npm run checkpoint:3
       - name: Reproduce exact presentation route inside container
         run: |
           docker run --rm \
@@ -53,3 +64,10 @@ jobs:
             test-results/agent-runner-french-present-tense-regression.pptx
           if-no-files-found: error
           retention-days: 7
+      - name: Preserve checkpoint-3 artifact package
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-diaz-checkpoint-3
+          path: storage/diagnostics/checkpoint-3/**
+          if-no-files-found: error
+          retention-days: 14
