@@ -45,6 +45,14 @@ jobs:
             -v "$PWD/storage/diagnostics/checkpoint-3:/app/storage/diagnostics/checkpoint-3" \
             agent-diaz-regression:${{ github.sha }} \
             npm run checkpoint:3
+      - name: Report checkpoint-3 manifest
+        run: |
+          echo "===== checkpoint-3 files ====="
+          find storage/diagnostics/checkpoint-3 -maxdepth 1 -type f -printf '%f\n' | sort
+          echo "===== checkpoint-3 sha256 ====="
+          sha256sum storage/diagnostics/checkpoint-3/* | sort -k2
+          echo "===== checkpoint-3 summary.json ====="
+          cat storage/diagnostics/checkpoint-3/summary.json
       - name: Reproduce exact presentation route inside container
         run: |
           docker run --rm \
