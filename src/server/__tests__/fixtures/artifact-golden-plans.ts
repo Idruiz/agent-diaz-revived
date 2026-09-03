@@ -1,4 +1,4 @@
-import type { ArtifactPlan, JobKind } from "../../shared/contracts";
+import type { ArtifactPlan, JobKind } from "../../../shared/contracts";
 
 export interface ArtifactGoldenCase {
   id: string;
