@@ -88,6 +88,30 @@ export class ArtifactPipelineError extends Error {
   }
 }
 
+export interface ArtifactQualityScores {
+  layoutVariety: {
+    score: number;
+    distinctTemplates: number;
+    contentSections: number;
+    templates: string[];
+  };
+  emptyCanvasRatio: {
+    average: number | null;
+    bySlide: number[];
+    method: string;
+  };
+  notesCoverage: {
+    score: number;
+    sectionsWithNotes: number;
+    contentSections: number;
+  };
+  sourceTopicality: {
+    score: number | null;
+    status: "pending_qualitative_review";
+    reason: string;
+  };
+}
+
 export interface ArtifactValidationReceipt {
   kind: JobKind;
   artifactSha256: string;
@@ -96,6 +120,9 @@ export interface ArtifactValidationReceipt {
   schemaValidator: string | null;
   renderValidator: string | null;
   powerPointDesktopValidated: boolean;
+  wordDesktopValidated: boolean;
+  browserValidated: boolean;
+  scores: ArtifactQualityScores;
   buildSha: string;
   generatorVersion: string;
   knownBenignFindings: ArtifactValidationFinding[];
@@ -613,6 +640,138 @@ function assertOutputCoverage(kind: JobKind, prompt: string, plan: ArtifactPlan,
     throw new Error("Artifact output validation failed: Four Corners is missing from the finished deck");
 }
 
+function roundedRatio(value: number): number {
+  return Math.round(Math.max(0, Math.min(1, value)) * 1000) / 1000;
+}
+
+function qualityLayoutSignature(
+  section: ArtifactPlan["sections"][number],
+): string {
+  const primitive = section.activity
+    ? `activity:${section.activity.type}`
+    : section.chart
+      ? "chart"
+      : section.table
+        ? "table"
+        : section.diagram
+          ? "diagram"
+          : section.imageQuery
+            ? "image"
+            : "text";
+  return `${section.layout ?? "standard"}:${primitive}`;
+}
+
+function estimatePptxEmptyCanvasRatio(filePath: string): {
+  average: number | null;
+  bySlide: number[];
+  method: string;
+} {
+  const zip = new AdmZip(filePath);
+  const presentationXml =
+    zip.getEntry("ppt/presentation.xml")?.getData().toString("utf8") ?? "";
+  const size = presentationXml.match(
+    /<p:sldSz\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/,
+  );
+  const slideWidth = Number(size?.[1] ?? 12192000);
+  const slideHeight = Number(size?.[2] ?? 6858000);
+  const slideArea = slideWidth * slideHeight;
+  if (!Number.isFinite(slideArea) || slideArea <= 0)
+    return {
+      average: null,
+      bySlide: [],
+      method: "PPTX shape-box area estimate unavailable",
+    };
+
+  const slides = zip
+    .getEntries()
+    .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
+    .sort((a, b) =>
+      a.entryName.localeCompare(b.entryName, undefined, { numeric: true }),
+    );
+  const bySlide = slides.map((entry) => {
+    const xml = entry.getData().toString("utf8");
+    let occupied = 0;
+    for (const match of xml.matchAll(
+      /<a:xfrm\b[^>]*>[\s\S]*?<a:off\b[^>]*\bx="(-?\d+)"[^>]*\by="(-?\d+)"[^>]*\/>[\s\S]*?<a:ext\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"[^>]*\/>[\s\S]*?<\/a:xfrm>/g,
+    )) {
+      const width = Number(match[3]);
+      const height = Number(match[4]);
+      if (
+        Number.isFinite(width) &&
+        Number.isFinite(height) &&
+        width > 0 &&
+        height > 0
+      )
+        occupied += width * height;
+    }
+    return roundedRatio(1 - Math.min(1, occupied / slideArea));
+  });
+  return {
+    average:
+      bySlide.length > 0
+        ? roundedRatio(
+            bySlide.reduce((sum, value) => sum + value, 0) /
+              bySlide.length,
+          )
+        : null,
+    bySlide,
+    method:
+      "Estimated from serialized PPTX a:xfrm box areas; overlapping boxes are not unioned.",
+  };
+}
+
+function artifactQualityScores(
+  kind: JobKind,
+  plan: ArtifactPlan,
+  filePath: string,
+): ArtifactQualityScores {
+  const sections = plan.sections.filter(
+    (section) =>
+      !/^(?:sources|references|bibliography|works cited)$/i.test(
+        section.heading.trim(),
+      ),
+  );
+  const templates = [
+    ...new Set(sections.map((section) => qualityLayoutSignature(section))),
+  ].sort();
+  const sectionsWithNotes = sections.filter(
+    (section) => section.speakerNotes.trim().length > 0,
+  ).length;
+  return {
+    layoutVariety: {
+      score:
+        sections.length > 0
+          ? roundedRatio(templates.length / sections.length)
+          : 0,
+      distinctTemplates: templates.length,
+      contentSections: sections.length,
+      templates,
+    },
+    emptyCanvasRatio:
+      kind === "presentation"
+        ? estimatePptxEmptyCanvasRatio(filePath)
+        : {
+            average: null,
+            bySlide: [],
+            method: "Not applicable outside PPTX.",
+          },
+    notesCoverage: {
+      score:
+        sections.length > 0
+          ? roundedRatio(sectionsWithNotes / sections.length)
+          : 0,
+      sectionsWithNotes,
+      contentSections: sections.length,
+    },
+    sourceTopicality: {
+      score: null,
+      status: "pending_qualitative_review",
+      reason:
+        "Source topicality is qualitative and is not inferred by the deterministic verifier; a model or human review must supply it.",
+    },
+  };
+}
+
 export async function validateBuiltArtifact(
   kind: JobKind,
   prompt: string,
@@ -685,6 +844,9 @@ export async function validateBuiltArtifact(
       schemaValidator,
       renderValidator,
       powerPointDesktopValidated: false,
+      wordDesktopValidated: false,
+      browserValidated: false,
+      scores: artifactQualityScores(kind, plan, filePath),
       buildSha: currentBuildSha(),
       generatorVersion:
         kind === "presentation"
