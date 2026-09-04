@@ -1,0 +1,35 @@
+name: Make presentation companions nonblocking
+
+on:
+  push:
+    branches:
+      - codex/artifact-trust-rebuild
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[companions-nonblocking]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/artifact-trust-rebuild
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+      - name: Apply nonblocking companion migration
+        run: node scripts/make-presentation-companions-nonblocking.mjs
+      - name: Remove one-shot source and restore workflow file
+        run: |
+          rm -f scripts/make-presentation-companions-nonblocking.mjs
+          git checkout HEAD -- .github/workflows/make-presentation-companions-nonblocking.yml
+      - name: Commit migration
+        run: |
+          git config user.name "Agent Diaz Trust Rebuild"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Keep presentation companions off PPTX critical path [companions-nonblocking]"
+          git push origin HEAD:codex/artifact-trust-rebuild
