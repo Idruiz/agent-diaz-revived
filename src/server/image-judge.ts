@@ -3,6 +3,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import {
+  imageProviderCooldownRemainingMs,
   searchCommonsCandidates,
   type CommonsImageCandidate,
 } from "./real-images.js";
@@ -33,15 +34,13 @@ export type ImageJudgeProvider = (
   sections: ImageJudgeSection[],
 ) => Promise<ImageJudgeDecision[]>;
 
+export type ImageJudgeProgress = (message: string) => void;
+
 let injectedTestProvider: ImageJudgeProvider | null = null;
 
-export function setImageJudgeProviderForTests(
-  provider: ImageJudgeProvider | null,
-): void {
+export function setImageJudgeProviderForTests(provider: ImageJudgeProvider | null): void {
   if (process.env.NODE_ENV !== "test")
-    throw new Error(
-      "Image-judge provider injection is test-only",
-    );
+    throw new Error("Image-judge provider injection is test-only");
   injectedTestProvider = provider;
 }
 
@@ -51,9 +50,7 @@ const decisionSchema = z.object({
       sectionIndex: z.number().int().nonnegative(),
       chosenCandidate: z.string().nullable(),
       reason: z.string().min(1).max(500),
-      fallbackQueries: z
-        .array(z.string().min(2).max(120))
-        .length(2),
+      fallbackQueries: z.array(z.string().min(2).max(120)).length(2),
     }),
   ),
 });
@@ -62,18 +59,11 @@ function sanitizeDecision(
   section: ImageJudgeSection,
   decision: z.infer<typeof decisionSchema>["decisions"][number] | undefined,
 ): ImageJudgeDecision {
-  const candidateIds = new Set(
-    section.candidates.map((candidate) => candidate.id),
-  );
-  const chosen =
-    decision?.chosenCandidate &&
-    candidateIds.has(decision.chosenCandidate)
-      ? decision.chosenCandidate
-      : null;
-  const fallback = decision?.fallbackQueries ?? [
-    section.heading,
-    section.query,
-  ];
+  const candidateIds = new Set(section.candidates.map((candidate) => candidate.id));
+  const chosen = decision?.chosenCandidate && candidateIds.has(decision.chosenCandidate)
+    ? decision.chosenCandidate
+    : null;
+  const fallback = decision?.fallbackQueries ?? [section.heading, section.query];
   return {
     sectionIndex: section.sectionIndex,
     chosenCandidate: chosen,
@@ -93,9 +83,7 @@ async function openAiJudgePass(
   config: Config,
   sections: ImageJudgeSection[],
 ): Promise<ImageJudgeDecision[]> {
-  const client = new OpenAI({
-    apiKey: config.OPENAI_API_KEY,
-  });
+  const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
   const compact = sections.map((section) => ({
     sectionIndex: section.sectionIndex,
     heading: section.heading,
@@ -127,21 +115,14 @@ async function openAiJudgePass(
       "Do not infer visual facts that are absent from candidate metadata.",
     ].join("\n"),
     input: JSON.stringify(compact),
-    text: {
-      format: zodTextFormat(
-        decisionSchema,
-        "artifact_image_judgment",
-      ),
-    },
+    text: { format: zodTextFormat(decisionSchema, "artifact_image_judgment") },
     store: false,
     safety_identifier: "agent-diaz-owner",
   } as any);
 
   let parsed: z.infer<typeof decisionSchema>;
   try {
-    parsed = decisionSchema.parse(
-      JSON.parse(response.output_text || "{}"),
-    );
+    parsed = decisionSchema.parse(JSON.parse(response.output_text || "{}"));
   } catch (error) {
     throw new Error(
       `Image judge returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
@@ -151,9 +132,7 @@ async function openAiJudgePass(
   return sections.map((section) =>
     sanitizeDecision(
       section,
-      parsed.decisions.find(
-        (decision) => decision.sectionIndex === section.sectionIndex,
-      ),
+      parsed.decisions.find((decision) => decision.sectionIndex === section.sectionIndex),
     ),
   );
 }
@@ -170,9 +149,7 @@ async function judgePass(
       decisions: sections.map((section) =>
         sanitizeDecision(
           section,
-          raw.find(
-            (decision) => decision.sectionIndex === section.sectionIndex,
-          ),
+          raw.find((decision) => decision.sectionIndex === section.sectionIndex),
         ),
       ),
       calls: 1,
@@ -193,19 +170,17 @@ async function judgePass(
     };
   }
 
-  return {
-    decisions: await openAiJudgePass(config, sections),
-    calls: 1,
-  };
+  return { decisions: await openAiJudgePass(config, sections), calls: 1 };
 }
 
 export async function judgeImageCandidates(
   config: Config,
   sections: ImageJudgeSection[],
+  onProgress?: ImageJudgeProgress,
 ): Promise<ImageJudgeResult> {
-  if (!sections.length)
-    return { decisions: [], judgeCalls: 0 };
+  if (!sections.length) return { decisions: [], judgeCalls: 0 };
 
+  onProgress?.(`Reviewing ${sections.length} visual candidate set${sections.length === 1 ? "" : "s"}`);
   const first = await judgePass(config, sections);
   let judgeCalls = first.calls;
   const merged = new Map<number, ImageJudgeDecision>(
@@ -213,19 +188,26 @@ export async function judgeImageCandidates(
   );
 
   const fallbackSections: ImageJudgeSection[] = [];
+  let fallbackNumber = 0;
   for (const section of sections) {
     const decision = merged.get(section.sectionIndex);
     if (decision?.chosenCandidate) continue;
+    fallbackNumber++;
 
     const existingIds = new Set(section.candidates.map((candidate) => candidate.id));
     const newCandidates: CommonsImageCandidate[] = [];
-    const fallbackQueries = decision?.fallbackQueries ?? [
-      section.heading,
-      section.query,
-    ];
+    const fallbackQueries = decision?.fallbackQueries ?? [section.heading, section.query];
 
     for (const fallbackQuery of fallbackQueries) {
+      const cooldown = imageProviderCooldownRemainingMs();
+      if (cooldown > 0) {
+        onProgress?.(
+          `Image provider rate-limited; skipping extra searches for now (${Math.ceil(cooldown / 1000)}s cooldown)`,
+        );
+        break;
+      }
       if (section.candidates.length + newCandidates.length >= 8) break;
+      onProgress?.(`Trying fallback visual ${fallbackNumber}: ${fallbackQuery}`);
       try {
         const result = await searchCommonsCandidates(
           fallbackQuery,
@@ -244,6 +226,8 @@ export async function judgeImageCandidates(
           fallbackQuery,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (/429|cooldown|rate.?limit/i.test(error instanceof Error ? error.message : String(error)))
+          break;
       }
     }
 
@@ -269,10 +253,10 @@ export async function judgeImageCandidates(
   }
 
   if (fallbackSections.length) {
+    onProgress?.(`Reviewing ${fallbackSections.length} fallback visual candidate set${fallbackSections.length === 1 ? "" : "s"}`);
     const second = await judgePass(config, fallbackSections);
     judgeCalls += second.calls;
-    for (const decision of second.decisions)
-      merged.set(decision.sectionIndex, decision);
+    for (const decision of second.decisions) merged.set(decision.sectionIndex, decision);
   }
 
   return {
