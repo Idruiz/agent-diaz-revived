@@ -13,7 +13,7 @@ export interface ArtifactVisualPlanReceipt {
 
 const SOURCE_HEADING_RE = /^(sources|references|bibliography|works cited)$/i;
 const NO_IMAGES_RE = /\b(?:no images?|no photos?|text[- ]only|without images?|sans images?|sin im[aá]genes?)\b/i;
-const NO_ADDITIONAL_IMAGES_RE = /\b(?:no additional (?:images?|photos?)|do not add (?:additional )?(?:images?|photos?)|only (?:use )?(?:the )?(?:specified|requested|provided|explicit) (?:images?|photos?))\b/i;
+const NO_ADDITIONAL_IMAGES_RE = /\b(?:no additional (?:images?|photos?)|do not add (?:additional )?(?:images?|photos?)|(?:use )?only (?:the )?(?:specified|requested|provided|explicit(?:ly)?(?: requested)?) (?:images?|photos?)|only (?:use )?(?:the )?(?:specified|requested|provided|explicit(?:ly)?(?: requested)?) (?:images?|photos?))\b/i;
 const SUPPORT_HEADING_RE = /\b(?:directions?|language frames?|sentence frames?|round\s+\d+|continued\s+\d+|exit ticket|guided practice|independent practice|speed dating|four corners)\b/i;
 const VISUAL_TOPIC_RE = /\b(?:culture|cultural|history|historic|heritage|city|country|region|place|site|architecture|building|food|cuisine|festival|art|artist|museum|landscape|geography|map|community|people|tradition|science|nature|environment|animal|plant|technology|industry|sport|travel|qu[eé]bec|francophon|montr[eé]al|paris|france|canada)\b/i;
 const STOP_WORDS = new Set([
