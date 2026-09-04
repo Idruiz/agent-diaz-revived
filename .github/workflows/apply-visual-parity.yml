@@ -41,3 +41,4 @@ jobs:
           git commit -m "Add cross-artifact visual parity and resilient imagery"
           git push origin HEAD:codex/visual-parity-html-images
 # verify.yml is updated separately through the GitHub connector because Actions tokens cannot modify workflows.
+# rerun after workflow dependency update
