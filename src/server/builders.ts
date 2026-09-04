@@ -637,8 +637,6 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:rendered.raw.length,validationReceipt};
 }
 
-async function docx(}
-
 async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId=""):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const collectedImages=await collectImages(
