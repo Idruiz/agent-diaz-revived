@@ -380,9 +380,9 @@ export function collectArtifactPlanViolations(
   if (kind === "presentation") {
     if (plan.sections.length < 7)
       push(
-        "presentation_sections_missing",
-        `Presentation needs at least 7 content sections; received ${plan.sections.length}.`,
-        true,
+        "presentation_sections_low",
+        `Presentation has ${plan.sections.length} content sections; seven is a quality target, not a validity requirement.`,
+        false,
       );
     const targetVisuals = Math.max(
       minVisuals,

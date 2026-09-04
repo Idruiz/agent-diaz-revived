@@ -89,7 +89,7 @@ export function compileArtifactPlan(
     const builderDoesNotRenderBody = structured || activity === "speed_dating";
     const builderDoesNotRenderBullets = Boolean(activity);
 
-    if (builderDoesNotRenderBody || builderDoesNotRenderBullets || bodyNeedsPagination || bulletsNeedPagination) {
+    if (builderDoesNotRenderBody || builderDoesNotRenderBullets) {
       const context = contextFragments(section);
       compiled.push(...context);
       normalizations.push({

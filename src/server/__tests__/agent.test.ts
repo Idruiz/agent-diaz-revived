@@ -352,7 +352,7 @@ describe("agent production paths", () => {
     });
   });
 
-  it("keeps up to 14 presentation sections intact and sends larger plans to PLAN_CONTENT repair", () => {
+  it("keeps presentation section-count targets as nonblocking telemetry", () => {
     const format = artifactPlanTextFormat("presentation") as any;
     expect(format.schema.properties.sections).toMatchObject({
       minItems: 1,
@@ -410,8 +410,8 @@ describe("agent production paths", () => {
       expect.arrayContaining([
         expect.objectContaining({
           code: "presentation_sections_excess",
-          mandatory: true,
-          message: expect.stringContaining("received 15"),
+          mandatory: false,
+          message: expect.stringContaining("compiled to 15"),
         }),
       ]),
     );
@@ -428,8 +428,8 @@ describe("agent production paths", () => {
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "presentation_sections_missing",
-          mandatory: true,
+          code: "presentation_sections_low",
+          mandatory: false,
         }),
       ]),
     );
@@ -1916,7 +1916,7 @@ describe("agent production paths", () => {
     db.close();
   }, 20_000);
 
-  it("repairs an invalid presentation plan without repeating the evidence phase", async () => {
+  it("does not repair a valid presentation solely to increase its slide count", async () => {
     const { config, db } = harness(),
       conversation = db.createConversation(
         crypto.randomUUID(),
@@ -2062,27 +2062,14 @@ describe("agent production paths", () => {
       imageFetch.mockRestore();
     }
 
-    expect(create).toHaveBeenCalledTimes(3);
-    const firstRepairRequest = create.mock.calls[2]![0] as any;
-    expect(firstRepairRequest.tools).toBeUndefined();
-    expect(firstRepairRequest.previous_response_id).toBe("resp_invalid_plan");
-    expect(firstRepairRequest.input).toContain(
-      "[presentation_sections_missing] Presentation needs at least 7 content sections",
-    );
-    expect(firstRepairRequest.instructions).toContain(
-      "Do not research again, do not use tools",
-    );
-    expect(firstRepairRequest.text.format.schema.properties.sections).toMatchObject({
-      minItems: 1,
-      maxItems: 30,
-    });
-    // The second plan only misses a visual-density target. That is telemetry,
-    // so it must not consume another LLM repair call.
+    expect(create).toHaveBeenCalledTimes(2);
+    // Evidence + structure only: section-count and visual-density targets are
+    // telemetry and must not consume plan-repair calls.
     expect(db.getJob(job.id)).toMatchObject({
       status: "completed",
       error: null,
     });
-    expect(db.getProviderResponseId(job.id)).toBe("resp_still_invalid_plan");
+    expect(db.getProviderResponseId(job.id)).toBe("resp_invalid_plan");
     expect(db.listArtifacts(job.id)).toHaveLength(1);
     db.close();
   });

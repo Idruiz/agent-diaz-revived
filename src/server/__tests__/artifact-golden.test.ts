@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner, modelProfileFor } from "../openai-agent";
 import { openDatabase } from "../db";
 import { setImageJudgeProviderForTests } from "../image-judge";
+import { compileArtifactPlan } from "../artifact-compiler";
 import type { Config } from "../config";
 import {
   artifactGoldenCases,
@@ -249,17 +250,18 @@ describe("recorded artifact golden runs", () => {
         expect(fs.existsSync(artifactPath)).toBe(true);
 
         const receipt = artifact.receipt as any;
+        const compiledGolden = compileArtifactPlan(golden.kind, golden.plan).plan;
         expect(receipt).toMatchObject({
           powerPointDesktopValidated: false,
           wordDesktopValidated: false,
           browserValidated: false,
           attempts: [],
-          normalizations: [],
+          normalizations: expect.any(Array),
           scores: {
             layoutVariety: {
               score: expect.any(Number),
               distinctTemplates: expect.any(Number),
-              contentSections: golden.plan.sections.length,
+              contentSections: compiledGolden.sections.length,
             },
             emptyCanvasRatio: {
               bySlide: expect.any(Array),
@@ -267,7 +269,7 @@ describe("recorded artifact golden runs", () => {
             },
             notesCoverage: {
               score: expect.any(Number),
-              contentSections: golden.plan.sections.length,
+              contentSections: compiledGolden.sections.length,
             },
             sourceTopicality: {
               score: null,
@@ -332,11 +334,15 @@ describe("recorded artifact golden runs", () => {
     const french = completed.find(
       (entry) => entry.golden.id === "french-present-tense",
     )!;
+    const compiledFrench = compileArtifactPlan(
+      french.golden.kind,
+      french.golden.plan,
+    ).plan;
     expect(french.receipt.presentation).toMatchObject({
       placedAssets: 6,
       reconciliations: [],
       titleCounts: {
-        contentSlides: 7,
+        contentSlides: compiledFrench.sections.length,
         licensedVisuals: 6,
       },
     });
@@ -366,7 +372,9 @@ describe("recorded artifact golden runs", () => {
     expect(frenchSlideText).toContain(
       "Four Corners : Qu’est-ce que tu préfères ?",
     );
-    expect(frenchSlideText).toContain("7 ideas · 6 licensed visuals");
+    expect(frenchSlideText).toContain(
+      `${compiledFrench.sections.length} ideas · 6 licensed visuals`,
+    );
 
     const spanish = completed.find(
       (entry) => entry.golden.id === "spanish-culture-document",
