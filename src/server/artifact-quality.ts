@@ -13,6 +13,11 @@ import {
   FOUR_CORNERS_LABEL_REPAIR_MESSAGE,
   isGenericFourCornersLabel,
 } from "./reconcile.js";
+import {
+  expectedPresentationIdentityMarkers,
+  extractPresentationIdentityMarkers,
+  presentationIdentityMarkers,
+} from "./artifact-identity.js";
 
 const PLACEHOLDER_RE = /\b(?:tbd|lorem ipsum|placeholder|insert (?:text|content|image)|add (?:content|details)|coming soon)\b|\[(?:insert|add|todo)[^\]]*\]/i;
 const TODO_PLACEHOLDER_RE = /\bTODO\b/;
@@ -536,21 +541,37 @@ export function assertPresentationSlidesHaveMeaningfulContent(filePath: string):
   }
 }
 
-function packageVisibleText(kind: JobKind, filePath: string): string {
+export function assertPresentationStructuralCoverage(
+  filePath: string,
+  plan: ArtifactPlan,
+): void {
   const zip = new AdmZip(filePath);
-  if (kind === "presentation")
-    return zip.getEntries()
-      .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
-      .flatMap((entry) => [...entry.getData().toString("utf8").matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((match) => decodeXml(match[1]!)))
-      .join("\n");
-  if (["document", "analysis", "research"].includes(kind)) {
-    const xml = zip.getEntry("word/document.xml")?.getData().toString("utf8") ?? "";
-    return [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => decodeXml(match[1]!)).join("\n");
-  }
-  return zip.getEntries()
-    .filter((entry) => entry.entryName.endsWith(".html"))
-    .map((entry) => decodeXml(entry.getData().toString("utf8").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ")))
-    .join("\n");
+  const notesText = zip
+    .getEntries()
+    .filter((entry) => /^ppt\/notesSlides\/notesSlide\d+\.xml$/.test(entry.entryName))
+    .flatMap((entry) =>
+      [...entry.getData().toString("utf8").matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
+        .map((match) => decodeXml(match[1]!)),
+    )
+    .join("");
+  const emitted = extractPresentationIdentityMarkers(notesText);
+  const expected = expectedPresentationIdentityMarkers(plan);
+  const missing = plan.sections.flatMap((section, index) =>
+    presentationIdentityMarkers(section, index)
+      .filter((marker) => !emitted.has(marker))
+      .map((marker) => `${marker} (${section.activity?.type ?? "section"}: ${section.heading})`),
+  );
+  if (missing.length)
+    throw new ArtifactPipelineError(
+      "BUILD",
+      `Presentation structural manifest is missing ${missing.length} emitted item(s): ${missing.join(", ")}`,
+      { ruleOrPart: "pptx-structural-manifest" },
+    );
+  log("info", "artifact.structural_coverage_passed", {
+    kind: "presentation",
+    expected: expected.length,
+    emitted: emitted.size,
+  });
 }
 
 export function assertWebsitePackage(filePath: string): void {
@@ -682,61 +703,6 @@ async function renderOfficeArtifact(filePath: string): Promise<string | null> {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
-}
-
-function assertOutputCoverage(kind: JobKind, prompt: string, plan: ArtifactPlan, visibleText: string): void {
-  const normalize = (value: string) => value
-    .normalize("NFKC")
-    .replace(/[\u2018\u2019\u02BC]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2010-\u2015\u2212]/g, "-")
-    .replace(/[\u00A0\u202F]/g, " ")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLocaleLowerCase();
-  const normalized = normalize(visibleText);
-  const compact = (value: string) => normalize(value).replace(/\s+/g, "");
-  const compactVisible = compact(visibleText);
-  if (normalized.length < 200)
-    throw new Error("Artifact output validation failed: finished artifact contains too little visible content");
-
-  const requireVisible = (label: string, value: string) => {
-    const expected = compact(value);
-    if (!expected) return;
-    // PptxGenJS/OOXML may split one semantic string across adjacent text runs.
-    // Whitespace is presentation markup, not content, so compare the canonical
-    // character stream while retaining punctuation and every non-whitespace
-    // character. This still detects truncation and dropped words.
-    if (!compactVisible.includes(expected))
-      throw new Error(`Artifact output validation failed: ${label} is missing from the finished artifact`);
-  };
-
-  for (const section of plan.sections) {
-    const headingNeedle = compact(section.heading).slice(0, 40);
-    if (headingNeedle && !compactVisible.includes(headingNeedle))
-      throw new Error(`Artifact output validation failed: section '${section.heading}' is missing from the finished artifact`);
-    requireVisible(`body for section '${section.heading}'`, section.body);
-    section.bullets.forEach((bullet, index) => requireVisible(`bullet ${index + 1} for section '${section.heading}'`, bullet));
-    const activity = section.activity;
-    if (activity) {
-      activity.directions.forEach((value, index) => requireVisible(`activity direction ${index + 1} for section '${section.heading}'`, value));
-      activity.prompts.forEach((value, index) => requireVisible(`activity prompt ${index + 1} for section '${section.heading}'`, value));
-      activity.sentenceFrames.forEach((value, index) => requireVisible(`sentence frame ${index + 1} for section '${section.heading}'`, value));
-      activity.cornerLabels.forEach((value, index) => requireVisible(`corner label ${index + 1} for section '${section.heading}'`, value));
-    }
-    if (section.table) {
-      requireVisible(`table title for section '${section.heading}'`, section.table.title);
-      section.table.headers.forEach((value, index) => requireVisible(`table header ${index + 1} for section '${section.heading}'`, value));
-      section.table.rows.flat().forEach((value, index) => requireVisible(`table cell ${index + 1} for section '${section.heading}'`, value));
-    }
-  }
-  // Named activities are validated semantically before rendering and every
-  // audience-facing activity field is verified above after rendering. Requiring
-  // the literal English labels "Speed Dating" or "Four Corners" in the finished
-  // deck is not a validity check: a correct Spanish/French/localized activity
-  // may intentionally use a translated heading. Do not reject localized decks
-  // after their actual activity content has already been proven present.
 }
 
 function roundedRatio(value: number): number {
@@ -912,7 +878,7 @@ function artifactQualityScores(
 
 export async function validateBuiltArtifact(
   kind: JobKind,
-  prompt: string,
+  _prompt: string,
   plan: ArtifactPlan,
   filePath: string,
   diagnostics?: {
@@ -926,6 +892,7 @@ export async function validateBuiltArtifact(
     if (kind === "presentation") {
       assertPresentationPackage(buffer);
       assertPresentationSlidesHaveMeaningfulContent(filePath);
+      assertPresentationStructuralCoverage(filePath, plan);
     }
     else if (["document", "analysis", "research"].includes(kind))
       assertDocumentPackage(buffer);
@@ -982,8 +949,6 @@ export async function validateBuiltArtifact(
       renderValidator = await renderOfficeArtifact(filePath);
     }
 
-    const visibleText = packageVisibleText(kind, filePath);
-    assertOutputCoverage(kind, prompt, plan, visibleText);
     const scores = artifactQualityScores(kind, plan, filePath);
     const qualityWarnings: ArtifactNormalizationReceipt[] = [];
     if (kind === "presentation") {

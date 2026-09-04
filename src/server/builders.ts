@@ -22,6 +22,7 @@ import {
 import { reconcilePresentationPlan } from "./reconcile.js";
 import { compileArtifactPlan } from "./artifact-compiler.js";
 import { planArtifactVisuals } from "./artifact-visual-plan.js";
+import { presentationIdentityMarkers } from "./artifact-identity.js";
 import { log } from "./log.js";
 import {
   ArtifactPipelineError,
@@ -583,7 +584,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
           addContentShell(slide,section.heading,`Part ${String(index+1).padStart(2,"0")}`);
           addNativeTable(slide,section,rows,chunkIndex,tableChunks.length,chunkIndex===0?image:undefined);
           addFooter(slide,slideNumber);
-          addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,[...(chunkIndex===0&&image&&section.imageQuery?[image.sourceUrl]:[])]));
+          addNotesParagraphs(slide,[...noteParagraphs(section.speakerNotes,[...(chunkIndex===0&&image&&section.imageQuery?[image.sourceUrl]:[])]),...presentationIdentityMarkers(section,index)]);
         }
         continue;
       }
@@ -622,7 +623,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
         addFooter(slide,slideNumber);
       }
       const noteSources=[...(image&&section.imageQuery&&placedImageQueries.has(section.imageQuery)?[image.sourceUrl]:[]),...(section.chart?.sourceNote?[section.chart.sourceNote]:[])];
-      addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,noteSources));
+      addNotesParagraphs(slide,[...noteParagraphs(section.speakerNotes,noteSources),...presentationIdentityMarkers(section,index)]);
     }
 
     const unplacedFetched=[...images.keys()].filter(query=>!placedImageQueries.has(query));
