@@ -17,6 +17,15 @@ const vulnerabilities = report.vulnerabilities ?? {},
   names = Object.keys(vulnerabilities),
   allowed = new Set(["image-size", "pptxgenjs"]),
   unexpected = names.filter((name) => !allowed.has(name));
+
+// npm audit legitimately exits 0 with an empty production-vulnerability map.
+// That is strictly better than the reviewed exception below and must not be
+// mistaken for an advisory-schema regression.
+if (names.length === 0 && result.status === 0) {
+  console.log("[security] No production dependency vulnerabilities reported by npm audit.");
+  process.exit(0);
+}
+
 const advisoryUrls = new Set(
   (vulnerabilities["image-size"]?.via ?? [])
     .filter((item) => typeof item === "object")
