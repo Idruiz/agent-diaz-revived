@@ -20,6 +20,7 @@ import {
   type ImageJudgeSection,
 } from "./image-judge.js";
 import { reconcilePresentationPlan } from "./reconcile.js";
+import { compileArtifactPlan } from "./artifact-compiler.js";
 import { log } from "./log.js";
 import {
   ArtifactPipelineError,
@@ -113,7 +114,6 @@ async function collectImages(
   config: Config,
   plan: ArtifactPlan,
   prompt = "",
-  limit = 10,
 ): Promise<CollectedImages> {
   const requests = plan.sections
     .map((section, sectionIndex) => ({ section, sectionIndex }))
@@ -122,8 +122,7 @@ async function collectImages(
         section: ArtifactPlan["sections"][number] & { imageQuery: string };
         sectionIndex: number;
       } => Boolean(item.section.imageQuery),
-    )
-    .slice(0, limit);
+    );
   const rejectedWithReasons: ImageResolutionReceipt["rejectedWithReasons"] = [];
   const judgeSections: ImageJudgeSection[] = [];
 
@@ -348,7 +347,6 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     config,
     {...plan,sections:originalContentSections},
     prompt,
-    10,
   );
   const images=collectedImages.images;
   const reconciled=reconcilePresentationPlan(
@@ -643,7 +641,6 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     config,
     {...plan,sections:contentSections},
     prompt,
-    10,
   );
   const images=collectedImages.images;
   const placedImageQueries=new Set<string>();
@@ -848,7 +845,6 @@ async function website(
     config,
     {...plan,sections:contentSections},
     prompt,
-    12,
   );
   const images=collectedImages.images;
   const placedImageQueries=new Set<string>();
@@ -1024,10 +1020,14 @@ export async function buildArtifact(
   prompt = "",
   jobId = "",
 ): Promise<BuiltFile> {
-  if (kind === "presentation") return pptx(config, plan, prompt, jobId);
+  // Builder boundary is independently safe: callers cannot bypass deterministic
+  // pagination/reflow by invoking buildArtifact directly. The compiler is
+  // intentionally idempotent, so AgentRunner may also compile before this point.
+  const compiledPlan = compileArtifactPlan(kind, plan).plan;
+  if (kind === "presentation") return pptx(config, compiledPlan, prompt, jobId);
   if (kind === "document" || kind === "analysis" || kind === "research")
-    return docx(config, plan, prompt, kind, jobId);
-  if (kind === "website") return website(config, plan, prompt, jobId);
+    return docx(config, compiledPlan, prompt, kind, jobId);
+  if (kind === "website") return website(config, compiledPlan, prompt, jobId);
   throw new ArtifactPipelineError(
     "BUILD",
     `No deterministic builder for ${kind}`,

@@ -673,12 +673,36 @@ async function renderOfficeArtifact(filePath: string): Promise<string | null> {
 }
 
 function assertOutputCoverage(kind: JobKind, prompt: string, plan: ArtifactPlan, visibleText: string): void {
-  const normalized = visibleText.replace(/\s+/g, " ").trim();
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  const normalized = normalize(visibleText);
   if (normalized.length < 200)
     throw new Error("Artifact output validation failed: finished artifact contains too little visible content");
+
+  const requireVisible = (label: string, value: string) => {
+    const expected = normalize(value);
+    if (!expected) return;
+    if (!normalized.includes(expected))
+      throw new Error(`Artifact output validation failed: ${label} is missing from the finished artifact`);
+  };
+
   for (const section of plan.sections) {
-    if (!normalized.toLocaleLowerCase().includes(section.heading.toLocaleLowerCase().slice(0, 40)))
+    const headingNeedle = normalize(section.heading).slice(0, 40);
+    if (headingNeedle && !normalized.includes(headingNeedle))
       throw new Error(`Artifact output validation failed: section '${section.heading}' is missing from the finished artifact`);
+    requireVisible(`body for section '${section.heading}'`, section.body);
+    section.bullets.forEach((bullet, index) => requireVisible(`bullet ${index + 1} for section '${section.heading}'`, bullet));
+    const activity = section.activity;
+    if (activity) {
+      activity.directions.forEach((value, index) => requireVisible(`activity direction ${index + 1} for section '${section.heading}'`, value));
+      activity.prompts.forEach((value, index) => requireVisible(`activity prompt ${index + 1} for section '${section.heading}'`, value));
+      activity.sentenceFrames.forEach((value, index) => requireVisible(`sentence frame ${index + 1} for section '${section.heading}'`, value));
+      activity.cornerLabels.forEach((value, index) => requireVisible(`corner label ${index + 1} for section '${section.heading}'`, value));
+    }
+    if (section.table) {
+      requireVisible(`table title for section '${section.heading}'`, section.table.title);
+      section.table.headers.forEach((value, index) => requireVisible(`table header ${index + 1} for section '${section.heading}'`, value));
+      section.table.rows.flat().forEach((value, index) => requireVisible(`table cell ${index + 1} for section '${section.heading}'`, value));
+    }
   }
   if (kind === "presentation" && SPEED_DATING_RE.test(prompt) && !SPEED_DATING_RE.test(normalized))
     throw new Error("Artifact output validation failed: Speed Dating is missing from the finished deck");
