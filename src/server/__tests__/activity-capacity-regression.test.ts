@@ -69,12 +69,29 @@ const prompts = [
   "Qu'est-ce que tu n'as pas fait pendant le week-end mais que tu voudrais essayer la prochaine fois?",
 ];
 
-function visibleXml(filePath: string): string {
+function decodeXml(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function visibleText(filePath: string): string {
   const zip = new AdmZip(filePath);
-  return zip.getEntries()
+  return zip
+    .getEntries()
     .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
-    .map((entry) => entry.getData().toString("utf8"))
-    .join("\n");
+    .flatMap((entry) =>
+      [...entry.getData().toString("utf8").matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map(
+        (match) => decodeXml(match[1]!),
+      ),
+    )
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 describe("activity capacity contract", () => {
@@ -82,49 +99,98 @@ describe("activity capacity contract", () => {
     const plan = ArtifactPlanSchema.parse({
       title: "Passé composé au Québec",
       subtitle: "Speed Dating classroom practice",
-      requirements: [{ id: "R1", text: "Include complete Speed Dating practice", mandatory: true }],
-      sections: [{
-        heading: "Speed Dating : Une fin de semaine au Québec",
-        body: "Interviewe plusieurs camarades afin de pratiquer le passé composé dans un contexte culturel québécois et de comparer différentes expériences de fin de semaine.",
-        bullets: ["Écoute activement.", "Pose une question de suivi."],
-        speakerNotes: "",
-        requirementIds: ["R1"],
-        layout: "speed_dating",
-        activity: { type: "speed_dating", durationMinutes: 12, directions: longDirections, prompts, sentenceFrames: frames, cornerLabels: [] },
-      }],
+      requirements: [
+        {
+          id: "R1",
+          text: "Include complete Speed Dating practice",
+          mandatory: true,
+        },
+      ],
+      sections: [
+        {
+          heading: "Speed Dating : Une fin de semaine au Québec",
+          body: "Interviewe plusieurs camarades afin de pratiquer le passé composé dans un contexte culturel québécois et de comparer différentes expériences de fin de semaine.",
+          bullets: ["Écoute activement.", "Pose une question de suivi."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "speed_dating",
+          activity: {
+            type: "speed_dating",
+            durationMinutes: 12,
+            directions: longDirections,
+            prompts,
+            sentenceFrames: frames,
+            cornerLabels: [],
+          },
+        },
+      ],
       sources: [],
     });
     const compiled = compileArtifactPlan("presentation", plan).plan;
-    const activitySlides = compiled.sections.filter((section) => section.activity?.type === "speed_dating");
+    const activitySlides = compiled.sections.filter(
+      (section) => section.activity?.type === "speed_dating",
+    );
     expect(activitySlides).toHaveLength(2);
-    expect(activitySlides.every((section) => section.activity!.directions.length === 0)).toBe(true);
-    expect(activitySlides.every((section) => section.activity!.sentenceFrames.length === 0)).toBe(true);
-    expect(activitySlides.map((section) => section.activity!.prompts.length)).toEqual([4, 2]);
+    expect(
+      activitySlides.every((section) => section.activity!.directions.length === 0),
+    ).toBe(true);
+    expect(
+      activitySlides.every(
+        (section) => section.activity!.sentenceFrames.length === 0,
+      ),
+    ).toBe(true);
+    expect(activitySlides.map((section) => section.activity!.prompts.length)).toEqual([
+      4, 2,
+    ]);
     const supportCopy = compiled.sections.flatMap((section) => section.bullets);
-    for (const value of [...longDirections, ...frames]) expect(supportCopy).toContain(value);
+    for (const value of [...longDirections, ...frames])
+      expect(supportCopy).toContain(value);
   });
 
   it("preserves every long French direction, frame, and prompt in the finished PPTX", async () => {
     const plan = ArtifactPlanSchema.parse({
       title: "Passé composé au Québec",
       subtitle: "Speed Dating classroom practice",
-      requirements: [{ id: "R1", text: "Include complete Speed Dating practice", mandatory: true }],
-      sections: [{
-        heading: "Speed Dating : Une fin de semaine au Québec",
-        body: "Interviewe plusieurs camarades afin de pratiquer le passé composé dans un contexte culturel québécois et de comparer différentes expériences de fin de semaine.",
-        bullets: ["Écoute activement.", "Pose une question de suivi."],
-        speakerNotes: "",
-        requirementIds: ["R1"],
-        layout: "speed_dating",
-        activity: { type: "speed_dating", durationMinutes: 12, directions: longDirections, prompts, sentenceFrames: frames, cornerLabels: [] },
-      }],
+      requirements: [
+        {
+          id: "R1",
+          text: "Include complete Speed Dating practice",
+          mandatory: true,
+        },
+      ],
+      sections: [
+        {
+          heading: "Speed Dating : Une fin de semaine au Québec",
+          body: "Interviewe plusieurs camarades afin de pratiquer le passé composé dans un contexte culturel québécois et de comparer différentes expériences de fin de semaine.",
+          bullets: ["Écoute activement.", "Pose une question de suivi."],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "speed_dating",
+          activity: {
+            type: "speed_dating",
+            durationMinutes: 12,
+            directions: longDirections,
+            prompts,
+            sentenceFrames: frames,
+            cornerLabels: [],
+          },
+        },
+      ],
       sources: [],
     });
-    const built = await buildArtifact(config, "presentation", plan, "Create a French passé composé lesson with Speed Dating", "activity-capacity-regression");
-    const xml = visibleXml(built.path);
+    const built = await buildArtifact(
+      config,
+      "presentation",
+      plan,
+      "Create a French passé composé lesson with Speed Dating",
+      "activity-capacity-regression",
+    );
+    const text = visibleText(built.path);
     for (const value of [...longDirections, ...frames, ...prompts])
-      expect(xml).toContain(value.replace(/&/g, "&amp;"));
-    const slideCount = new AdmZip(built.path).getEntries().filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName)).length;
+      expect(text).toContain(value);
+    const slideCount = new AdmZip(built.path)
+      .getEntries()
+      .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName)).length;
     expect(slideCount).toBeGreaterThanOrEqual(6);
     expect((built.validationReceipt as any).attempts).toEqual([]);
   }, 30_000);
