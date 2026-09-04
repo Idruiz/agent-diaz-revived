@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import PptxGenModule from "pptxgenjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const buildArtifactMock = vi.hoisted(() => vi.fn());
@@ -13,8 +14,15 @@ import {
   artifactFailureFingerprint,
   modelProfileFor,
 } from "../openai-agent";
-import { ArtifactPipelineError } from "../artifact-quality";
+import {
+  ArtifactPipelineError,
+  validateBuiltArtifact,
+} from "../artifact-quality";
+import type { ArtifactPlan } from "../../shared/contracts";
 import type { Config } from "../config";
+
+const PptxGenJS = ((PptxGenModule as any).default ??
+  PptxGenModule) as typeof PptxGenModule;
 
 const roots: string[] = [];
 afterEach(() => {
@@ -108,6 +116,94 @@ describe("presentation delivery hotfix", () => {
       }),
     );
   });
+
+  it("allows one deterministic density repair, then subjects the PPTX to real hard validators instead of withholding it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-density-soft-gate-"));
+    roots.push(root);
+    const target = path.join(root, "sparse-but-valid.pptx");
+    const pptx = new PptxGenJS();
+    pptx.layout = "LAYOUT_WIDE";
+    pptx.author = "Agent Díaz regression";
+    pptx.title = "Sparse but valid";
+
+    const title = pptx.addSlide();
+    title.addText("Sparse but valid", {
+      x: 0.25,
+      y: 0.25,
+      w: 1.5,
+      h: 0.35,
+      fontSize: 12,
+      margin: 0,
+    });
+    const sectionBodies = [
+      "Finished content for the first section explains the concept clearly, includes concrete audience-facing detail, and remains intentionally placed inside a small deterministic text box for this regression.",
+      "Finished content for the second section adds another complete explanation so output coverage is substantial while the serialized slide remains intentionally sparse for the density-quality test.",
+    ];
+    for (const [index, body] of sectionBodies.entries()) {
+      const slide = pptx.addSlide();
+      slide.addText(`Sparse section ${index + 1}\n${body}`, {
+        x: 0.25,
+        y: 0.25,
+        w: 1.6,
+        h: 0.45,
+        fontSize: 8,
+        margin: 0,
+        fit: "shrink",
+      });
+    }
+    const raw = Buffer.from(
+      (await pptx.write({ outputType: "nodebuffer" })) as ArrayBuffer,
+    );
+    fs.writeFileSync(target, raw);
+
+    const plan: ArtifactPlan = {
+      title: "Sparse but valid",
+      subtitle: "Regression fixture",
+      requirements: [],
+      sections: sectionBodies.map((body, index) => ({
+        heading: `Sparse section ${index + 1}`,
+        body,
+        bullets: [],
+        speakerNotes: "Regression note with complete presenter guidance.",
+        requirementIds: [],
+        layout: "standard",
+      })),
+      pages: undefined,
+      sources: [],
+    };
+
+    let firstFailure: unknown;
+    try {
+      await validateBuiltArtifact(
+        "presentation",
+        "",
+        plan,
+        target,
+        { jobId: "density-regression", presentationContentSlides: [2, 3] },
+      );
+    } catch (error) {
+      firstFailure = error;
+    }
+    expect(firstFailure).toBeInstanceOf(ArtifactPipelineError);
+    expect((firstFailure as ArtifactPipelineError).ruleOrPart).toBe(
+      "pptx-empty-canvas",
+    );
+
+    const receipt = await validateBuiltArtifact(
+      "presentation",
+      "",
+      plan,
+      target,
+      { jobId: "density-regression", presentationContentSlides: [2, 3] },
+    );
+    expect(receipt.kind).toBe("presentation");
+    expect(
+      receipt.scores.emptyCanvasRatio.bySlide
+        .slice(1, 3)
+        .every((ratio) => ratio > 0.55),
+    ).toBe(true);
+    expect(receipt.schemaValidator).toContain("Open XML SDK");
+  }, 20_000);
 
   it("never allows a same-plan deterministic build failure to reach attempt 6", async () => {
     const { config, db } = harness();
