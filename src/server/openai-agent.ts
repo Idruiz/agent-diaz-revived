@@ -1868,12 +1868,12 @@ export class AgentRunner {
 
             this.db.updateJob(jobId, {
               status: "building",
-              progress: Math.min(96, 90 + Math.min(buildAttempt, 6)),
+              progress: 82,
               error: null,
               message:
                 buildAttempt === 0
-                  ? "Building and validating artifact"
-                  : `Rebuilding artifact after validation repair (attempt ${buildAttempt + 1})`,
+                  ? "Preparing deterministic artifact build"
+                  : `Rebuilding artifact after asset failure (attempt ${buildAttempt + 1})`,
             });
 
             const buildWorkspace = path.join(
@@ -1890,6 +1890,16 @@ export class AgentRunner {
                 plan,
                 job.prompt,
                 jobId,
+                (event) => {
+                  const currentProgress = this.db.getJob(jobId)?.progress ?? 82;
+                  this.db.updateJob(jobId, {
+                    status: "building",
+                    progress: Math.max(currentProgress, Math.min(99, event.progress)),
+                    error: null,
+                    message: event.message,
+                  });
+                  log("info", "artifact.build_progress", { jobId, kind: job.kind, ...event });
+                },
               );
               const latestRunState =
                 this.db.getArtifactRunState(jobId) ?? artifactRunState;

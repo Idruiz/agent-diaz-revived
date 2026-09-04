@@ -14,6 +14,7 @@ import {
   searchCommonsCandidates,
   type CommonsImageCandidate,
   type RealImage,
+  type ImageProviderEvent,
 } from "./real-images.js";
 import {
   judgeImageCandidates,
@@ -34,6 +35,18 @@ import {
 const PptxGenJS=((PptxGenModule as any).default??PptxGenModule) as typeof PptxGenModule;
 
 export interface BuiltFile { name:string; mime:string; path:string; size:number; validationReceipt:ArtifactValidationReceipt; }
+export interface ArtifactBuildProgress {
+  progress: number;
+  stage: "visual-plan" | "image-search" | "image-judge" | "image-download" | "render" | "validate" | "package";
+  message: string;
+  current?: number;
+  total?: number;
+  completed?: number;
+  found?: number;
+}
+export type ArtifactBuildProgressHandler = (event: ArtifactBuildProgress) => void;
+const emitBuildProgress = (handler: ArtifactBuildProgressHandler | undefined, event: ArtifactBuildProgress) => handler?.(event);
+
 const slug=(s:string)=>s.normalize("NFKD").replace(/[^a-zA-Z0-9]+/g,"_").replace(/^_|_$/g,"").slice(0,80)||"artifact";
 const escapeHtml=(s:string)=>s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
 export interface ImageResolutionReceipt {
@@ -112,10 +125,24 @@ const inferAudience = (prompt: string) => {
   return "general audience";
 };
 
+async function mapConcurrent<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!, index);
+    }
+  }));
+  return results;
+}
+
 async function collectImages(
   config: Config,
   plan: ArtifactPlan,
   prompt = "",
+  progress?: ArtifactBuildProgressHandler,
 ): Promise<CollectedImages> {
   const requests = plan.sections
     .map((section, sectionIndex) => ({ section, sectionIndex }))
@@ -126,181 +153,146 @@ async function collectImages(
       } => Boolean(item.section.imageQuery),
     );
   const rejectedWithReasons: ImageResolutionReceipt["rejectedWithReasons"] = [];
-  const judgeSections: ImageJudgeSection[] = [];
+  const total = requests.length;
+  let searchCompleted = 0;
+  let fetched = 0;
+  let downloadCompleted = 0;
 
-  for (const { section, sectionIndex } of requests) {
+  const providerEvent = (event: ImageProviderEvent) => {
+    const seconds = Math.max(1, Math.ceil(event.waitMs / 1000));
+    const message = event.type === "rate_limit" || event.type === "cooldown_wait"
+      ? `Image provider rate-limited — waiting ${seconds}s · ${searchCompleted}/${total} searches complete · ${fetched} images ready`
+      : `Image provider retrying in ${seconds}s · ${searchCompleted}/${total} searches complete`;
+    emitBuildProgress(progress, {
+      progress: 87,
+      stage: "image-search",
+      message,
+      completed: searchCompleted,
+      total,
+      found: fetched,
+    });
+  };
+
+  if (!total) {
+    emitBuildProgress(progress, { progress: 88, stage: "image-search", message: "No external photographs required for this artifact", completed: 0, total: 0, found: 0 });
+    return { images: new Map(), metrics: { requested: 0, fetched: 0, judged: 0, judgeCalls: 0, rejectedWithReasons, placed: 0 } };
+  }
+
+  emitBuildProgress(progress, { progress: 84, stage: "image-search", message: `Finding visuals: 0/${total} searches complete`, completed: 0, total, found: 0 });
+  const judgeSections = await mapConcurrent(requests, 3, async ({ section, sectionIndex }, requestIndex) => {
     const query = section.imageQuery;
+    emitBuildProgress(progress, {
+      progress: 84 + Math.min(3, Math.floor((searchCompleted / Math.max(1, total)) * 4)),
+      stage: "image-search",
+      message: `Finding visual ${requestIndex + 1} of ${total}: ${section.heading}`,
+      current: requestIndex + 1,
+      total,
+      completed: searchCompleted,
+      found: fetched,
+    });
     const candidateMap = new Map<string, CommonsImageCandidate>();
-    const searchQueries = [
-      query,
-      section.heading,
-      [section.heading, meaningfulWords(section.body)]
-        .filter(Boolean)
-        .join(" "),
-    ].filter(
-      (value, index, all) =>
-        Boolean(value.trim()) &&
-        all.findIndex(
-          (candidate) =>
-            candidate.toLocaleLowerCase() === value.toLocaleLowerCase(),
-        ) === index,
+    const searchQueries = [query, section.heading, [section.heading, meaningfulWords(section.body)].filter(Boolean).join(" ")].filter(
+      (value, index, all) => Boolean(value.trim()) && all.findIndex((candidate) => candidate.toLocaleLowerCase() === value.toLocaleLowerCase()) === index,
     );
-
     for (const searchQuery of searchQueries) {
       if (candidateMap.size >= 8) break;
       try {
-        const result = await searchCommonsCandidates(
-          searchQuery,
-          8 - candidateMap.size,
-        );
-        for (const candidate of result.candidates)
-          if (!candidateMap.has(candidate.id))
-            candidateMap.set(candidate.id, candidate);
-        for (const rejected of result.rejected)
-          rejectedWithReasons.push({
-            sectionIndex,
-            query,
-            candidateId: rejected.candidateId,
-            title: rejected.title,
-            reason: rejected.reason,
-          });
+        const result = await searchCommonsCandidates(searchQuery, 8 - candidateMap.size, { onEvent: providerEvent });
+        for (const candidate of result.candidates) if (!candidateMap.has(candidate.id)) candidateMap.set(candidate.id, candidate);
+        for (const rejected of result.rejected) rejectedWithReasons.push({ sectionIndex, query, candidateId: rejected.candidateId, title: rejected.title, reason: rejected.reason });
       } catch (error) {
-        rejectedWithReasons.push({
-          sectionIndex,
-          query,
-          candidateId: null,
-          title: null,
-          reason: `Candidate search failed for '${searchQuery}': ${error instanceof Error ? error.message : String(error)}`,
-        });
+        rejectedWithReasons.push({ sectionIndex, query, candidateId: null, title: null, reason: `Candidate search failed for '${searchQuery}': ${error instanceof Error ? error.message : String(error)}` });
       }
       if (candidateMap.size >= 4) break;
     }
-
-    judgeSections.push({
-      sectionIndex,
-      heading: section.heading,
-      body: section.body,
-      audience: inferAudience(prompt),
-      query,
-      candidates: [...candidateMap.values()].slice(0, 8),
+    searchCompleted++;
+    emitBuildProgress(progress, {
+      progress: 84 + Math.min(4, Math.floor((searchCompleted / Math.max(1, total)) * 4)),
+      stage: "image-search",
+      message: `Finding visuals: ${searchCompleted}/${total} searches complete · ${candidateMap.size} candidates for ${section.heading}`,
+      current: requestIndex + 1,
+      total,
+      completed: searchCompleted,
+      found: fetched,
     });
-  }
+    return { sectionIndex, heading: section.heading, body: section.body, audience: inferAudience(prompt), query, candidates: [...candidateMap.values()].slice(0, 8) } satisfies ImageJudgeSection;
+  });
 
-  const judged = await judgeImageCandidates(config, judgeSections);
+  emitBuildProgress(progress, { progress: 89, stage: "image-judge", message: `Judging relevance for ${total} visual slots`, completed: 0, total, found: fetched });
+  const judged = await judgeImageCandidates(config, judgeSections, {
+    onProviderEvent: providerEvent,
+    onProgress: (message, completed, judgeTotal) => emitBuildProgress(progress, {
+      progress: 89 + Math.min(2, Math.floor((completed / Math.max(1, judgeTotal)) * 2)),
+      stage: "image-judge",
+      message: `${message} · ${fetched} images ready`,
+      completed,
+      total: judgeTotal,
+      found: fetched,
+    }),
+  });
+
   const images = new Map<string, RealImage>();
-  let fetched = 0;
-
-  for (const section of judgeSections) {
-    const decision = judged.decisions.find(
-      (item) => item.sectionIndex === section.sectionIndex,
-    );
+  await mapConcurrent(judgeSections, 3, async (section, sectionPosition) => {
+    const decision = judged.decisions.find((item) => item.sectionIndex === section.sectionIndex);
     const chosen = decision?.chosenCandidate
-      ? section.candidates.find(
-          (candidate) => candidate.id === decision.chosenCandidate,
-        )
+      ? section.candidates.find((candidate) => candidate.id === decision.chosenCandidate)
       : undefined;
-
     if (!chosen) {
-      for (const candidate of section.candidates)
-        rejectedWithReasons.push({
-          sectionIndex: section.sectionIndex,
-          query: section.query,
-          candidateId: candidate.id,
-          title: candidate.title,
-          reason: decision?.reason
-            ? `Not selected by image judge: ${decision.reason}`
-            : "Not selected by image judge.",
-        });
-      rejectedWithReasons.push({
-        sectionIndex: section.sectionIndex,
-        query: section.query,
-        candidateId: null,
-        title: null,
-        reason:
-          decision?.reason ||
-          "No candidate met the qualitative relevance bar.",
-      });
-      continue;
-    }
-
-    const downloadOrder = [
-      chosen,
-      ...section.candidates.filter((candidate) => candidate.id !== chosen.id),
-    ];
-    const failedIds = new Set<string>();
-    let selected: CommonsImageCandidate | undefined;
-    for (const candidate of downloadOrder) {
-      try {
-        const image = await downloadCommonsCandidate(candidate);
-        images.set(section.query, image);
-        fetched++;
-        selected = candidate;
-        log(
-          "info",
-          candidate.id === chosen.id
-            ? "artifact.image_judged_retrieved"
-            : "artifact.image_fallback_retrieved",
-          {
-            query: section.query,
-            sectionIndex: section.sectionIndex,
-            candidateId: candidate.id,
-            title: candidate.title,
-            primaryCandidateId: chosen.id,
-          },
-        );
-        break;
-      } catch (error) {
-        failedIds.add(candidate.id);
-        rejectedWithReasons.push({
-          sectionIndex: section.sectionIndex,
-          query: section.query,
-          candidateId: candidate.id,
-          title: candidate.title,
-          reason: `Candidate download failed: ${error instanceof Error ? error.message : String(error)}`,
-        });
-        log("warn", "artifact.image_candidate_download_failed", {
-          query: section.query,
-          sectionIndex: section.sectionIndex,
-          candidateId: candidate.id,
-          primaryCandidateId: chosen.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    for (const candidate of section.candidates) {
-      if (candidate.id === selected?.id || failedIds.has(candidate.id)) continue;
-      rejectedWithReasons.push({
+      for (const candidate of section.candidates) rejectedWithReasons.push({
         sectionIndex: section.sectionIndex,
         query: section.query,
         candidateId: candidate.id,
         title: candidate.title,
-        reason: selected
-          ? `Not used after successfully retrieving '${selected.title}'.`
-          : "Not selected by image judge.",
+        reason: decision?.reason ? `Not selected by image judge: ${decision.reason}` : "Not selected by image judge.",
       });
+      rejectedWithReasons.push({ sectionIndex: section.sectionIndex, query: section.query, candidateId: null, title: null, reason: decision?.reason || "No candidate met the qualitative relevance bar." });
+      downloadCompleted++;
+      emitBuildProgress(progress, { progress: 92 + Math.min(2, Math.floor((downloadCompleted / Math.max(1, total)) * 2)), stage: "image-download", message: `Visual ${sectionPosition + 1}/${total} unresolved · ${fetched} images ready`, current: sectionPosition + 1, total, completed: downloadCompleted, found: fetched });
+      return;
     }
-    if (!selected)
-      rejectedWithReasons.push({
-        sectionIndex: section.sectionIndex,
-        query: section.query,
-        candidateId: null,
-        title: null,
-        reason: "All judged image candidates failed download.",
-      });
-  }
 
-  return {
-    images,
-    metrics: {
-      requested: requests.length,
-      fetched,
-      judged: judgeSections.length,
-      judgeCalls: judged.judgeCalls,
-      rejectedWithReasons,
-      placed: 0,
-    },
-  };
+    emitBuildProgress(progress, { progress: 92, stage: "image-download", message: `Downloading visual ${sectionPosition + 1} of ${total}: ${section.heading}`, current: sectionPosition + 1, total, completed: downloadCompleted, found: fetched });
+    const downloadOrder = [chosen, ...section.candidates.filter((candidate) => candidate.id !== chosen.id)];
+    const failedIds = new Set<string>();
+    let selected: CommonsImageCandidate | undefined;
+    for (const candidate of downloadOrder) {
+      try {
+        const image = await downloadCommonsCandidate(candidate, { onEvent: providerEvent });
+        images.set(section.query, image);
+        fetched++;
+        selected = candidate;
+        log("info", candidate.id === chosen.id ? "artifact.image_judged_retrieved" : "artifact.image_fallback_retrieved", {
+          query: section.query,
+          sectionIndex: section.sectionIndex,
+          candidateId: candidate.id,
+          title: candidate.title,
+          primaryCandidateId: chosen.id,
+        });
+        break;
+      } catch (error) {
+        failedIds.add(candidate.id);
+        rejectedWithReasons.push({ sectionIndex: section.sectionIndex, query: section.query, candidateId: candidate.id, title: candidate.title, reason: `Candidate download failed: ${error instanceof Error ? error.message : String(error)}` });
+        log("warn", "artifact.image_candidate_download_failed", { query: section.query, sectionIndex: section.sectionIndex, candidateId: candidate.id, primaryCandidateId: chosen.id, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    for (const candidate of section.candidates) {
+      if (candidate.id === selected?.id || failedIds.has(candidate.id)) continue;
+      rejectedWithReasons.push({ sectionIndex: section.sectionIndex, query: section.query, candidateId: candidate.id, title: candidate.title, reason: selected ? `Not used after successfully retrieving '${selected.title}'.` : "Not selected by image judge." });
+    }
+    if (!selected) rejectedWithReasons.push({ sectionIndex: section.sectionIndex, query: section.query, candidateId: null, title: null, reason: "All judged image candidates failed download." });
+    downloadCompleted++;
+    emitBuildProgress(progress, {
+      progress: 92 + Math.min(2, Math.floor((downloadCompleted / Math.max(1, total)) * 2)),
+      stage: "image-download",
+      message: `Images ready: ${fetched}/${total} · processed ${downloadCompleted}/${total}`,
+      current: sectionPosition + 1,
+      total,
+      completed: downloadCompleted,
+      found: fetched,
+    });
+  });
+
+  return { images, metrics: { requested: requests.length, fetched, judged: judgeSections.length, judgeCalls: judged.judgeCalls, rejectedWithReasons, placed: 0 } };
 }
 
 const imageDataUri=(image:RealImage)=>`data:${image.mime};base64,${image.bytes.toString("base64")}`;
@@ -380,12 +372,13 @@ function addNotesParagraphs(slide: any, paragraphs: string[]): void {
   if (clean.length) slide.addNotes(clean.join("\r\n\r\n"));
 }
 
-async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
+async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId="",progress?:ArtifactBuildProgressHandler):Promise<BuiltFile>{
   const originalContentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const collectedImages=await collectImages(
     config,
     {...plan,sections:originalContentSections},
     prompt,
+    progress,
   );
   const images=collectedImages.images;
   const reconciled=reconcilePresentationPlan(
@@ -460,24 +453,40 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     };
     const addNativeDiagram=(slide:any,section:ArtifactPlan["sections"][number],image?:RealImage)=>{
       const diagram=section.diagram!,nodes=diagram.nodes.slice(0,8),availableW=image?9.08:11.85;
-      const columns=Math.min(4,nodes.length),rows=Math.ceil(nodes.length/columns),gapX=.28,gapY=.34;
-      const boxW=(availableW-(columns-1)*gapX)/columns;
-      const boxH=Math.max(1.35,(3.55-(rows-1)*gapY)/rows);
-      const startX=.75,startY=2.0;
+      const longest=Math.max(0,...nodes.map(node=>node.length));
+      const columns=nodes.length<=4&&longest<=28?Math.max(1,nodes.length):longest>52?Math.min(2,nodes.length):Math.min(3,nodes.length);
+      const rows=Math.ceil(nodes.length/columns),gapX=.24,gapY=.25,boxW=(availableW-(columns-1)*gapX)/columns;
+      const fontSize=longest>62?11.5:longest>38?12.5:13.5;
+      const rawHeights=Array.from({length:rows},()=>.82);
+      nodes.forEach((node,index)=>{
+        const row=Math.floor(index/columns);
+        rawHeights[row]=Math.max(rawHeights[row]!,estimatedTextHeight(node,boxW-.28,fontSize,.04,1.12)+.2);
+      });
+      const availableH=3.65,totalRaw=rawHeights.reduce((sum,value)=>sum+value,0)+(rows-1)*gapY;
+      const scale=Math.min(1,availableH/Math.max(.1,totalRaw));
+      const rowHeights=rawHeights.map(value=>Math.max(.72,value*scale));
+      const rowY:number[]=[];let cursorY=2.0;
+      rowHeights.forEach(height=>{rowY.push(cursorY);cursorY+=height+gapY;});
+      const boxes=nodes.map((node,index)=>{const row=Math.floor(index/columns),col=index%columns;return{node,row,col,x:.75+col*(boxW+gapX),y:rowY[row]!,w:boxW,h:rowHeights[row]!};});
       addModelText(slide,short(diagram.title,120),{x:.75,y:1.5,w:availableW,fontSize:18,bold:true,color:navy,align:"center",margin:0},{minHeight:.3,maxHeight:.5});
-      for(let index=0;index<nodes.length-1;index++){
-        const row=Math.floor(index/columns),col=index%columns,nextRow=Math.floor((index+1)/columns);
-        if(row===nextRow){
-          const x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);
-          slide.addShape(p.ShapeType.line,{x:x+boxW,y:y+boxH/2,w:gapX,h:0,line:{color:blue,pt:2.2,endArrowType:"triangle"}});
+      boxes.forEach((box,index)=>{
+        slide.addShape(p.ShapeType.roundRect,{x:box.x,y:box.y,w:box.w,h:box.h,rectRadius:.05,fill:{color:index%2?pale:"F1E5C5"},line:{color:gold,pt:1.2},shadow:{type:"outer",color:"000000",opacity:.08,blur:1,angle:45,distance:.4}});
+        addModelText(slide,box.node,{x:box.x+.14,y:box.y+.08,w:box.w-.28,fontSize,bold:true,color:navy,align:"center",valign:"mid",margin:.04,breakLine:false},{minHeight:.28,maxHeight:box.h-.16,lineHeight:1.12});
+      });
+      for(let index=0;index<boxes.length-1;index++){
+        const current=boxes[index]!,next=boxes[index+1]!;
+        if(current.row===next.row){
+          slide.addShape(p.ShapeType.line,{x:current.x+current.w,y:current.y+current.h/2,w:Math.max(.05,next.x-(current.x+current.w)),h:0,line:{color:blue,pt:1.8,endArrowType:"triangle"}});
+        }else{
+          const startX=current.x+current.w/2,startY=current.y+current.h,endX=next.x+next.w/2,endY=next.y;
+          const midY=startY+Math.max(.08,(endY-startY)/2);
+          slide.addShape(p.ShapeType.line,{x:startX,y:startY,w:0,h:Math.max(.05,midY-startY),line:{color:blue,pt:1.6}});
+          slide.addShape(p.ShapeType.line,{x:Math.min(startX,endX),y:midY,w:Math.abs(endX-startX),h:0,line:{color:blue,pt:1.6}});
+          slide.addShape(p.ShapeType.line,{x:endX,y:midY,w:0,h:Math.max(.05,endY-midY),line:{color:blue,pt:1.6,endArrowType:"triangle"}});
         }
       }
-      nodes.forEach((node,index)=>{
-        const row=Math.floor(index/columns),col=index%columns,x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);
-        slide.addShape(p.ShapeType.roundRect,{x,y,w:boxW,h:boxH,rectRadius:.05,fill:{color:index%2?pale:"F1E5C5"},line:{color:gold,pt:1.2},shadow:{type:"outer",color:"000000",opacity:.1,blur:1,angle:45,distance:.5}});
-        addModelText(slide,short(node,100),{x:x+.15,y:y+.12,w:boxW-.3,fontSize:20,bold:true,color:navy,align:"center",valign:"mid",margin:.04},{minHeight:.36,maxHeight:boxH-.24});
-      });
-      if(diagram.caption||section.body)addModelText(slide,short(diagram.caption||section.body,320),{x:.9,y:5.95,w:availableW-.3,fontSize:17,color:muted,align:"center",margin:0},{minHeight:.3,maxHeight:.7});
+      const captionY=Math.min(6.05,cursorY+.06);
+      if(diagram.caption||section.body)addModelText(slide,short(diagram.caption||section.body,320),{x:.9,y:captionY,w:availableW-.3,fontSize:14,color:muted,align:"center",margin:0},{minHeight:.24,maxHeight:.62});
       if(image)addStructuredPhoto(slide,section,image);
     };
     const addNativeTable=(slide:any,section:ArtifactPlan["sections"][number],rows:string[][],chunkIndex:number,chunkCount:number,image?:RealImage)=>{
@@ -652,6 +661,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     return{raw,placedImageQueries,usedActivityTemplates,contentSlideNumbers};
   };
 
+  emitBuildProgress(progress,{progress:95,stage:"render",message:`Rendering presentation · ${contentSections.length} content sections · ${images.size} photographs ready`,completed:images.size,total:collectedImages.metrics.requested,found:images.size});
   const rendered=await renderAttempt(false);
   const ratios=estimatePptxEmptyCanvasRatio(target).bySlide;
   collectedImages.metrics.placed=rendered.placedImageQueries.size;
@@ -663,6 +673,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     placed:collectedImages.metrics.placed,
     unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
   });
+  emitBuildProgress(progress,{progress:97,stage:"validate",message:"Checking PPTX package and desktop-render compatibility"});
   const validationReceipt=await validateBuiltArtifact(
     "presentation",
     prompt,
@@ -682,15 +693,17 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     titleCounts:{contentSlides:rendered.contentSlideNumbers.length,licensedVisuals:rendered.placedImageQueries.size},
     layoutFitting:{retried:false,before:null,after:ratios},
   };
+  emitBuildProgress(progress,{progress:99,stage:"package",message:"Presentation validated and ready for export"});
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:rendered.raw.length,validationReceipt};
 }
 
-async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId=""):Promise<BuiltFile>{
+async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId="",progress?:ArtifactBuildProgressHandler):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const collectedImages=await collectImages(
     config,
     {...plan,sections:contentSections},
     prompt,
+    progress,
   );
   const images=collectedImages.images;
   const placedImageQueries=new Set<string>();
@@ -860,6 +873,7 @@ async function website(
   plan:ArtifactPlan,
   prompt="",
   jobId="",
+  progress?:ArtifactBuildProgressHandler,
 ):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(
     section=>!isSourcesHeading(section.heading),
@@ -904,8 +918,10 @@ async function website(
     config,
     {...plan,sections:contentSections},
     prompt,
+    progress,
   );
   const images=collectedImages.images;
+  emitBuildProgress(progress,{progress:95,stage:"render",message:`Rendering ${pages.length} website pages · ${images.size} photographs ready`,completed:images.size,total:collectedImages.metrics.requested,found:images.size});
   const placedImageQueries=new Set<string>();
 
   const assetByQuery=new Map<string,string>();
@@ -1052,6 +1068,7 @@ async function website(
     unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
     uniqueFiles:uniqueImageAssets.size,
   });
+  emitBuildProgress(progress,{progress:98,stage:"validate",message:`Checking website package, links, and ${uniqueImageAssets.size} image assets`});
   const validationReceipt=await validateBuiltArtifact(
     "website",
     prompt,
@@ -1078,6 +1095,7 @@ async function website(
     sharedStylesheet:"assets/styles.css",
     brokenInternalResources:0,
   };
+  emitBuildProgress(progress,{progress:99,stage:"package",message:`Website packaged · ${pages.length} pages · ${uniqueImageAssets.size} image files`});
   return{
     name,
     mime:"application/zip",
@@ -1093,17 +1111,19 @@ export async function buildArtifact(
   plan: ArtifactPlan,
   prompt = "",
   jobId = "",
+  progress?: ArtifactBuildProgressHandler,
 ): Promise<BuiltFile> {
   // Builder boundary is independently safe: callers cannot bypass deterministic
   // pagination/reflow by invoking buildArtifact directly. The compiler is
   // intentionally idempotent, so AgentRunner may also compile before this point.
   const visualized = planArtifactVisuals(kind, plan, prompt);
   log("info", "artifact.visual_plan", { kind, ...visualized.receipt });
+  emitBuildProgress(progress,{progress:83,stage:"visual-plan",message:`Planning visuals: ${visualized.receipt.plannedSlots} image slots${visualized.receipt.suppressedExplicitQueries ? ` · ${visualized.receipt.suppressedExplicitQueries} excess model slots suppressed` : ""}`,total:visualized.receipt.plannedSlots,completed:0,found:0});
   const compiledPlan = compileArtifactPlan(kind, visualized.plan).plan;
-  if (kind === "presentation") return pptx(config, compiledPlan, prompt, jobId);
+  if (kind === "presentation") return pptx(config, compiledPlan, prompt, jobId, progress);
   if (kind === "document" || kind === "analysis" || kind === "research")
-    return docx(config, compiledPlan, prompt, kind, jobId);
-  if (kind === "website") return website(config, compiledPlan, prompt, jobId);
+    return docx(config, compiledPlan, prompt, kind, jobId, progress);
+  if (kind === "website") return website(config, compiledPlan, prompt, jobId, progress);
   throw new ArtifactPipelineError(
     "BUILD",
     `No deterministic builder for ${kind}`,

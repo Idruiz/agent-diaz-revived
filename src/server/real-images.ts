@@ -125,7 +125,7 @@ async function fetchWithRetry(
         commons429Streak++;
         const waitMs = Math.max(
           retryAfterMs(response),
-          Math.min(15_000, 3_000 * Math.max(1, commons429Streak)),
+          Math.min(15_000, (process.env.NODE_ENV === "test" ? 25 : 3_000) * Math.max(1, commons429Streak)),
         );
         commonsCooldownUntil = Math.max(commonsCooldownUntil, Date.now() + waitMs);
         options.onEvent?.({ type: "rate_limit", status: 429, waitMs, attempt: attempt + 1 });

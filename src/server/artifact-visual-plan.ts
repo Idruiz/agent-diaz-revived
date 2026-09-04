@@ -143,7 +143,7 @@ export function planArtifactVisuals(
       );
 
   let suppressedExplicitQueries = 0;
-  if (mayDerive && exactCount === null && explicitQueries > targetSlots) {
+  if (mayDerive && explicitQueries > targetSlots) {
     const keep = new Set(
       eligible
         .filter((item) => item.explicit)
