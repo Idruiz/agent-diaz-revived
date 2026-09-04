@@ -518,7 +518,7 @@ export function assertPresentationSlidesHaveMeaningfulContent(filePath: string):
     .sort((a, b) => a.entryName.localeCompare(b.entryName, undefined, { numeric: true }));
   for (const [index, entry] of slides.entries()) {
     const xml = entry.getData().toString("utf8");
-    const text = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
+    const text = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
       .map((match) => decodeXml(match[1]!).replace(/\s+/g, " ").trim())
       .filter(Boolean)
       .join(" ")
@@ -541,7 +541,7 @@ function packageVisibleText(kind: JobKind, filePath: string): string {
   if (kind === "presentation")
     return zip.getEntries()
       .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
-      .flatMap((entry) => [...entry.getData().toString("utf8").matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((match) => decodeXml(match[1]!)))
+      .flatMap((entry) => [...entry.getData().toString("utf8").matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((match) => decodeXml(match[1]!)))
       .join("\n");
   if (["document", "analysis", "research"].includes(kind)) {
     const xml = zip.getEntry("word/document.xml")?.getData().toString("utf8") ?? "";
