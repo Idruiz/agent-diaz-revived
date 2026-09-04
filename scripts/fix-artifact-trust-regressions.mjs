@@ -19,23 +19,18 @@ function replaceCount(file, before, after, expectedCount) {
   write(file, s);
 }
 
-// Compiler: pagination and renderer-loss handling are separate. A standard slide
-// that merely needs pagination must not get a duplicate context slide.
 replaceOnce(
   "src/server/artifact-compiler.ts",
   `    if (builderDoesNotRenderBody || builderDoesNotRenderBullets || bodyNeedsPagination || bulletsNeedPagination) {\n      const context = contextFragments(section);\n      compiled.push(...context);\n      normalizations.push({\n        code: "presentation_content_paginated",\n        detail: \`Moved audience-facing context for '\${section.heading}' into \${context.length} deterministic context slide(s) so no body or bullet content is dropped.\`,\n      });\n      const primary = structuredClone(section);\n      primary.body = chunks(section.body, bodyLimit)[0] ?? "";\n      primary.bullets = [];\n      compiled.push(primary);\n      continue;\n    }\n\n    const fragments = standardFragments(section);`,
   `    if (builderDoesNotRenderBody || builderDoesNotRenderBullets) {\n      const context = contextFragments(section);\n      compiled.push(...context);\n      normalizations.push({\n        code: "presentation_content_paginated",\n        detail: \`Moved audience-facing context for '\${section.heading}' into \${context.length} deterministic context slide(s) so no body or bullet content is dropped.\`,\n      });\n      const primary = structuredClone(section);\n      primary.body = chunks(section.body, bodyLimit)[0] ?? "";\n      primary.bullets = [];\n      compiled.push(primary);\n      continue;\n    }\n\n    const fragments = standardFragments(section);`
 );
 
-// Slide-count targets are quality guidance, not validity. A coherent five-slide
-// deck can be perfectly valid; named user requirements remain mandatory gates.
 replaceOnce(
   "src/server/openai-agent.ts",
   `    if (plan.sections.length < 7)\n      push(\n        "presentation_sections_missing",\n        \`Presentation needs at least 7 content sections; received \${plan.sections.length}.\`,\n        true,\n      );`,
   `    if (plan.sections.length < 7)\n      push(\n        "presentation_sections_low",\n        \`Presentation has \${plan.sections.length} content sections; seven is a quality target, not a validity requirement.\`,\n        false,\n      );`
 );
 
-// Update the boundary test to assert telemetry, not a repair trigger.
 replaceOnce(
   "src/server/__tests__/agent.test.ts",
   `  it("keeps up to 14 presentation sections intact and sends larger plans to PLAN_CONTENT repair", () => {`,
@@ -51,9 +46,6 @@ replaceOnce(
   `          code: "presentation_sections_missing",\n          mandatory: true,`,
   `          code: "presentation_sections_low",\n          mandatory: false,`
 );
-
-// This fixture now proves that a six-section plan does not consume a repair call
-// solely to satisfy an arbitrary slide-count target.
 replaceOnce(
   "src/server/__tests__/agent.test.ts",
   `  it("repairs an invalid presentation plan without repeating the evidence phase", async () => {`,
@@ -70,8 +62,6 @@ replaceOnce(
   `    expect(db.getProviderResponseId(job.id)).toBe("resp_invalid_plan");`
 );
 
-// Golden tests must assert the compiled plan rather than pretending the semantic
-// fixture is byte-for-byte the render plan.
 replaceOnce(
   "src/server/__tests__/artifact-golden.test.ts",
   `import { setImageJudgeProviderForTests } from "../image-judge";`,
@@ -101,7 +91,7 @@ replaceOnce(
 replaceOnce(
   "src/server/__tests__/artifact-golden.test.ts",
   `    expect(frenchSlideText).toContain("7 ideas · 6 licensed visuals");`,
-  `    expect(frenchSlideText).toContain(\n      \`${compiledFrench.sections.length} ideas · 6 licensed visuals\`,\n    );`
+  `    expect(frenchSlideText).toContain(\n      \`\${compiledFrench.sections.length} ideas · 6 licensed visuals\`,\n    );`
 );
 
 console.log("Artifact trust regression corrections applied.");
