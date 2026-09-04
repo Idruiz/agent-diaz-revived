@@ -13,10 +13,12 @@ export interface ArtifactVisualPlanReceipt {
 
 const SOURCE_HEADING_RE = /^(sources|references|bibliography|works cited)$/i;
 const NO_IMAGES_RE = /\b(?:no images?|no photos?|text[- ]only|without images?|sans images?|sin im[aá]genes?)\b/i;
+const NO_ADDITIONAL_IMAGES_RE = /\b(?:no additional (?:images?|photos?)|do not add (?:additional )?(?:images?|photos?)|only (?:use )?(?:the )?(?:specified|requested|provided|explicit) (?:images?|photos?))\b/i;
 const SUPPORT_HEADING_RE = /\b(?:directions?|language frames?|sentence frames?|round\s+\d+|continued\s+\d+|exit ticket|guided practice|independent practice|speed dating|four corners)\b/i;
 const VISUAL_TOPIC_RE = /\b(?:culture|cultural|history|historic|heritage|city|country|region|place|site|architecture|building|food|cuisine|festival|art|artist|museum|landscape|geography|map|community|people|tradition|science|nature|environment|animal|plant|technology|industry|sport|travel|qu[eé]bec|francophon|montr[eé]al|paris|france|canada)\b/i;
 const STOP_WORDS = new Set([
   "about","after","again","also","avec","because","being","dans","des","each","from","have","into","just","more","pour","that","their","them","this","through","une","using","with","your","vous","nous","elle","elles","ils","les","the","and","for","are","was","were","aux","sur","par","que","qui","est","pas","plus","comme","mais","ses","son","sa","ces","dans","une","un","des","du","de","la","le","et","en","au","aux","à","a","an","of","to","in","on","is","it","as","or",
+  "context","section","continued","finished","audience","facing","content","implications","implication","conclusion","result","results","overview","summary","language","frames","frame","support","supporting","complete","completed","production","ready","requested","artifact","validation","route",
 ]);
 
 function normalizeWords(value: string): string[] {
@@ -43,8 +45,8 @@ function uniqueWords(values: string[], limit: number): string[] {
 
 function derivedQuery(plan: ArtifactPlan, section: ArtifactPlan["sections"][number]): string {
   const heading = normalizeWords(section.heading);
-  const body = normalizeWords(section.body);
   const title = normalizeWords(plan.title);
+  const body = normalizeWords(section.body);
   const words = uniqueWords([...heading, ...title, ...body], 7);
   return words.join(" ").trim();
 }
@@ -76,7 +78,7 @@ export function planArtifactVisuals(
   prompt = "",
 ): { plan: ArtifactPlan; receipt: ArtifactVisualPlanReceipt } {
   const plan = structuredClone(input);
-  const disabledByPrompt = NO_IMAGES_RE.test(prompt);
+  const disabledByPrompt = NO_IMAGES_RE.test(prompt) || NO_ADDITIONAL_IMAGES_RE.test(prompt);
   let explicitQueries = 0;
   let skippedStructured = 0;
   let skippedActivities = 0;
@@ -96,6 +98,11 @@ export function planArtifactVisuals(
       skippedActivities++;
       continue;
     }
+    const sectionText = `${section.heading} ${section.body}`;
+    // Numerical/data analysis should prefer executed charts and tables over
+    // decorative photography. Derive a photograph only when the prose itself
+    // is explicitly about a visual/cultural/place-based subject.
+    if (kind === "analysis" && !VISUAL_TOPIC_RE.test(sectionText)) continue;
     const query = derivedQuery(plan, section);
     if (!query) continue;
     candidates.push({ index, score: scoreSection(kind, section, index), query });
