@@ -1,0 +1,35 @@
+name: Preserve absent visual content
+
+on:
+  push:
+    branches:
+      - codex/artifact-trust-rebuild
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[absent-visual-preserved]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/artifact-trust-rebuild
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+      - name: Apply reconciliation migration
+        run: node scripts/preserve-absent-visual-content.mjs
+      - name: Remove one-shot source and restore workflow file
+        run: |
+          rm -f scripts/preserve-absent-visual-content.mjs
+          git checkout HEAD -- .github/workflows/preserve-absent-visual-content.yml
+      - name: Commit migration
+        run: |
+          git config user.name "Agent Diaz Trust Rebuild"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Preserve copy when optional visuals are unavailable [absent-visual-preserved]"
+          git push origin HEAD:codex/artifact-trust-rebuild
