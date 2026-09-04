@@ -1,0 +1,48 @@
+name: Finalize builder hardening implementation
+
+"on":
+  push:
+    branches:
+      - codex/builder-visual-progress-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/builder-visual-progress-hardening
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply hardening and exact-count correction
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/server/artifact-visual-plan.ts')
+          s=p.read_text()
+          s=s.replace('if (mayDerive && exactCount === null && explicitQueries > targetSlots) {','if (mayDerive && explicitQueries > targetSlots) {')
+          p.write_text(s)
+          PY
+          python scripts/apply_builder_hardening.py
+      - name: Focused verification
+        run: |
+          npm test -- --run src/server/__tests__/visual-layout-hardening.test.ts src/server/__tests__/builder-progress-contract.test.ts
+          npm run build
+      - name: Commit implementation
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "Idruiz"
+          git config user.email "152026201+Idruiz@users.noreply.github.com"
+          git add src/server/artifact-visual-plan.ts src/server/builders.ts src/server/openai-agent.ts src/server/real-images.ts src/server/__tests__/visual-layout-hardening.test.ts src/server/__tests__/builder-progress-contract.test.ts
+          git commit -m "Implement responsive visuals and live build progress"
+          git push origin HEAD:codex/builder-visual-progress-hardening
