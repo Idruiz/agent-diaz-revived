@@ -1,0 +1,43 @@
+name: Apply artifact run log UI migration
+
+on:
+  push:
+    branches:
+      - codex/artifact-trust-rebuild
+    paths:
+      - scripts/apply-artifact-run-logs.mjs
+      - .github/workflows/apply-artifact-run-logs.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/artifact-trust-rebuild
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+      - name: Apply migration
+        run: node scripts/apply-artifact-run-logs.mjs
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck and focused tests
+        run: |
+          npm run check
+          npx vitest run --root . src/server/__tests__/artifact-run-log.test.ts src/server/__tests__/analysis-provenance-agent.test.ts src/server/__tests__/agent.test.ts
+      - name: Remove one-shot migration
+        run: |
+          git rm scripts/apply-artifact-run-logs.mjs
+          git rm .github/workflows/apply-artifact-run-logs.yml
+      - name: Commit integration
+        run: |
+          git config user.name "Idruiz"
+          git config user.email "152026201+Idruiz@users.noreply.github.com"
+          git add src/server src/web
+          git commit -m "Add copyable artifact run logs"
+          git push origin HEAD:codex/artifact-trust-rebuild
