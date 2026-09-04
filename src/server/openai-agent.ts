@@ -1868,11 +1868,11 @@ export class AgentRunner {
 
             this.db.updateJob(jobId, {
               status: "building",
-              progress: Math.min(96, 90 + Math.min(buildAttempt, 6)),
+              progress: buildAttempt === 0 ? 82 : Math.min(96, 90 + Math.min(buildAttempt, 6)),
               error: null,
               message:
                 buildAttempt === 0
-                  ? "Building and validating artifact"
+                  ? "Preparing artifact build"
                   : `Rebuilding artifact after validation repair (attempt ${buildAttempt + 1})`,
             });
 
@@ -1890,6 +1890,19 @@ export class AgentRunner {
                 plan,
                 job.prompt,
                 jobId,
+                (update) => {
+                  this.db.updateJob(jobId, {
+                    status: "building",
+                    progress: update.progress,
+                    message: update.message,
+                    error: null,
+                  });
+                  log("info", "artifact.progress", {
+                    jobId,
+                    kind: job.kind,
+                    ...update,
+                  });
+                },
               );
               const latestRunState =
                 this.db.getArtifactRunState(jobId) ?? artifactRunState;

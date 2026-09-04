@@ -11,6 +11,7 @@ import { atomicWrite, safeJoin } from "./files.js";
 import { chartPng, chartSvg, diagramPng, diagramSvg } from "./visuals.js";
 import {
   downloadCommonsCandidate,
+  imageProviderCooldownRemainingMs,
   searchCommonsCandidates,
   type CommonsImageCandidate,
   type RealImage,
@@ -34,6 +35,14 @@ import {
 const PptxGenJS=((PptxGenModule as any).default??PptxGenModule) as typeof PptxGenModule;
 
 export interface BuiltFile { name:string; mime:string; path:string; size:number; validationReceipt:ArtifactValidationReceipt; }
+export interface ArtifactBuildProgress {
+  progress: number;
+  message: string;
+  stage: "visual-plan" | "image-search" | "image-judge" | "image-download" | "render" | "validate" | "package";
+  completed?: number;
+  total?: number;
+}
+export type ArtifactBuildProgressCallback = (update: ArtifactBuildProgress) => void;
 const slug=(s:string)=>s.normalize("NFKD").replace(/[^a-zA-Z0-9]+/g,"_").replace(/^_|_$/g,"").slice(0,80)||"artifact";
 const escapeHtml=(s:string)=>s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
 export interface ImageResolutionReceipt {
@@ -116,6 +125,7 @@ async function collectImages(
   config: Config,
   plan: ArtifactPlan,
   prompt = "",
+  onProgress?: ArtifactBuildProgressCallback,
 ): Promise<CollectedImages> {
   const requests = plan.sections
     .map((section, sectionIndex) => ({ section, sectionIndex }))
@@ -127,35 +137,69 @@ async function collectImages(
     );
   const rejectedWithReasons: ImageResolutionReceipt["rejectedWithReasons"] = [];
   const judgeSections: ImageJudgeSection[] = [];
+  const total = requests.length;
+  const emit = (
+    progress: number,
+    message: string,
+    stage: ArtifactBuildProgress["stage"],
+    completed?: number,
+  ) => onProgress?.({ progress, message, stage, completed, total });
 
-  for (const { section, sectionIndex } of requests) {
+  if (!total) {
+    emit(92, "No external photographs needed for this artifact", "image-search", 0);
+    return {
+      images: new Map(),
+      metrics: {
+        requested: 0,
+        fetched: 0,
+        judged: 0,
+        judgeCalls: 0,
+        rejectedWithReasons,
+        placed: 0,
+      },
+    };
+  }
+
+  for (const [requestIndex, { section, sectionIndex }] of requests.entries()) {
     const query = section.imageQuery;
+    emit(
+      84 + Math.floor((requestIndex / Math.max(1, total)) * 4),
+      `Finding visual ${requestIndex + 1} of ${total}: ${section.heading}`,
+      "image-search",
+      requestIndex,
+    );
     const candidateMap = new Map<string, CommonsImageCandidate>();
-    const searchQueries = [
-      query,
-      section.heading,
-      [section.heading, meaningfulWords(section.body)]
-        .filter(Boolean)
-        .join(" "),
-    ].filter(
+    const searchQueries = [query, section.heading].filter(
       (value, index, all) =>
         Boolean(value.trim()) &&
         all.findIndex(
-          (candidate) =>
-            candidate.toLocaleLowerCase() === value.toLocaleLowerCase(),
+          (candidate) => candidate.toLocaleLowerCase() === value.toLocaleLowerCase(),
         ) === index,
     );
 
     for (const searchQuery of searchQueries) {
-      if (candidateMap.size >= 8) break;
-      try {
-        const result = await searchCommonsCandidates(
-          searchQuery,
-          8 - candidateMap.size,
+      const cooldown = imageProviderCooldownRemainingMs();
+      if (cooldown > 0) {
+        const detail = `Image provider rate-limited; ${Math.ceil(cooldown / 1000)}s cooldown active. Continuing with visuals already found.`;
+        emit(
+          84 + Math.floor((requestIndex / Math.max(1, total)) * 4),
+          detail,
+          "image-search",
+          requestIndex,
         );
+        rejectedWithReasons.push({
+          sectionIndex,
+          query,
+          candidateId: null,
+          title: null,
+          reason: detail,
+        });
+        break;
+      }
+      try {
+        const result = await searchCommonsCandidates(searchQuery, 8 - candidateMap.size);
         for (const candidate of result.candidates)
-          if (!candidateMap.has(candidate.id))
-            candidateMap.set(candidate.id, candidate);
+          if (!candidateMap.has(candidate.id)) candidateMap.set(candidate.id, candidate);
         for (const rejected of result.rejected)
           rejectedWithReasons.push({
             sectionIndex,
@@ -165,13 +209,29 @@ async function collectImages(
             reason: rejected.reason,
           });
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         rejectedWithReasons.push({
           sectionIndex,
           query,
           candidateId: null,
           title: null,
-          reason: `Candidate search failed for '${searchQuery}': ${error instanceof Error ? error.message : String(error)}`,
+          reason: `Candidate search failed for '${searchQuery}': ${message}`,
         });
+        log("warn", "artifact.image_search_failed", {
+          sectionIndex,
+          query,
+          searchQuery,
+          error: message,
+        });
+        if (/429|cooldown|rate.?limit/i.test(message)) {
+          emit(
+            84 + Math.floor((requestIndex / Math.max(1, total)) * 4),
+            `Image provider throttled while finding visual ${requestIndex + 1} of ${total}; continuing without blocking the artifact`,
+            "image-search",
+            requestIndex,
+          );
+          break;
+        }
       }
       if (candidateMap.size >= 4) break;
     }
@@ -186,18 +246,25 @@ async function collectImages(
     });
   }
 
-  const judged = await judgeImageCandidates(config, judgeSections);
+  emit(88, `Reviewing candidate images for ${total} planned visual slots`, "image-judge", 0);
+  const judged = await judgeImageCandidates(
+    config,
+    judgeSections,
+    (message) => emit(89, message, "image-judge"),
+  );
   const images = new Map<string, RealImage>();
   let fetched = 0;
 
-  for (const section of judgeSections) {
-    const decision = judged.decisions.find(
-      (item) => item.sectionIndex === section.sectionIndex,
+  for (const [downloadIndex, section] of judgeSections.entries()) {
+    emit(
+      90 + Math.floor((downloadIndex / Math.max(1, total)) * 3),
+      `Loading visual ${downloadIndex + 1} of ${total}: ${section.heading}`,
+      "image-download",
+      downloadIndex,
     );
+    const decision = judged.decisions.find((item) => item.sectionIndex === section.sectionIndex);
     const chosen = decision?.chosenCandidate
-      ? section.candidates.find(
-          (candidate) => candidate.id === decision.chosenCandidate,
-        )
+      ? section.candidates.find((candidate) => candidate.id === decision.chosenCandidate)
       : undefined;
 
     if (!chosen) {
@@ -216,20 +283,16 @@ async function collectImages(
         query: section.query,
         candidateId: null,
         title: null,
-        reason:
-          decision?.reason ||
-          "No candidate met the qualitative relevance bar.",
+        reason: decision?.reason || "No candidate met the qualitative relevance bar.",
       });
       continue;
     }
 
-    const downloadOrder = [
-      chosen,
-      ...section.candidates.filter((candidate) => candidate.id !== chosen.id),
-    ];
+    const downloadOrder = [chosen, ...section.candidates.filter((candidate) => candidate.id !== chosen.id)];
     const failedIds = new Set<string>();
     let selected: CommonsImageCandidate | undefined;
     for (const candidate of downloadOrder) {
+      if (imageProviderCooldownRemainingMs() > 0) break;
       try {
         const image = await downloadCommonsCandidate(candidate);
         images.set(section.query, image);
@@ -251,20 +314,30 @@ async function collectImages(
         break;
       } catch (error) {
         failedIds.add(candidate.id);
+        const message = error instanceof Error ? error.message : String(error);
         rejectedWithReasons.push({
           sectionIndex: section.sectionIndex,
           query: section.query,
           candidateId: candidate.id,
           title: candidate.title,
-          reason: `Candidate download failed: ${error instanceof Error ? error.message : String(error)}`,
+          reason: `Candidate download failed: ${message}`,
         });
         log("warn", "artifact.image_candidate_download_failed", {
           query: section.query,
           sectionIndex: section.sectionIndex,
           candidateId: candidate.id,
           primaryCandidateId: chosen.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
         });
+        if (/429|cooldown|rate.?limit/i.test(message)) {
+          emit(
+            90 + Math.floor((downloadIndex / Math.max(1, total)) * 3),
+            `Image provider throttled during visual ${downloadIndex + 1} of ${total}; keeping ${fetched} retrieved visual${fetched === 1 ? "" : "s"} and continuing`,
+            "image-download",
+            downloadIndex,
+          );
+          break;
+        }
       }
     }
 
@@ -286,10 +359,16 @@ async function collectImages(
         query: section.query,
         candidateId: null,
         title: null,
-        reason: "All judged image candidates failed download.",
+        reason: "No judged image candidate could be retrieved.",
       });
   }
 
+  emit(
+    93,
+    `Visual acquisition complete: ${fetched} of ${total} planned visuals retrieved`,
+    "image-download",
+    total,
+  );
   return {
     images,
     metrics: {
@@ -380,12 +459,13 @@ function addNotesParagraphs(slide: any, paragraphs: string[]): void {
   if (clean.length) slide.addNotes(clean.join("\r\n\r\n"));
 }
 
-async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<BuiltFile>{
+async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId="",onProgress?:ArtifactBuildProgressCallback):Promise<BuiltFile>{
   const originalContentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const collectedImages=await collectImages(
     config,
     {...plan,sections:originalContentSections},
     prompt,
+    onProgress,
   );
   const images=collectedImages.images;
   const reconciled=reconcilePresentationPlan(
@@ -458,26 +538,16 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
       if(image)addStructuredPhoto(slide,section,image);
       if(chart.sourceNote)addModelText(slide,short(chart.sourceNote,180),{x:.78,y:6.5,w:visualW,fontSize:8,color:muted,margin:0},{minHeight:.12,maxHeight:.24});
     };
-    const addNativeDiagram=(slide:any,section:ArtifactPlan["sections"][number],image?:RealImage)=>{
-      const diagram=section.diagram!,nodes=diagram.nodes.slice(0,8),availableW=image?9.08:11.85;
-      const columns=Math.min(4,nodes.length),rows=Math.ceil(nodes.length/columns),gapX=.28,gapY=.34;
-      const boxW=(availableW-(columns-1)*gapX)/columns;
-      const boxH=Math.max(1.35,(3.55-(rows-1)*gapY)/rows);
-      const startX=.75,startY=2.0;
-      addModelText(slide,short(diagram.title,120),{x:.75,y:1.5,w:availableW,fontSize:18,bold:true,color:navy,align:"center",margin:0},{minHeight:.3,maxHeight:.5});
-      for(let index=0;index<nodes.length-1;index++){
-        const row=Math.floor(index/columns),col=index%columns,nextRow=Math.floor((index+1)/columns);
-        if(row===nextRow){
-          const x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);
-          slide.addShape(p.ShapeType.line,{x:x+boxW,y:y+boxH/2,w:gapX,h:0,line:{color:blue,pt:2.2,endArrowType:"triangle"}});
-        }
-      }
-      nodes.forEach((node,index)=>{
-        const row=Math.floor(index/columns),col=index%columns,x=startX+col*(boxW+gapX),y=startY+row*(boxH+gapY);
-        slide.addShape(p.ShapeType.roundRect,{x,y,w:boxW,h:boxH,rectRadius:.05,fill:{color:index%2?pale:"F1E5C5"},line:{color:gold,pt:1.2},shadow:{type:"outer",color:"000000",opacity:.1,blur:1,angle:45,distance:.5}});
-        addModelText(slide,short(node,100),{x:x+.15,y:y+.12,w:boxW-.3,fontSize:20,bold:true,color:navy,align:"center",valign:"mid",margin:.04},{minHeight:.36,maxHeight:boxH-.24});
+    const addNativeDiagram=async(slide:any,section:ArtifactPlan["sections"][number],image?:RealImage)=>{
+      const diagram=section.diagram!,png=await diagramPng(diagram),visualW=image?9.08:11.85;
+      slide.addImage({
+        data:`data:image/png;base64,${png.toString("base64")}`,
+        x:.75,
+        y:1.48,
+        w:visualW,
+        h:4.95,
+        altText:diagram.title,
       });
-      if(diagram.caption||section.body)addModelText(slide,short(diagram.caption||section.body,320),{x:.9,y:5.95,w:availableW-.3,fontSize:17,color:muted,align:"center",margin:0},{minHeight:.3,maxHeight:.7});
       if(image)addStructuredPhoto(slide,section,image);
     };
     const addNativeTable=(slide:any,section:ArtifactPlan["sections"][number],rows:string[][],chunkIndex:number,chunkCount:number,image?:RealImage)=>{
@@ -608,7 +678,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
         if(scaled)slide.addShape(p.ShapeType.roundRect,{x:.75,y:1.5,w:11.85,h:5.3,rectRadius:.04,fill:{color:white},line:{color:"E4DED2",pt:.5}});
         if(section.activity)addActivitySlide(slide,section,image);
         else if(section.chart)await addRenderedChart(slide,section,image);
-        else if(section.diagram)addNativeDiagram(slide,section,image);
+        else if(section.diagram)await addNativeDiagram(slide,section,image);
         else if(image){
           const imageLeft=index%2===1;
           const imageBox={x:imageLeft ? .75 : 7.02,y:1.5,w:5.58,h:4.92};
@@ -652,6 +722,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     return{raw,placedImageQueries,usedActivityTemplates,contentSlideNumbers};
   };
 
+  onProgress?.({progress:94,message:"Rendering PowerPoint slides",stage:"render"});
   const rendered=await renderAttempt(false);
   const ratios=estimatePptxEmptyCanvasRatio(target).bySlide;
   collectedImages.metrics.placed=rendered.placedImageQueries.size;
@@ -663,6 +734,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     placed:collectedImages.metrics.placed,
     unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
   });
+  onProgress?.({progress:97,message:"Checking PowerPoint package and render integrity",stage:"validate"});
   const validationReceipt=await validateBuiltArtifact(
     "presentation",
     prompt,
@@ -685,12 +757,13 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
   return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:rendered.raw.length,validationReceipt};
 }
 
-async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId=""):Promise<BuiltFile>{
+async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId="",onProgress?:ArtifactBuildProgressCallback):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
   const collectedImages=await collectImages(
     config,
     {...plan,sections:contentSections},
     prompt,
+    onProgress,
   );
   const images=collectedImages.images;
   const placedImageQueries=new Set<string>();
@@ -822,6 +895,7 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     ]},
     sections:[{properties:{titlePage:true,page:{margin:{top:1440,right:1440,bottom:1440,left:1440,header:708,footer:708}}},headers:{first:new Header({children:[new Paragraph("")]}),default:new Header({children:[new Paragraph({border:{bottom:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:short(plan.title,85),bold:true,size:16,color:"5A6772",font:"Calibri"})]})]})},footers:{first:new Footer({children:[new Paragraph("")]}),default:new Footer({children:[new Paragraph({border:{top:{style:BorderStyle.SINGLE,size:5,color:"D9E0E4",space:4}},children:[new TextRun({text:"AGENT DÍAZ  ·  ",bold:true,size:14,color:"C99A2E",font:"Calibri"}),new TextRun({children:[PageNumber.CURRENT],size:14,color:"5A6772",font:"Calibri"})],alignment:AlignmentType.RIGHT})]})},children}],
   });
+  onProgress?.({progress:94,message:"Rendering document pages",stage:"render"});
   const buf=await Packer.toBuffer(d); if(buf.length<3000)throw new Error("DOCX validation failed: output too small");
   const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);
   atomicWrite(target,buf);
@@ -834,6 +908,7 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
     placed:collectedImages.metrics.placed,
     unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
   });
+  onProgress?.({progress:97,message:"Checking document package and render integrity",stage:"validate"});
   const validationReceipt=await validateBuiltArtifact(
     kind,
     prompt,
@@ -860,6 +935,7 @@ async function website(
   plan:ArtifactPlan,
   prompt="",
   jobId="",
+  onProgress?:ArtifactBuildProgressCallback,
 ):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(
     section=>!isSourcesHeading(section.heading),
@@ -904,6 +980,7 @@ async function website(
     config,
     {...plan,sections:contentSections},
     prompt,
+    onProgress,
   );
   const images=collectedImages.images;
   const placedImageQueries=new Set<string>();
@@ -1020,6 +1097,7 @@ async function website(
       {ruleOrPart:"website-image-placement"},
     );
 
+  onProgress?.({progress:94,message:`Rendering ${pages.length} website pages and bundling ${uniqueImageAssets.size} image file${uniqueImageAssets.size===1?"":"s"}`,stage:"render"});
   const stream=new PassThrough(),chunks:Buffer[]=[];
   stream.on("data",chunk=>chunks.push(Buffer.from(chunk)));
   const done=new Promise<Buffer>((resolve,reject)=>{
@@ -1052,6 +1130,7 @@ async function website(
     unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
     uniqueFiles:uniqueImageAssets.size,
   });
+  onProgress?.({progress:97,message:"Checking website links, package structure, and bundled assets",stage:"validate"});
   const validationReceipt=await validateBuiltArtifact(
     "website",
     prompt,
@@ -1093,17 +1172,25 @@ export async function buildArtifact(
   plan: ArtifactPlan,
   prompt = "",
   jobId = "",
+  onProgress?: ArtifactBuildProgressCallback,
 ): Promise<BuiltFile> {
   // Builder boundary is independently safe: callers cannot bypass deterministic
   // pagination/reflow by invoking buildArtifact directly. The compiler is
   // intentionally idempotent, so AgentRunner may also compile before this point.
   const visualized = planArtifactVisuals(kind, plan, prompt);
   log("info", "artifact.visual_plan", { kind, ...visualized.receipt });
+  onProgress?.({
+    progress: 83,
+    message: `Planning visual coverage: ${visualized.receipt.plannedSlots} visual slot${visualized.receipt.plannedSlots===1?"":"s"}`,
+    stage: "visual-plan",
+    completed: 0,
+    total: visualized.receipt.plannedSlots,
+  });
   const compiledPlan = compileArtifactPlan(kind, visualized.plan).plan;
-  if (kind === "presentation") return pptx(config, compiledPlan, prompt, jobId);
+  if (kind === "presentation") return pptx(config, compiledPlan, prompt, jobId, onProgress);
   if (kind === "document" || kind === "analysis" || kind === "research")
-    return docx(config, compiledPlan, prompt, kind, jobId);
-  if (kind === "website") return website(config, compiledPlan, prompt, jobId);
+    return docx(config, compiledPlan, prompt, kind, jobId, onProgress);
+  if (kind === "website") return website(config, compiledPlan, prompt, jobId, onProgress);
   throw new ArtifactPipelineError(
     "BUILD",
     `No deterministic builder for ${kind}`,
