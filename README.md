@@ -20,15 +20,15 @@ This repository is the complete application source. It does not contain credenti
 - Automatic Code Interpreter routing for spreadsheets plus explicit analytical jobs.
 - Android-safe voice turns use short-lived WebRTC credentials and `gpt-realtime-2.1-mini` for transcription only. The exact transcript then enters the same persona-enforced Responses chat used by typed messages, and OpenAI TTS reads the complete canonical answer in ordered chunks. Tuned server VAD sends after a pause; a visible Send control can manually commit; partial transcripts and failures are surfaced instead of disappearing. Browser speech synthesis is never used.
 - Server-owned persona voices: Díaz/Cedar, Javier/Echo, Vega/Sage, Mara/Ash, Luz/Coral, and Salcedo/Marin.
-- Visual PPTX files with editable tables, charts, diagrams, notes, sources, and licensed photography when requested.
+- Visual PPTX files with editable text/tables/diagram primitives, rendered evidence charts, notes, sources, and licensed photography when requested. Presentation content is compiled into render-safe slide budgets before serialization.
 - Visual DOCX files with editable tables, rendered charts/diagrams, structured prose, sources, and licensed photography when requested.
-- Three-to-six-page website ZIPs with responsive navigation, inline SVG visualizations, tables, embedded CSS, and embedded licensed Wikimedia images.
-- `OPEN_ME_FIRST.html` in every website ZIP. Pages work when opened directly on phones and do not depend on preserved asset folders.
+- Three-to-six-page website ZIPs with responsive navigation, inline SVG visualizations, tables, one shared stylesheet, and deduplicated local licensed Wikimedia image assets.
+- `OPEN_ME_FIRST.html` in every website ZIP. Keep the ZIP contents together when extracting because pages reference the bundled shared stylesheet and image assets.
 - Generic remote MCP support with exact per-call approval capture, durable decisions, and Responses continuation.
 - Owner authentication, HTTP-only cookies, same-origin mutation protection, contained paths, upload limits, and secret-redacted logs.
 - SQLite persistence for sessions, conversations, messages, jobs, approvals, uploads, and artifacts.
 - One-root durable storage for SQLite, uploads, and artifacts, with an authenticated write/readiness probe.
-- Docker, Compose, runtime health checks, automated tests, and manual deployment tooling. GitHub Actions are intentionally not used.
+- Docker, Compose, runtime health checks, automated tests, GitHub Actions verification, and manual deployment tooling.
 
 ## Honest boundaries
 
@@ -159,3 +159,8 @@ After the Free proof of concept passes functional acceptance:
 7. Restart the service and verify the conversation, upload count, and artifact download remain.
 8. Redeploy the same commit and verify them again.
 9. Confirm an interrupted streaming chat becomes explicitly retryable and an interrupted artifact job resumes without duplicate output.
+
+
+## Artifact trust boundary
+
+Automated tests are evidence for the exact path they exercise; mocked-provider tests are never described as live end-to-end acceptance. The artifact pipeline separates semantic planning from deterministic compilation, one-pass rendering, objective package/consumer validation, and non-blocking quality telemetry. Soft visual scores do not trigger model repairs. A deterministic BUILD failure is not retried with identical inputs; only bounded transient provider/asset failures may retry. Real-provider acceptance is run separately with `node scripts/live-artifact-acceptance.mjs` and requires `DIAZ_BASE_URL` plus `DIAZ_ADMIN_PASSWORD`.

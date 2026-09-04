@@ -512,7 +512,7 @@ describe("artifact quality gates", () => {
     }
   }, 20_000);
 
-  it("retries a sparse deck once with the same plan and publishes only ratios at or below 0.55", async () => {
+  it("publishes a structurally valid sparse deck on the first deterministic build and records sparsity as telemetry", async () => {
     const plan = frenchTeachingPlan();
     for (const section of plan.sections) section.imageQuery = undefined;
     plan.sections[1]!.table!.rows = Array.from(
@@ -537,8 +537,14 @@ describe("artifact quality gates", () => {
       placed: 0,
     });
     expect(receipt.presentation.layoutFitting).toMatchObject({
-      retried: true,
+      retried: false,
+      before: null,
     });
+    expect(receipt.qualityWarnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "pptx_empty_canvas_metric" }),
+      ]),
+    );
     expect(receipt.presentation.titleCounts.contentSlides).toBe(8);
     const zip = new AdmZip(out.path);
     const tableSlideText = zip
@@ -562,14 +568,10 @@ describe("artifact quality gates", () => {
         ),
     ).toEqual([]);
     expect(
-      receipt.presentation.layoutFitting.before.some(
+      receipt.presentation.layoutFitting.after.some(
         (ratio: number) => ratio > 0.55,
       ),
     ).toBe(true);
-    for (let slideNumber = 2; slideNumber <= 9; slideNumber++)
-      expect(
-        receipt.presentation.layoutFitting.after[slideNumber - 1],
-      ).toBeLessThanOrEqual(0.55);
   }, 20_000);
 
   it("rejects a deck that merely mentions Speed Dating without implementing the activity", () => {

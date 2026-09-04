@@ -2062,9 +2062,8 @@ describe("agent production paths", () => {
       imageFetch.mockRestore();
     }
 
-    expect(create).toHaveBeenCalledTimes(4);
+    expect(create).toHaveBeenCalledTimes(3);
     const firstRepairRequest = create.mock.calls[2]![0] as any;
-    const secondRepairRequest = create.mock.calls[3]![0] as any;
     expect(firstRepairRequest.tools).toBeUndefined();
     expect(firstRepairRequest.previous_response_id).toBe("resp_invalid_plan");
     expect(firstRepairRequest.input).toContain(
@@ -2077,18 +2076,13 @@ describe("agent production paths", () => {
       minItems: 1,
       maxItems: 30,
     });
-    expect(secondRepairRequest.tools).toBeUndefined();
-    expect(secondRepairRequest.previous_response_id).toBe(
-      "resp_still_invalid_plan",
-    );
-    expect(secondRepairRequest.input).toContain(
-      "[presentation_visual_coverage_low] Presentation has 5 visual sections; target is 6.",
-    );
+    // The second plan only misses a visual-density target. That is telemetry,
+    // so it must not consume another LLM repair call.
     expect(db.getJob(job.id)).toMatchObject({
       status: "completed",
       error: null,
     });
-    expect(db.getProviderResponseId(job.id)).toBe("resp_repaired_plan");
+    expect(db.getProviderResponseId(job.id)).toBe("resp_still_invalid_plan");
     expect(db.listArtifacts(job.id)).toHaveLength(1);
     db.close();
   });

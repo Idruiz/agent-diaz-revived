@@ -293,3 +293,23 @@ REASON: Corner A–D describes room positions rather than the four audience-faci
 
 DECISION: Do not substitute the existing hand-authored French golden plan for the requested real-provider job fixture identified by artifact SHA prefix `95593b1b`.
 REASON: The exact job-backed plan is authoritative for Step 10's before/after comparison and is not present in Git history, the handover, or the public job response; exporting it requires authenticated access to the deployed Render data/provider record.
+
+
+## 2026-09-03 — Artifact trust rebuild
+DECISION: Treat semantic generation, deterministic content compilation, rendering, objective validation, and quality telemetry as separate stages.
+REASON: The prior pipeline allowed render-capacity mismatches and soft quality heuristics to trigger routine repair loops.
+
+DECISION: Quality warnings never trigger LLM repair. Deterministic BUILD failures are single-attempt; ASSET/provider transient retries are bounded.
+REASON: Re-running identical deterministic inputs cannot repair code defects and normalized failure into ordinary operation.
+
+DECISION: Empty-canvas ratio is telemetry only; objectively empty PPTX slides remain hard BUILD failures.
+REASON: Whitespace percentage is not equivalent to emptiness or unusability.
+
+DECISION: Compile presentation content into box-capacity-safe slides before serialization and bound atomic activity strings/counts at the schema boundary.
+REASON: The renderer must not discover fit failures after the PPTX already exists and must never silently slice accepted semantic content.
+
+DECISION: Build each job in an isolated workspace and move the validated artifact to an immutable unique filename.
+REASON: Friendly title-derived filenames could collide across concurrent or historical jobs.
+
+DECISION: Mocked provider tests are labeled as mocked; real-provider acceptance is a separate explicit harness.
+REASON: Green fixtures are not evidence that the live model/provider path works.

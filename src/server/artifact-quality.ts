@@ -139,6 +139,7 @@ export interface ArtifactValidationReceipt {
   wallTimeMs: number;
   attempts: ArtifactAttemptReceipt[];
   normalizations: ArtifactNormalizationReceipt[];
+  qualityWarnings: ArtifactNormalizationReceipt[];
 }
 
 export function asArtifactPipelineError(
@@ -341,7 +342,8 @@ export function artifactPlanQualityViolations(
     if (plan.sections.length > 14)
       push(
         "presentation_sections_excess",
-        `Presentation supports at most 14 content sections; received ${plan.sections.length}.`,
+        `Presentation compiled to ${plan.sections.length} content sections; this is a quality metric, not a validity failure.`,
+        false,
       );
     const activityTypes = new Set(
       plan.sections
@@ -428,10 +430,11 @@ export function assertArtifactPlanQuality(
   plan: ArtifactPlan,
 ): void {
   const violations = artifactPlanQualityViolations(kind, prompt, plan);
-  if (!violations.length) return;
+  const blocking = violations.filter((violation) => violation.mandatory);
+  if (!blocking.length) return;
   throw new ArtifactPipelineError(
     "PLAN_CONTENT",
-    `Artifact plan content violations:\n${violations
+    `Artifact plan content violations:\n${blocking
       .map((violation) => `- [${violation.code}] ${violation.message}`)
       .join("\n")}`,
     { ruleOrPart: "plan-content" },
@@ -504,6 +507,31 @@ function decodeXml(value: string): string {
     .replace(/&apos;/g, "'")
     .replace(/&amp;/g, "&")
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+export function assertPresentationSlidesHaveMeaningfulContent(filePath: string): void {
+  const zip = new AdmZip(filePath);
+  const slides = zip.getEntries()
+    .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
+    .sort((a, b) => a.entryName.localeCompare(b.entryName, undefined, { numeric: true }));
+  for (const [index, entry] of slides.entries()) {
+    const xml = entry.getData().toString("utf8");
+    const text = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
+      .map((match) => decodeXml(match[1]!).replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\b(?:AGENT DÍAZ|VISUAL BRIEF|EVIDENCE TRAIL|DIRECTIONS|PART \d+|\d{1,3})\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const hasSubstantiveText = text.length >= 8;
+    const hasMeaningfulVisual = /<p:(?:pic|graphicFrame)\b/.test(xml);
+    if (!hasSubstantiveText && !hasMeaningfulVisual)
+      throw new ArtifactPipelineError(
+        "BUILD",
+        `Presentation contains an objectively empty slide at slide ${index + 1}.`,
+        { ruleOrPart: `pptx-empty-slide-${index + 1}` },
+      );
+  }
 }
 
 function packageVisibleText(kind: JobKind, filePath: string): string {
@@ -842,37 +870,16 @@ export async function validateBuiltArtifact(
 ): Promise<ArtifactValidationReceipt> {
   try {
     const buffer = fs.readFileSync(filePath);
-    if (kind === "presentation") assertPresentationPackage(buffer);
+    if (kind === "presentation") {
+      assertPresentationPackage(buffer);
+      assertPresentationSlidesHaveMeaningfulContent(filePath);
+    }
     else if (["document", "analysis", "research"].includes(kind))
       assertDocumentPackage(buffer);
     else if (kind === "website") assertWebsitePackage(filePath);
 
-    if (kind === "presentation") {
-      const ratios = estimatePptxEmptyCanvasRatio(filePath).bySlide;
-      const contentSlides =
-        diagnostics?.presentationContentSlides ??
-        plan.sections.map((_, index) => index + 2);
-      const failures = contentSlides
-        .map((slideNumber) => ({
-          slideNumber,
-          ratio: ratios[slideNumber - 1],
-        }))
-        .filter(
-          (item): item is { slideNumber: number; ratio: number } =>
-            typeof item.ratio === "number" && item.ratio > 0.55,
-        );
-      if (failures.length)
-        throw new ArtifactPipelineError(
-          "BUILD",
-          `Presentation empty-canvas gate failed: ${failures
-            .map(
-              ({ slideNumber, ratio }) =>
-                `slide ${slideNumber} emptyCanvasRatio=${ratio.toFixed(3)}`,
-            )
-            .join(", ")}; maximum is 0.550.`,
-          { ruleOrPart: "pptx-empty-canvas" },
-        );
-    }
+    // Empty-canvas ratio is diagnostic telemetry only. Truly empty slides are
+    // rejected above using visible-content/package evidence.
 
     let schemaValidator: string | null = null;
     let renderValidator: string | null = null;
@@ -924,6 +931,23 @@ export async function validateBuiltArtifact(
 
     const visibleText = packageVisibleText(kind, filePath);
     assertOutputCoverage(kind, prompt, plan, visibleText);
+    const scores = artifactQualityScores(kind, plan, filePath);
+    const qualityWarnings: ArtifactNormalizationReceipt[] = [];
+    if (kind === "presentation") {
+      const contentSlides =
+        diagnostics?.presentationContentSlides ??
+        plan.sections.map((_, index) => index + 2);
+      const sparse = contentSlides
+        .map((slideNumber) => ({ slideNumber, ratio: scores.emptyCanvasRatio.bySlide[slideNumber - 1] }))
+        .filter((item): item is { slideNumber: number; ratio: number } =>
+          typeof item.ratio === "number" && item.ratio > 0.55,
+        );
+      if (sparse.length)
+        qualityWarnings.push({
+          code: "pptx_empty_canvas_metric",
+          detail: `Diagnostic only: ${sparse.map(({ slideNumber, ratio }) => `slide ${slideNumber}=${ratio.toFixed(3)}`).join(", ")}.`,
+        });
+    }
     const receipt: ArtifactValidationReceipt = {
       kind,
       artifactSha256: crypto.createHash("sha256").update(buffer).digest("hex"),
@@ -934,7 +958,7 @@ export async function validateBuiltArtifact(
       powerPointDesktopValidated: false,
       wordDesktopValidated: false,
       browserValidated: false,
-      scores: artifactQualityScores(kind, plan, filePath),
+      scores,
       buildSha: currentBuildSha(),
       generatorVersion:
         kind === "presentation"
@@ -948,6 +972,7 @@ export async function validateBuiltArtifact(
       wallTimeMs: 0,
       attempts: [],
       normalizations: [],
+      qualityWarnings,
     };
     log("info", "artifact.quality_passed", { ...receipt });
     return receipt;

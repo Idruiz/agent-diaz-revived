@@ -153,10 +153,12 @@ export const ArtifactActivitySchema = z.object({
     "exit_ticket",
   ]),
   durationMinutes: z.number().int().min(1).max(120),
-  directions: z.array(z.string().min(2).max(300)).min(2).max(8),
-  prompts: z.array(z.string().min(2).max(500)).min(1).max(16),
-  sentenceFrames: z.array(z.string().min(2).max(300)).max(12).default([]),
-  cornerLabels: z.array(z.string().min(1).max(120)).max(4).default([]),
+  // These are render-surface budgets, not aesthetic suggestions. The deterministic
+  // PPTX templates can display every accepted value without slicing or ellipsis.
+  directions: z.array(z.string().min(2).max(180)).min(2).max(5),
+  prompts: z.array(z.string().min(2).max(240)).min(1).max(6),
+  sentenceFrames: z.array(z.string().min(2).max(180)).max(4).default([]),
+  cornerLabels: z.array(z.string().min(1).max(80)).max(4).default([]),
 });
 export const ArtifactLayoutSchema = z.enum([
   "auto",
@@ -181,16 +183,19 @@ export const ArtifactPlanSchema = z.object({
   sections: z
     .array(
       z.object({
-        heading: z.string().min(1).max(180),
+        // Atomic strings are bounded to what the narrowest deterministic surface
+        // can faithfully render. Long bodies and bullet lists are paginated later by
+        // the compiler; individual strings are never silently truncated.
+        heading: z.string().min(1).max(92),
         body: z.string().min(1).max(8000),
-        bullets: z.array(z.string().max(500)).max(12).default([]),
+        bullets: z.array(z.string().max(180)).max(12).default([]),
         speakerNotes: z.string().max(2000).optional().default(""),
         requirementIds: z.array(z.string().regex(/^R[1-9][0-9]*$/).max(8)).max(30).default([]),
         layout: ArtifactLayoutSchema.default("auto"),
         activity: ArtifactActivitySchema.optional(),
         table: z
           .object({
-            title: z.string().max(180),
+            title: z.string().max(140),
             headers: z.array(z.string().max(100)).min(2).max(8),
             rows: z
               .array(z.array(z.string().max(300)).min(2).max(8))
@@ -200,7 +205,7 @@ export const ArtifactPlanSchema = z.object({
           .optional(),
         chart: z
           .object({
-            title: z.string().max(180),
+            title: z.string().max(120),
             type: z.enum(["bar", "line", "pie", "donut"]),
             labels: z.array(z.string().max(80)).min(2).max(12),
             series: z
@@ -213,12 +218,12 @@ export const ArtifactPlanSchema = z.object({
               .min(1)
               .max(5),
             unit: z.string().max(40).optional().default(""),
-            sourceNote: z.string().max(300).optional().default(""),
+            sourceNote: z.string().max(180).optional().default(""),
           })
           .optional(),
         diagram: z
           .object({
-            title: z.string().max(180),
+            title: z.string().max(120),
             nodes: z.array(z.string().max(100)).min(2).max(8),
             caption: z.string().max(300).optional().default(""),
           })

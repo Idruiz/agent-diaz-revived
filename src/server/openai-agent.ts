@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
@@ -14,6 +15,7 @@ import {
 } from "../shared/contracts.js";
 import { personaProfile } from "../shared/personas.js";
 import { buildArtifact } from "./builders.js";
+import { compileArtifactPlan } from "./artifact-compiler.js";
 import {
   ArtifactPipelineError,
   artifactPlanQualityViolations,
@@ -47,6 +49,8 @@ import {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const MAX_ARTIFACT_LLM_CALLS = 6;
 const MAX_ARTIFACT_WALL_TIME_MS = 20 * 60 * 1000;
+const MAX_PROVIDER_AUTOMATIC_RETRIES = 2;
+const MAX_ASSET_BUILD_ATTEMPTS = 2;
 
 function sha256Text(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -83,7 +87,15 @@ export function artifactFailureFingerprint(input: {
   packageSha: string | null;
   strategy: string;
 }): string {
-  return sha256Text(JSON.stringify(input));
+  // Package bytes can legitimately differ between deterministic attempts because
+  // OOXML embeds generated identifiers/timestamps. Loop detection therefore keys on
+  // the logical failure, not the regenerated package SHA.
+  return sha256Text(JSON.stringify({
+    failureClass: input.failureClass,
+    ruleOrPart: input.ruleOrPart,
+    planSha: input.planSha,
+    strategy: input.strategy,
+  }));
 }
 
 export interface ModelProfile {
@@ -334,7 +346,9 @@ export function normalizeArtifactPlan(
       );
   }
 
-  return { plan, normalizations };
+  const compiled = compileArtifactPlan(kind, plan);
+  normalizations.push(...compiled.normalizations);
+  return { plan: compiled.plan, normalizations };
 }
 
 export function collectArtifactPlanViolations(
@@ -468,10 +482,11 @@ export function validateArtifactPlan(
     minVisuals,
     prompt,
   );
-  if (!violations.length) return;
+  const blocking = violations.filter((violation) => violation.mandatory);
+  if (!blocking.length) return;
   throw new ArtifactPipelineError(
     "PLAN_CONTENT",
-    `Artifact plan content violations:\n${violations
+    `Artifact plan content violations:\n${blocking
       .map(
         (violation) =>
           `- [${violation.code}] ${violation.message}`,
@@ -547,9 +562,7 @@ function parseArtifactPlan(
     minVisuals,
     prompt,
   );
-  const blocking = allowNonMandatoryWarnings
-    ? violations.filter((violation) => violation.mandatory)
-    : violations;
+  const blocking = violations.filter((violation) => violation.mandatory);
   if (blocking.length)
     throw new ArtifactPlanContentError(
       blocking,
@@ -557,20 +570,16 @@ function parseArtifactPlan(
       normalized.normalizations,
     );
 
-  const downgraded = allowNonMandatoryWarnings
-    ? violations
-        .filter((violation) => !violation.mandatory)
-        .map((violation) => ({
-          code: `downgraded_${violation.code}`,
-          detail: `Downgraded after two bounded plan-repair calls: ${violation.message}`,
-        }))
-    : [];
+  // Quality targets are telemetry. They never consume a plan-repair call.
+  const warnings = violations
+    .filter((violation) => !violation.mandatory)
+    .map((violation) => ({
+      code: `quality_warning_${violation.code}`,
+      detail: violation.message,
+    }));
   return {
     plan: normalized.plan,
-    normalizations: [
-      ...normalized.normalizations,
-      ...downgraded,
-    ],
+    normalizations: [...normalized.normalizations, ...warnings],
   };
 }
 
@@ -1287,10 +1296,9 @@ export class AgentRunner {
         persistentRetry,
       });
       const mayRetry =
-        persistentRetry ||
-        (!this.config.MCP_SERVER_URL &&
-          automaticRetries === 1 &&
-          isTransientProviderFailure(response));
+        automaticRetries <= MAX_PROVIDER_AUTOMATIC_RETRIES &&
+        isTransientProviderFailure(response) &&
+        (persistentRetry || !this.config.MCP_SERVER_URL);
       if (!mayRetry) throw new Error(providerError);
       const delayMs = persistentRetry
         ? Math.min(30_000, 1200 * 2 ** Math.min(automaticRetries - 1, 5))
@@ -1762,9 +1770,16 @@ export class AgentRunner {
                   : `Rebuilding artifact after validation repair (attempt ${buildAttempt + 1})`,
             });
 
+            const buildWorkspace = path.join(
+              this.config.artifactDir,
+              ".work",
+              jobId,
+              `attempt-${buildAttempt + 1}`,
+            );
+            fs.mkdirSync(buildWorkspace, { recursive: true });
             try {
               const file = await buildArtifact(
-                this.config,
+                { ...this.config, artifactDir: buildWorkspace },
                 job.kind,
                 plan,
                 job.prompt,
@@ -1804,6 +1819,17 @@ export class AgentRunner {
                 ...planNormalizations,
               ];
               const id = crypto.randomUUID();
+              const extension = path.extname(file.name);
+              const durableName = `${path.basename(file.name, extension)}-${id.slice(0, 12)}${extension}`;
+              const durablePath = path.join(this.config.artifactDir, durableName);
+              fs.mkdirSync(this.config.artifactDir, { recursive: true });
+              fs.renameSync(file.path, durablePath);
+              file.name = durableName;
+              file.path = durablePath;
+              fs.rmSync(path.join(this.config.artifactDir, ".work", jobId), {
+                recursive: true,
+                force: true,
+              });
               this.db.addArtifact({
                 id,
                 jobId,
@@ -1827,6 +1853,10 @@ export class AgentRunner {
               });
               break;
             } catch (buildError) {
+              fs.rmSync(path.join(this.config.artifactDir, ".work", jobId), {
+                recursive: true,
+                force: true,
+              });
               buildAttempt++;
               const failureRecord = recordArtifactFailure(
                 buildError,
@@ -1848,6 +1878,13 @@ export class AgentRunner {
               });
 
               if (failureRecord.classified.failureClass === "INFRA")
+                throw failureRecord.classified;
+
+              const allowedBuildAttempts =
+                failureRecord.classified.failureClass === "ASSET"
+                  ? MAX_ASSET_BUILD_ATTEMPTS
+                  : 1;
+              if (buildAttempt >= allowedBuildAttempts)
                 throw failureRecord.classified;
 
               if (failureRecord.duplicateCount >= 2)
@@ -2013,16 +2050,15 @@ export class AgentRunner {
         current.status !== "cancelled" &&
         artifactKinds.includes(current.kind)
       ) {
-        const restartEvidencePhase =
-          current.message.startsWith("Gathering evidence") ||
-          (!this.db.getProviderResponseId(jobId) && current.progress < 62);
+        const classified = classifyArtifactFailure(e);
+        const blocked = classified.failureClass === "INFRA";
         this.db.updateJob(jobId, {
-          status: "running",
-          progress: Math.max(10, Math.min(95, current.progress)),
-          message: restartEvidencePhase
-            ? "Gathering evidence: unexpected pipeline error; restarting automatically"
-            : "Structuring artifact: unexpected pipeline error; restarting automatically",
-          error: null,
+          status: blocked ? "blocked" : "failed",
+          progress: Math.max(10, Math.min(96, current.progress)),
+          message: blocked
+            ? "blocked: infrastructure"
+            : "Artifact stopped: unexpected deterministic failure",
+          error: classified.message,
         });
         const existing = this.db.raw
           .prepare(
@@ -2031,15 +2067,16 @@ export class AgentRunner {
           .get(jobId) as { id: string } | undefined;
         if (existing)
           this.db.updateMessage(existing.id, {
-            status: "streaming",
-            error: null,
+            status: "failed",
+            error: classified.message,
           });
-        log("error", "artifact.pipeline_restart_scheduled", {
+        log(blocked ? "warn" : "error", "artifact.unexpected_failure_stopped", {
           jobId,
           kind: current.kind,
-          error: message,
+          failureClass: classified.failureClass,
+          ruleOrPart: classified.ruleOrPart,
+          error: classified.message,
         });
-        setTimeout(() => this.start(jobId), 5000);
         return;
       }
       this.db.updateJob(jobId, {

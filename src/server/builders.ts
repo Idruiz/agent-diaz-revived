@@ -360,8 +360,6 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     ?Array.from({length:Math.ceil(plan.sources.length/8)},(_,index)=>plan.sources.slice(index*8,index*8+8))
     :[];
   const name=`${slug(plan.title)}.pptx`,target=safeJoin(config.artifactDir,name);
-  let beforeRatios:number[]|null=null;
-
   const renderAttempt=async(scaled:boolean)=>{
     const placedImageQueries=new Set<string>();
     const usedActivityTemplates=new Set<string>();
@@ -461,6 +459,8 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
       if(activity.type==="four_corners"){
         usedActivityTemplates.add("four-corners-quadrants");
         addModelText(slide,short(section.body,300),{x:.9,y:1.5,w:image?9.55:11.55,fontSize:19,bold:true,color:navy,align:"center",margin:0},{minHeight:.34,maxHeight:.62});
+        if(activity.prompts[0])
+          addModelText(slide,activity.prompts[0],{x:.95,y:2.14,w:11.42,fontSize:15,bold:true,color:blue,align:"center",margin:0},{minHeight:.24,maxHeight:.36});
         const labels=activity.cornerLabels.slice(0,4),colors=["F1E5C5","E7EEF2","E4EFE6","F3E4DF"];
         labels.forEach((label,index)=>{
           const column=index%2,row=Math.floor(index/2),x=.9+column*5.9,y=2.68+row*1.27;
@@ -613,42 +613,31 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     return{raw,placedImageQueries,usedActivityTemplates,contentSlideNumbers};
   };
 
-  for(const scaled of [false,true]){
-    const rendered=await renderAttempt(scaled);
-    const ratios=estimatePptxEmptyCanvasRatio(target).bySlide;
-    try{
-      const validationReceipt=await validateBuiltArtifact(
-        "presentation",
-        prompt,
-        reconciled.plan,
-        target,
-        jobId
-          ?{root:path.join(config.storageRoot,"diagnostics"),jobId,presentationContentSlides:rendered.contentSlideNumbers}
-          :{presentationContentSlides:rendered.contentSlideNumbers},
-      );
-      collectedImages.metrics.placed=rendered.placedImageQueries.size;
-      const enrichedReceipt=validationReceipt as ArtifactValidationReceipt&{images:ImageResolutionReceipt;presentation:PresentationBuildReceipt};
-      enrichedReceipt.images=collectedImages.metrics;
-      enrichedReceipt.presentation={
-        placedAssets:rendered.placedImageQueries.size,
-        activityTemplates:[...rendered.usedActivityTemplates].sort(),
-        reconciliations:reconciled.reconciliations,
-        titleCounts:{contentSlides:rendered.contentSlideNumbers.length,licensedVisuals:rendered.placedImageQueries.size},
-        layoutFitting:{retried:scaled,before:beforeRatios,after:ratios},
-      };
-      return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:rendered.raw.length,validationReceipt};
-    }catch(error){
-      const classified=error instanceof ArtifactPipelineError?error:null;
-      if(!scaled&&classified?.failureClass==="BUILD"&&classified.ruleOrPart==="pptx-empty-canvas"){
-        beforeRatios=ratios;
-        log("warn","artifact.presentation_layout_retry",{jobId:jobId||null,beforeRatios,strategy:"scaled-content-area"});
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw new ArtifactPipelineError("BUILD","Presentation layout fitting exhausted without a validated artifact",{ruleOrPart:"pptx-empty-canvas"});
+  const rendered=await renderAttempt(false);
+  const ratios=estimatePptxEmptyCanvasRatio(target).bySlide;
+  const validationReceipt=await validateBuiltArtifact(
+    "presentation",
+    prompt,
+    reconciled.plan,
+    target,
+    jobId
+      ?{root:path.join(config.storageRoot,"diagnostics"),jobId,presentationContentSlides:rendered.contentSlideNumbers}
+      :{presentationContentSlides:rendered.contentSlideNumbers},
+  );
+  collectedImages.metrics.placed=rendered.placedImageQueries.size;
+  const enrichedReceipt=validationReceipt as ArtifactValidationReceipt&{images:ImageResolutionReceipt;presentation:PresentationBuildReceipt};
+  enrichedReceipt.images=collectedImages.metrics;
+  enrichedReceipt.presentation={
+    placedAssets:rendered.placedImageQueries.size,
+    activityTemplates:[...rendered.usedActivityTemplates].sort(),
+    reconciliations:reconciled.reconciliations,
+    titleCounts:{contentSlides:rendered.contentSlideNumbers.length,licensedVisuals:rendered.placedImageQueries.size},
+    layoutFitting:{retried:false,before:null,after:ratios},
+  };
+  return{name,mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",path:target,size:rendered.raw.length,validationReceipt};
 }
+
+async function docx(}
 
 async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKind,"document"|"analysis"|"research">="document",jobId=""):Promise<BuiltFile>{
   const contentSections=plan.sections.filter(section=>!isSourcesHeading(section.heading));
