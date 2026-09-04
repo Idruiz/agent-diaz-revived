@@ -35,6 +35,97 @@ describe("artifact trust contract", () => {
     expect(compiled.plan.sections.flatMap((s) => s.bullets)).toEqual(input.sections[0]!.bullets);
   });
 
+  it("moves structured narrative to context exactly once instead of duplicating or dropping it", () => {
+    const raw = basePlan();
+    raw.sections = [
+      {
+        heading: "Evidence table",
+        body: "This narrative explains how to interpret the evidence table.",
+        bullets: ["Preserve this interpretation point."],
+        speakerNotes: "Explain the table.",
+        requirementIds: ["R1"],
+        layout: "data",
+        table: {
+          title: "Evidence matrix",
+          headers: ["Item", "Result"],
+          rows: [["A", "Complete"]],
+        },
+      },
+    ];
+    const input = ArtifactPlanSchema.parse(raw);
+    const compiled = compileArtifactPlan("presentation", input);
+    const tableSlide = compiled.plan.sections.find((section) => section.table);
+    const contextSlides = compiled.plan.sections.filter((section) => !section.table);
+    expect(tableSlide).toBeTruthy();
+    expect(tableSlide!.body).toBe("");
+    expect(tableSlide!.bullets).toEqual([]);
+    expect(contextSlides.map((section) => section.body).filter(Boolean)).toEqual([
+      input.sections[0]!.body,
+    ]);
+    expect(contextSlides.flatMap((section) => section.bullets)).toEqual(
+      input.sections[0]!.bullets,
+    );
+  });
+
+  it("materializes every Four Corners prompt and preserves template-overflow copy instead of slicing it", () => {
+    const raw = basePlan();
+    raw.sections = [
+      {
+        heading: "Four Corners choice rounds",
+        body: "Choose a corner and justify your answer with a complete sentence.",
+        bullets: ["Listen to a classmate before changing corners."],
+        speakerNotes: "Run all planned rounds.",
+        requirementIds: ["R1"],
+        layout: "four_corners",
+        activity: {
+          type: "four_corners",
+          durationMinutes: 12,
+          directions: ["Choose one corner.", "Explain your choice to a partner."],
+          prompts: [
+            "Which setting would you prefer?",
+            "Which activity would you choose?",
+            "Which option best fits your routine?",
+          ],
+          sentenceFrames: [
+            "Je préfère ___ parce que ___.",
+            "À mon avis, ___ est mieux.",
+            "Je choisis ___ car ___.",
+            "Pour moi, la meilleure option est ___.",
+          ],
+          cornerLabels: ["A", "B", "C", "D"],
+        },
+      },
+    ];
+    const input = ArtifactPlanSchema.parse(raw);
+    const source = input.sections[0]!;
+    const compiled = compileArtifactPlan("presentation", input);
+    const rounds = compiled.plan.sections.filter(
+      (section) => section.activity?.type === "four_corners",
+    );
+    const context = compiled.plan.sections.filter((section) => !section.activity);
+
+    expect(rounds).toHaveLength(source.activity!.prompts.length);
+    expect(rounds.flatMap((section) => section.activity!.prompts)).toEqual(
+      source.activity!.prompts,
+    );
+    expect(rounds.every((section) => section.activity!.prompts.length === 1)).toBe(true);
+    expect(rounds[0]!.activity!.sentenceFrames).toEqual(
+      source.activity!.sentenceFrames.slice(0, 3),
+    );
+    expect(context.flatMap((section) => section.bullets)).toEqual([
+      ...source.bullets,
+      source.activity!.sentenceFrames[3],
+    ]);
+    expect(
+      compiled.plan.sections.filter((section) => section.body === source.body),
+    ).toHaveLength(1);
+    expect(compiled.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "presentation_activity_paginated" }),
+      ]),
+    );
+  });
+
   it("does not fail a valid plan merely because it misses a nonmandatory visual target", () => {
     const plan = basePlan();
     expect(() =>
