@@ -1122,7 +1122,7 @@ describe("agent production paths", () => {
     db.close();
   }, 20_000);
 
-  it("bounds plan repair at two calls while retaining the six-call global artifact budget", async () => {
+  it("bounds genuinely mandatory plan repair at two calls while retaining the six-call global artifact budget", async () => {
     const { config, db } = harness();
     const conversation = db.createConversation(
       crypto.randomUUID(),
@@ -1131,18 +1131,18 @@ describe("agent production paths", () => {
     const job = db.createJob({
       id: crypto.randomUUID(),
       kind: "presentation",
-      prompt: "Create a seven-section visual presentation",
+      prompt: "Create a visual presentation connected explicitly to French culture",
       conversationId: conversation.id,
       fileIds: [],
       ...modelProfileFor("balanced"),
     });
     const invalidPlan = (variant: number) => ({
       title: `Still invalid ${variant}`,
-      subtitle: "Six sections cannot satisfy the current presentation boundary",
+      subtitle: "The mandatory cultural requirement remains absent",
       requirements: [
         {
           id: "R1",
-          text: "Create a seven-section visual presentation",
+          text: "Create a complete visual presentation",
           mandatory: true,
         },
       ],
@@ -1153,7 +1153,7 @@ describe("agent production paths", () => {
         speakerNotes: "",
         requirementIds: ["R1"],
         layout: "standard",
-        imageQuery: `documentary classroom scene ${variant} ${index + 1}`,
+        imageQuery: null,
       })),
       pages: null,
       sources: [],
@@ -1188,7 +1188,7 @@ describe("agent production paths", () => {
       message: "Artifact stopped: plan_content",
     });
     expect(db.getJob(job.id)?.error).toMatch(
-      /Presentation needs at least 7 content sections/,
+      /cultural requirement.*mandatory cultural requirement/i,
     );
     const state = db.getArtifactRunState(job.id);
     expect(state).toMatchObject({ llmCalls: 4, maxLlmCalls: 6 });
