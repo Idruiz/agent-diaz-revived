@@ -52,6 +52,10 @@ const text = (value: unknown) =>
 const sleep = (ms: number) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+const RETRYABLE_HTTP = new Set([429, 500, 502, 503, 504]);
+
+class PermanentImageProviderError extends Error {}
+
 async function fetchWithRetry(
   url: URL | string,
   init: RequestInit,
@@ -62,12 +66,15 @@ async function fetchWithRetry(
     try {
       const response = await fetch(url, init);
       if (response.ok) return response;
-      if (![429, 500, 502, 503, 504].includes(response.status))
-        throw new Error(`Image provider returned ${response.status}`);
+      if (!RETRYABLE_HTTP.has(response.status))
+        throw new PermanentImageProviderError(
+          `Image provider returned ${response.status}`,
+        );
       last = new Error(
         `Image provider temporarily unavailable (${response.status})`,
       );
     } catch (error) {
+      if (error instanceof PermanentImageProviderError) throw error;
       last =
         error instanceof Error
           ? error
