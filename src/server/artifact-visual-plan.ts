@@ -3,6 +3,7 @@ import type { ArtifactPlan, JobKind } from "../shared/contracts.js";
 export interface ArtifactVisualPlanReceipt {
   targetSlots: number;
   explicitQueries: number;
+  suppressedExplicitQueries: number;
   derivedQueries: number;
   plannedSlots: number;
   eligibleSections: number;
@@ -15,24 +16,16 @@ const SOURCE_HEADING_RE = /^(sources|references|bibliography|works cited)$/i;
 const NO_IMAGES_RE = /\b(?:no images?|no photos?|text[- ]only|without images?|sans images?|sin im[aá]genes?)\b/i;
 const NO_ADDITIONAL_IMAGES_RE = /\b(?:no additional (?:images?|photos?)|do not add (?:additional )?(?:images?|photos?)|(?:use )?only (?:the )?(?:specified|requested|provided|explicit(?:ly)?(?: requested)?) (?:images?|photos?)|only (?:use )?(?:the )?(?:specified|requested|provided|explicit(?:ly)?(?: requested)?) (?:images?|photos?))\b/i;
 const SUPPORT_HEADING_RE = /\b(?:directions?|language frames?|sentence frames?|round\s+\d+|continued\s+\d+|exit ticket|guided practice|independent practice|speed dating|four corners)\b/i;
-const VISUAL_TOPIC_RE = /\b(?:culture|cultural|history|historic|heritage|city|country|region|place|site|architecture|building|food|cuisine|festival|art|artist|museum|landscape|geography|map|community|people|tradition|science|nature|environment|animal|plant|technology|industry|sport|travel|qu[eé]bec|francophon|montr[eé]al|paris|france|canada)\b/i;
+const VISUAL_TOPIC_RE = /\b(?:culture|cultural|history|historic|heritage|city|country|region|place|site|architecture|building|food|cuisine|festival|art|artist|museum|landscape|geography|map|community|people|tradition|science|nature|environment|animal|plant|technology|industry|sport|travel|qu[eé]bec|francophon|montr[eé]al|paris|france|canada|espa[nñ]a|spain|valencia|madrid|barcelona|sevilla|seville|granada|c[oó]rdoba|cordoba)\b/i;
 const STOP_WORDS = new Set([
   "about","after","again","also","avec","because","being","dans","des","each","from","have","into","just","more","pour","that","their","them","this","through","une","using","with","your","vous","nous","elle","elles","ils","les","the","and","for","are","was","were","aux","sur","par","que","qui","est","pas","plus","comme","mais","ses","son","sa","ces","dans","une","un","des","du","de","la","le","et","en","au","aux","à","a","an","of","to","in","on","is","it","as","or",
   "context","section","continued","finished","audience","facing","content","implications","implication","conclusion","result","results","overview","summary","language","frames","frame","support","supporting","complete","completed","production","ready","requested","artifact","validation","route",
 ]);
 const NUMBER_WORDS: Record<string, number> = {
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  eleven: 11,
-  twelve: 12,
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17,
+  eighteen: 18, nineteen: 19, twenty: 20,
 };
 
 function normalizeWords(value: string): string[] {
@@ -58,30 +51,29 @@ function uniqueWords(values: string[], limit: number): string[] {
 }
 
 function derivedQuery(plan: ArtifactPlan, section: ArtifactPlan["sections"][number]): string {
-  const heading = normalizeWords(section.heading);
-  const title = normalizeWords(plan.title);
-  const body = normalizeWords(section.body);
-  const words = uniqueWords([...heading, ...title, ...body], 7);
-  return words.join(" ").trim();
+  return uniqueWords(
+    [...normalizeWords(section.heading), ...normalizeWords(plan.title), ...normalizeWords(section.body)],
+    7,
+  ).join(" ").trim();
 }
 
 function exactRequestedVisualCount(prompt: string): number | null {
   const match = prompt.match(
-    /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+(?:licensed\s+|relevant\s+|documentary\s+)?(?:images?|photos?|photographs?)\b/i,
+    /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|\d{1,2})\s+(?:licensed\s+|relevant\s+|documentary\s+)?(?:images?|photos?|photographs?)\b/i,
   );
   if (!match || match.index === undefined) return null;
-  const before = prompt.slice(Math.max(0, match.index - 24), match.index);
-  const after = prompt.slice(match.index + match[0].length, match.index + match[0].length + 20);
+  const before = prompt.slice(Math.max(0, match.index - 28), match.index);
+  const after = prompt.slice(match.index + match[0].length, match.index + match[0].length + 24);
   if (/\b(?:at least|minimum(?: of)?|no fewer than)\s*$/i.test(before)) return null;
   if (/^\s*(?:per|for each|on each)\b/i.test(after)) return null;
   const token = match[1]!.toLocaleLowerCase();
   const parsed = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS[token];
-  return parsed && parsed > 0 ? parsed : null;
+  return parsed && parsed > 0 ? Math.min(24, parsed) : null;
 }
 
 function targetFor(kind: JobKind, sectionCount: number, eligibleCount: number): number {
   if (!eligibleCount) return 0;
-  if (kind === "website") return Math.min(12, eligibleCount, Math.max(4, Math.round(sectionCount * 0.6)));
+  if (kind === "website") return Math.min(12, eligibleCount, Math.max(6, Math.round(sectionCount * 0.7)));
   if (kind === "presentation") return Math.min(10, eligibleCount, Math.max(4, Math.round(sectionCount * 0.33)));
   if (kind === "research") return Math.min(8, eligibleCount, Math.max(3, Math.round(sectionCount * 0.4)));
   if (kind === "document") return Math.min(7, eligibleCount, Math.max(2, Math.round(sectionCount * 0.34)));
@@ -95,7 +87,7 @@ function scoreSection(kind: JobKind, section: ArtifactPlan["sections"][number], 
   if (VISUAL_TOPIC_RE.test(text)) score += 8;
   if (section.layout === "gallery" || section.layout === "title") score += 5;
   if (section.body.length >= 90) score += 2;
-  if (index === 0 && (kind === "website" || kind === "presentation")) score += 2;
+  if (index === 0 && (kind === "website" || kind === "presentation")) score += 3;
   if (kind === "analysis" && !VISUAL_TOPIC_RE.test(text)) score -= 5;
   return score;
 }
@@ -111,12 +103,8 @@ export function planArtifactVisuals(
   let skippedStructured = 0;
   let skippedActivities = 0;
 
-  const candidates: Array<{ index: number; score: number; query: string }> = [];
+  const eligible: Array<{ index: number; score: number; query: string; explicit: boolean }> = [];
   for (const [index, section] of plan.sections.entries()) {
-    if (section.imageQuery?.trim()) {
-      explicitQueries++;
-      continue;
-    }
     if (SOURCE_HEADING_RE.test(section.heading.trim())) continue;
     if (section.table || section.chart || section.diagram) {
       skippedStructured++;
@@ -127,36 +115,52 @@ export function planArtifactVisuals(
       continue;
     }
     const sectionText = `${section.heading} ${section.body}`;
-    // Numerical/data analysis should prefer executed charts and tables over
-    // decorative photography. Derive a photograph only when the prose itself
-    // is explicitly about a visual/cultural/place-based subject.
     if (kind === "analysis" && !VISUAL_TOPIC_RE.test(sectionText)) continue;
-    const query = derivedQuery(plan, section);
+    const explicitQuery = section.imageQuery?.trim();
+    if (explicitQuery) explicitQueries++;
+    const query = explicitQuery || derivedQuery(plan, section);
     if (!query) continue;
-    candidates.push({ index, score: scoreSection(kind, section, index), query });
+    eligible.push({
+      index,
+      score: scoreSection(kind, section, index),
+      query,
+      explicit: Boolean(explicitQuery),
+    });
   }
 
-  // Direct builder fixtures frequently omit a real user prompt. Preserve those
-  // deterministic fixture semantics; production artifact runs always carry the
-  // originating prompt, and explicit model image queries are still honored.
+  // Builder fixtures without a real user prompt preserve authored image queries.
+  // In production, model-authored imageQuery fields are proposals, not permission
+  // to launch an unbounded provider fan-out. An exact user-requested count may
+  // override the normal budget; otherwise the deterministic budget wins.
   const mayDerive = Boolean(prompt.trim()) && !disabledByPrompt;
   const exactCount = mayDerive ? exactRequestedVisualCount(prompt) : null;
-  const automaticTarget = targetFor(
-    kind,
-    plan.sections.length,
-    candidates.length + explicitQueries,
-  );
-  const targetSlots = mayDerive
-    ? Math.max(
-        explicitQueries,
-        exactCount === null
-          ? automaticTarget
-          : Math.min(exactCount, candidates.length + explicitQueries),
-      )
-    : explicitQueries;
-  const needed = Math.max(0, targetSlots - explicitQueries);
+  const automaticTarget = targetFor(kind, plan.sections.length, eligible.length);
+  const targetSlots = !prompt.trim() || disabledByPrompt
+    ? explicitQueries
+    : Math.min(
+        eligible.length,
+        exactCount === null ? automaticTarget : exactCount,
+      );
 
-  candidates.sort((a, b) => b.score - a.score || a.index - b.index);
+  let suppressedExplicitQueries = 0;
+  if (mayDerive && exactCount === null && explicitQueries > targetSlots) {
+    const keep = new Set(
+      eligible
+        .filter((item) => item.explicit)
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .slice(0, targetSlots)
+        .map((item) => item.index),
+    );
+    for (const item of eligible.filter((candidate) => candidate.explicit)) {
+      if (keep.has(item.index)) continue;
+      plan.sections[item.index]!.imageQuery = undefined;
+      item.explicit = false;
+      suppressedExplicitQueries++;
+    }
+  }
+
+  const retainedExplicit = plan.sections.filter((section) => Boolean(section.imageQuery?.trim())).length;
+  const needed = Math.max(0, targetSlots - retainedExplicit);
   const usedQueries = new Set(
     plan.sections
       .map((section) => section.imageQuery?.trim().toLocaleLowerCase())
@@ -164,7 +168,9 @@ export function planArtifactVisuals(
   );
   let derivedQueries = 0;
   if (mayDerive) {
-    for (const candidate of candidates) {
+    for (const candidate of eligible
+      .filter((item) => !plan.sections[item.index]!.imageQuery)
+      .sort((a, b) => b.score - a.score || a.index - b.index)) {
       if (derivedQueries >= needed) break;
       const key = candidate.query.toLocaleLowerCase();
       if (usedQueries.has(key)) continue;
@@ -174,14 +180,16 @@ export function planArtifactVisuals(
     }
   }
 
+  const plannedSlots = plan.sections.filter((section) => Boolean(section.imageQuery?.trim())).length;
   return {
     plan,
     receipt: {
       targetSlots,
       explicitQueries,
+      suppressedExplicitQueries,
       derivedQueries,
-      plannedSlots: explicitQueries + derivedQueries,
-      eligibleSections: candidates.length,
+      plannedSlots,
+      eligibleSections: eligible.length,
       skippedStructured,
       skippedActivities,
       disabledByPrompt,
