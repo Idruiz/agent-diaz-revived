@@ -553,10 +553,17 @@ describe("artifact quality gates", () => {
       ]),
     );
     const compiledPlan = compileArtifactPlan("presentation", plan).plan;
+    const zip = new AdmZip(out.path);
+    const physicalSlideCount = zip
+      .getEntries()
+      .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
+      .length;
     expect(receipt.presentation.titleCounts.contentSlides).toBe(
+      physicalSlideCount - 2, // title + Sources are not content slides
+    );
+    expect(receipt.presentation.titleCounts.contentSlides).toBeGreaterThanOrEqual(
       compiledPlan.sections.length,
     );
-    const zip = new AdmZip(out.path);
     const tableSlideText = zip
       .getEntries()
       .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName))
