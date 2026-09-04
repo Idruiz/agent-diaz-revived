@@ -1,0 +1,144 @@
+name: Apply structural validator refactor
+
+on:
+  push:
+    branches:
+      - codex/structural-artifact-validation
+    paths:
+      - .github/workflows/apply-structural-validator.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/structural-artifact-validation
+          fetch-depth: 0
+      - name: Refactor validator to structural identity coverage
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          builders = Path('src/server/builders.ts')
+          text = builders.read_text()
+          old = 'import { planArtifactVisuals } from "./artifact-visual-plan.js";\nimport { log } from "./log.js";'
+          new = 'import { planArtifactVisuals } from "./artifact-visual-plan.js";\nimport { presentationIdentityMarkers } from "./artifact-identity.js";\nimport { log } from "./log.js";'
+          assert old in text, 'builders import anchor changed'
+          text = text.replace(old, new, 1)
+
+          old = 'addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,[...(chunkIndex===0&&image&&section.imageQuery?[image.sourceUrl]:[])]));'
+          new = 'addNotesParagraphs(slide,[...noteParagraphs(section.speakerNotes,[...(chunkIndex===0&&image&&section.imageQuery?[image.sourceUrl]:[])]),...presentationIdentityMarkers(section,index)]);'
+          assert old in text, 'table notes anchor changed'
+          text = text.replace(old, new, 1)
+
+          old = 'addNotesParagraphs(slide,noteParagraphs(section.speakerNotes,noteSources));'
+          new = 'addNotesParagraphs(slide,[...noteParagraphs(section.speakerNotes,noteSources),...presentationIdentityMarkers(section,index)]);'
+          assert old in text, 'content notes anchor changed'
+          text = text.replace(old, new, 1)
+          builders.write_text(text)
+
+          quality = Path('src/server/artifact-quality.ts')
+          text = quality.read_text()
+          old = '} from "./reconcile.js";\n'
+          new = '} from "./reconcile.js";\nimport {\n  expectedPresentationIdentityMarkers,\n  extractPresentationIdentityMarkers,\n  presentationIdentityMarkers,\n} from "./artifact-identity.js";\n'
+          assert old in text, 'quality import anchor changed'
+          text = text.replace(old, new, 1)
+
+          # Post-render validity must never depend on surface prose. Remove the
+          # old package-wide string extraction and exact-text coverage gate.
+          text, count = re.subn(
+              r'\nfunction packageVisibleText\(kind: JobKind, filePath: string\): string \{[\s\S]*?\n\}\n\nexport function assertWebsitePackage',
+              '\nexport function assertWebsitePackage',
+              text,
+              count=1,
+          )
+          assert count == 1, 'packageVisibleText block changed'
+
+          text, count = re.subn(
+              r'\nfunction assertOutputCoverage\(kind: JobKind, prompt: string, plan: ArtifactPlan, visibleText: string\): void \{[\s\S]*?\n\}\n\nfunction roundedRatio',
+              '\nfunction roundedRatio',
+              text,
+              count=1,
+          )
+          assert count == 1, 'assertOutputCoverage block changed'
+
+          anchor = '\nexport function assertWebsitePackage(filePath: string): void {'
+          structural = r'''
+export function assertPresentationStructuralCoverage(
+  filePath: string,
+  plan: ArtifactPlan,
+): void {
+  const zip = new AdmZip(filePath);
+  const notesText = zip
+    .getEntries()
+    .filter((entry) => /^ppt\/notesSlides\/notesSlide\d+\.xml$/.test(entry.entryName))
+    .flatMap((entry) =>
+      [...entry.getData().toString("utf8").matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
+        .map((match) => decodeXml(match[1]!)),
+    )
+    .join("");
+  const emitted = extractPresentationIdentityMarkers(notesText);
+  const expected = expectedPresentationIdentityMarkers(plan);
+  const missing = plan.sections.flatMap((section, index) =>
+    presentationIdentityMarkers(section, index)
+      .filter((marker) => !emitted.has(marker))
+      .map((marker) => `${marker} (${section.activity?.type ?? "section"}: ${section.heading})`),
+  );
+  if (missing.length)
+    throw new ArtifactPipelineError(
+      "BUILD",
+      `Presentation structural manifest is missing ${missing.length} emitted item(s): ${missing.join(", ")}`,
+      { ruleOrPart: "pptx-structural-manifest" },
+    );
+  log("info", "artifact.structural_coverage_passed", {
+    kind: "presentation",
+    expected: expected.length,
+    emitted: emitted.size,
+  });
+}
+'''
+          assert anchor in text, 'website anchor changed'
+          text = text.replace(anchor, structural + anchor, 1)
+
+          old = '''    if (kind === "presentation") {
+      assertPresentationPackage(buffer);
+      assertPresentationSlidesHaveMeaningfulContent(filePath);
+    }'''
+          new = '''    if (kind === "presentation") {
+      assertPresentationPackage(buffer);
+      assertPresentationSlidesHaveMeaningfulContent(filePath);
+      assertPresentationStructuralCoverage(filePath, plan);
+    }'''
+          assert old in text, 'presentation validation anchor changed'
+          text = text.replace(old, new, 1)
+
+          old = '''    const visibleText = packageVisibleText(kind, filePath);
+    assertOutputCoverage(kind, prompt, plan, visibleText);
+    const scores = artifactQualityScores(kind, plan, filePath);'''
+          new = '''    const scores = artifactQualityScores(kind, plan, filePath);'''
+          assert old in text, 'surface coverage call anchor changed'
+          text = text.replace(old, new, 1)
+
+          # Keep the positional API stable, but make it explicit that the
+          # finished-artifact validator never rereads the original prompt.
+          text = text.replace(
+              '  prompt: string,\n  plan: ArtifactPlan,\n  filePath: string,\n  diagnostics?: {',
+              '  _prompt: string,\n  plan: ArtifactPlan,\n  filePath: string,\n  diagnostics?: {',
+              1,
+          )
+          quality.write_text(text)
+          PY
+      - name: Commit structural validator refactor
+        shell: bash
+        run: |
+          git config user.name "Idruiz"
+          git config user.email "152026201+Idruiz@users.noreply.github.com"
+          git add src/server/builders.ts src/server/artifact-quality.ts
+          git commit -m "Validate rendered presentations by structural identity"
+          git push origin HEAD:codex/structural-artifact-validation
