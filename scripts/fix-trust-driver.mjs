@@ -2,6 +2,14 @@ import fs from "node:fs";
 
 const file = "scripts/apply-artifact-trust-rebuild.mjs";
 let source = fs.readFileSync(file, "utf8");
+
+// Repair an intentionally strict patch anchor: contracts.ts has several
+// `title.max(180)` fields, so target the table field by its surrounding schema.
+const ambiguous = `replaceOnce(\n  "src/shared/contracts.ts",\n  '            title: z.string().max(180),',\n  '            title: z.string().max(140),'\n);`;
+const precise = `replaceOnce(\n  "src/shared/contracts.ts",\n  '        table: z\\n          .object({\\n            title: z.string().max(180),',\n  '        table: z\\n          .object({\\n            title: z.string().max(140),'\n);`;
+if (!source.includes(ambiguous)) throw new Error("Could not locate ambiguous table-title patch anchor");
+source = source.replace(ambiguous, precise);
+
 const start = source.indexOf("// 8. Honest live acceptance harness");
 const end = source.indexOf("// 9. Make CI labels honest", start);
 if (start < 0 || end < 0) throw new Error("Could not locate live acceptance block");
@@ -83,4 +91,4 @@ write(
 
 source = source.slice(0, start) + replacement + source.slice(end);
 fs.writeFileSync(file, source);
-console.log("Trust driver quoting repaired.");
+console.log("Trust driver quoting and schema anchors repaired.");
