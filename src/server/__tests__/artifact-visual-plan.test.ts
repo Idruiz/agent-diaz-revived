@@ -110,4 +110,81 @@ describe("deterministic visual planning", () => {
     expect(result.receipt.derivedQueries).toBe(0);
     expect(result.plan.sections[0]!.imageQuery).toBe("Montreal skyline Quebec");
   });
+
+  it("respects an exact requested photograph count without suppressing the requested query", () => {
+    const plan = structuredClone(basePlan) as any;
+    plan.sections[0].imageQuery = "Montreal skyline Quebec";
+    const result = planArtifactVisuals(
+      "document",
+      plan,
+      "Create a production-ready document with one licensed photograph",
+    );
+    expect(result.receipt.targetSlots).toBe(1);
+    expect(result.receipt.explicitQueries).toBe(1);
+    expect(result.receipt.derivedQueries).toBe(0);
+    expect(result.receipt.plannedSlots).toBe(1);
+  });
+
+  it("allows a caller to keep explicit visuals while disabling additional derivation", () => {
+    const plan = structuredClone(basePlan) as any;
+    plan.sections[0].imageQuery = "Montreal skyline Quebec";
+    const result = planArtifactVisuals(
+      "presentation",
+      plan,
+      "Create a cultural deck. Use only explicitly requested images.",
+    );
+    expect(result.receipt.disabledByPrompt).toBe(true);
+    expect(result.receipt.explicitQueries).toBe(1);
+    expect(result.receipt.derivedQueries).toBe(0);
+    expect(result.receipt.plannedSlots).toBe(1);
+  });
+
+  it("does not add decorative photographs to a generic numeric analysis", () => {
+    const analysisPlan = {
+      ...structuredClone(basePlan),
+      title: "Quarterly score analysis",
+      subtitle: "Executed numeric findings",
+      sections: [
+        {
+          heading: "Method",
+          body: "Python calculated the values from the uploaded spreadsheet.",
+          bullets: [],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard" as const,
+        },
+        {
+          heading: "Results",
+          body: "The executed values are shown in a chart and exact result table.",
+          bullets: [],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "data" as const,
+          chart: {
+            title: "Scores",
+            type: "bar" as const,
+            labels: ["A", "B"],
+            series: [{ name: "Score", values: [10, 20] }],
+            unit: "points",
+            sourceNote: "Executed fixture",
+          },
+        },
+        {
+          heading: "Conclusion",
+          body: "The second value is higher than the first.",
+          bullets: [],
+          speakerNotes: "",
+          requirementIds: ["R1"],
+          layout: "standard" as const,
+        },
+      ],
+    };
+    const result = planArtifactVisuals(
+      "analysis",
+      analysisPlan as any,
+      "Analyze the uploaded spreadsheet and explain the results",
+    );
+    expect(result.receipt.derivedQueries).toBe(0);
+    expect(result.receipt.plannedSlots).toBe(0);
+  });
 });
