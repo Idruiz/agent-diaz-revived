@@ -123,11 +123,24 @@ for (const testCase of cases) {
   if (bytes.length < 1500) throw new Error(kind + " download unexpectedly small");
 
   if (kind === "presentation") {
-    const views = current.artifacts || [];
+    // The PPTX is deliverable immediately. Companion conversion is deliberately
+    // asynchronous, so poll only for companions after proving the primary file
+    // is already downloadable.
+    let views = current.artifacts || [];
+    const companionDeadline = Date.now() + 2 * 60 * 1000;
+    while (
+      Date.now() < companionDeadline &&
+      (!views.some((item) => item.id === artifact.id + "--html") ||
+        !views.some((item) => item.id === artifact.id + "--pdf"))
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      current = await (await request("/api/jobs/" + job.id)).json();
+      views = current.artifacts || [];
+    }
     const html = views.find((item) => item.id === artifact.id + "--html");
     const pdf = views.find((item) => item.id === artifact.id + "--pdf");
     if (!html || !pdf)
-      throw new Error("presentation completed without both HTML and PDF companion downloads");
+      throw new Error("presentation companions did not become ready within two minutes");
     for (const companion of [html, pdf]) {
       const response = await request("/api/artifacts/" + companion.id + "/download");
       const companionBytes = new Uint8Array(await response.arrayBuffer());

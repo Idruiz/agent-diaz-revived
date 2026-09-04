@@ -356,16 +356,18 @@ export function presentationExportRoutes(
         for (const artifactView of artifacts.filter(isPresentationArtifact)) {
           const source = db.getArtifact(artifactView.id);
           if (!source) continue;
-          try {
-            await ensurePresentationExports(config, source);
-          } catch (error) {
+          // Companion generation must never sit on the critical path for the
+          // accepted PPTX. Kick it off after completion and return job detail
+          // immediately; the normal polling cycle will expose the companions
+          // once their files are ready.
+          void ensurePresentationExports(config, source).catch((error) => {
             log("error", "artifact.presentation_companion_export_failed", {
               jobId: job.id,
               artifactId: artifactView.id,
               name: artifactView.name,
               error: error instanceof Error ? error.message : String(error),
             });
-          }
+          });
         }
       }
       return res.json({
