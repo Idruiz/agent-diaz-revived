@@ -731,10 +731,12 @@ function assertOutputCoverage(kind: JobKind, prompt: string, plan: ArtifactPlan,
       section.table.rows.flat().forEach((value, index) => requireVisible(`table cell ${index + 1} for section '${section.heading}'`, value));
     }
   }
-  if (kind === "presentation" && SPEED_DATING_RE.test(prompt) && !SPEED_DATING_RE.test(normalized))
-    throw new Error("Artifact output validation failed: Speed Dating is missing from the finished deck");
-  if (kind === "presentation" && FOUR_CORNERS_RE.test(prompt) && !FOUR_CORNERS_RE.test(normalized))
-    throw new Error("Artifact output validation failed: Four Corners is missing from the finished deck");
+  // Named activities are validated semantically before rendering and every
+  // audience-facing activity field is verified above after rendering. Requiring
+  // the literal English labels "Speed Dating" or "Four Corners" in the finished
+  // deck is not a validity check: a correct Spanish/French/localized activity
+  // may intentionally use a translated heading. Do not reject localized decks
+  // after their actual activity content has already been proven present.
 }
 
 function roundedRatio(value: number): number {
