@@ -1,0 +1,35 @@
+name: Fix mandatory plan budget test
+
+on:
+  push:
+    branches:
+      - codex/artifact-trust-rebuild
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, '[mandatory-budget-fixed]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/artifact-trust-rebuild
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+      - name: Apply correction
+        run: node scripts/fix-mandatory-plan-budget-test.mjs
+      - name: Remove one-shot source and restore workflow file
+        run: |
+          rm -f scripts/fix-mandatory-plan-budget-test.mjs
+          git checkout HEAD -- .github/workflows/fix-mandatory-plan-budget-test.yml
+      - name: Commit correction
+        run: |
+          git config user.name "Agent Diaz Trust Rebuild"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Use a mandatory defect for plan-repair budget regression [mandatory-budget-fixed]"
+          git push origin HEAD:codex/artifact-trust-rebuild
