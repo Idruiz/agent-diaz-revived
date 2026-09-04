@@ -5,7 +5,7 @@ on:
     branches:
       - codex/artifact-trust-rebuild
     paths:
-      - scripts/apply-artifact-run-logs.mjs
+      - scripts/.artifact-log-migration/**
       - .github/workflows/apply-artifact-run-logs.yml
 
 permissions:
@@ -22,8 +22,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.12.0
-      - name: Apply migration
-        run: node scripts/apply-artifact-run-logs.mjs
+      - name: Assemble and apply migration
+        run: |
+          cat scripts/.artifact-log-migration/part-* > /tmp/apply-artifact-run-logs.mjs
+          node --check /tmp/apply-artifact-run-logs.mjs
+          node /tmp/apply-artifact-run-logs.mjs
       - name: Install locked dependencies
         run: npm ci
       - name: Typecheck and focused tests
@@ -32,6 +35,7 @@ jobs:
           npx vitest run --root . src/server/__tests__/artifact-run-log.test.ts src/server/__tests__/analysis-provenance-agent.test.ts src/server/__tests__/agent.test.ts
       - name: Remove one-shot migration
         run: |
+          git rm -r scripts/.artifact-log-migration
           git rm scripts/apply-artifact-run-logs.mjs
           git rm .github/workflows/apply-artifact-run-logs.yml
       - name: Commit integration
