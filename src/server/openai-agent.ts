@@ -273,6 +273,7 @@ export function normalizeArtifactPlan(
   kind: JobKind,
   input: ArtifactPlan,
   _prompt = "",
+  compileForRender = true,
 ): {
   plan: ArtifactPlan;
   normalizations: ArtifactNormalizationReceipt[];
@@ -353,6 +354,7 @@ export function normalizeArtifactPlan(
       );
   }
 
+  if (!compileForRender) return { plan, normalizations };
   const compiled = compileArtifactPlan(kind, plan);
   normalizations.push(...compiled.normalizations);
   return { plan: compiled.plan, normalizations };
@@ -562,7 +564,11 @@ function parseArtifactPlan(
     throw error;
   }
 
-  const normalized = normalizeArtifactPlan(kind, parsed, prompt);
+  // Validate the model's semantic plan before compiling it into physical
+  // slides. The compiler is allowed to move activity directions/frames onto
+  // support slides, so applying semantic activity rules after compilation would
+  // incorrectly reject a correct physical plan.
+  const normalized = normalizeArtifactPlan(kind, parsed, prompt, false);
   const violations = collectArtifactPlanViolations(
     kind,
     normalized.plan,
@@ -584,9 +590,14 @@ function parseArtifactPlan(
       code: `quality_warning_${violation.code}`,
       detail: violation.message,
     }));
+  const compiled = compileArtifactPlan(kind, normalized.plan);
   return {
-    plan: normalized.plan,
-    normalizations: [...normalized.normalizations, ...warnings],
+    plan: compiled.plan,
+    normalizations: [
+      ...normalized.normalizations,
+      ...compiled.normalizations,
+      ...warnings,
+    ],
   };
 }
 

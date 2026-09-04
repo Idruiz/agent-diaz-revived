@@ -686,19 +686,25 @@ function assertOutputCoverage(kind: JobKind, prompt: string, plan: ArtifactPlan,
     .trim()
     .toLocaleLowerCase();
   const normalized = normalize(visibleText);
+  const compact = (value: string) => normalize(value).replace(/\s+/g, "");
+  const compactVisible = compact(visibleText);
   if (normalized.length < 200)
     throw new Error("Artifact output validation failed: finished artifact contains too little visible content");
 
   const requireVisible = (label: string, value: string) => {
-    const expected = normalize(value);
+    const expected = compact(value);
     if (!expected) return;
-    if (!normalized.includes(expected))
+    // PptxGenJS/OOXML may split one semantic string across adjacent text runs.
+    // Whitespace is presentation markup, not content, so compare the canonical
+    // character stream while retaining punctuation and every non-whitespace
+    // character. This still detects truncation and dropped words.
+    if (!compactVisible.includes(expected))
       throw new Error(`Artifact output validation failed: ${label} is missing from the finished artifact`);
   };
 
   for (const section of plan.sections) {
-    const headingNeedle = normalize(section.heading).slice(0, 40);
-    if (headingNeedle && !normalized.includes(headingNeedle))
+    const headingNeedle = compact(section.heading).slice(0, 40);
+    if (headingNeedle && !compactVisible.includes(headingNeedle))
       throw new Error(`Artifact output validation failed: section '${section.heading}' is missing from the finished artifact`);
     requireVisible(`body for section '${section.heading}'`, section.body);
     section.bullets.forEach((bullet, index) => requireVisible(`bullet ${index + 1} for section '${section.heading}'`, bullet));

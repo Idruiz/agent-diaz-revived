@@ -109,12 +109,16 @@ describe("artifact trust contract", () => {
       source.activity!.prompts,
     );
     expect(rounds.every((section) => section.activity!.prompts.length === 1)).toBe(true);
-    expect(rounds[0]!.activity!.sentenceFrames).toEqual(
-      source.activity!.sentenceFrames.slice(0, 3),
-    );
+    expect(
+      rounds.every((section) => section.activity!.directions.length === 0),
+    ).toBe(true);
+    expect(
+      rounds.every((section) => section.activity!.sentenceFrames.length === 0),
+    ).toBe(true);
     expect(context.flatMap((section) => section.bullets)).toEqual([
       ...source.bullets,
-      source.activity!.sentenceFrames[3],
+      ...source.activity!.directions,
+      ...source.activity!.sentenceFrames,
     ]);
     expect(
       compiled.plan.sections.filter((section) => section.body === source.body),
