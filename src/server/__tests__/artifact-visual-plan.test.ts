@@ -108,6 +108,6 @@ describe("deterministic visual planning", () => {
     const result = planArtifactVisuals("presentation", plan, "");
     expect(result.receipt.explicitQueries).toBe(1);
     expect(result.receipt.derivedQueries).toBe(0);
-    expect(result.plan.sections[0].imageQuery).toBe("Montreal skyline Quebec");
+    expect(result.plan.sections[0]!.imageQuery).toBe("Montreal skyline Quebec");
   });
 });
