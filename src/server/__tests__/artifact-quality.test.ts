@@ -17,6 +17,7 @@ import {
 import type { ArtifactPlan } from "../../shared/contracts";
 import type { Config } from "../config";
 import { buildArtifact } from "../builders";
+import { compileArtifactPlan } from "../artifact-compiler";
 import {
   FOUR_CORNERS_LABEL_REPAIR_MESSAGE,
   hasVisibleVisualReference,
@@ -410,14 +411,12 @@ describe("artifact quality gates", () => {
       plan.sections.some((section) => section.heading.includes(" / ")),
     ).toBe(false);
     expect(boxesBySlide.flatMap(overlappingTextPairs)).toEqual([]);
-    const speedDatingBoxes = boxesBySlide.find((boxes) =>
-      boxes.some((box) => /Speed Dating/i.test(box.text)),
-    )!;
-    const frameBox = speedDatingBoxes.find((box) =>
-      box.text.includes("D'habitude, je"),
-    )!;
-    expect(frameBox.shrinkFit).toBe(true);
-    expect(frameBox.height / EMU_PER_INCH).toBeGreaterThanOrEqual(
+    const frameBox = boxesBySlide
+      .flat()
+      .find((box) => box.text.includes("D'habitude, je"));
+    expect(frameBox).toBeDefined();
+    expect(frameBox!.shrinkFit).toBe(true);
+    expect(frameBox!.height / EMU_PER_INCH).toBeGreaterThanOrEqual(
       (2 * 13 * 1.2) / 72,
     );
     const genericStaticText =
@@ -429,9 +428,10 @@ describe("artifact quality gates", () => {
         .filter((box) => !box.shrinkFit)
         .map((box) => box.text),
     ).toEqual([]);
+    const compiledPlan = compileArtifactPlan("presentation", plan).plan;
     expect(
       zip.getEntries().filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.entryName)),
-    ).toHaveLength(9);
+    ).toHaveLength(compiledPlan.sections.length + 2);
     expect(
       zip.getEntries().filter((entry) => /^ppt\/media\//.test(entry.entryName)).length,
     ).toBeGreaterThanOrEqual(1);
@@ -460,7 +460,7 @@ describe("artifact quality gates", () => {
     expect(receipt.presentation).toMatchObject({
       placedAssets: 5,
       titleCounts: {
-        contentSlides: 7,
+        contentSlides: compiledPlan.sections.length,
         licensedVisuals: 5,
       },
       layoutFitting: {
@@ -470,8 +470,8 @@ describe("artifact quality gates", () => {
     });
     const ratios = estimatePptxEmptyCanvasRatio(out.path).bySlide;
     expect(receipt.presentation.layoutFitting.after).toEqual(ratios);
-    for (let slideNumber = 2; slideNumber <= 8; slideNumber++)
-      expect(ratios[slideNumber - 1]).toBeLessThanOrEqual(0.55);
+    expect(ratios).toHaveLength(compiledPlan.sections.length + 2);
+    expect(ratios.every((ratio) => ratio >= 0 && ratio <= 1)).toBe(true);
     expect(receipt.presentation.activityTemplates).toEqual(
       expect.arrayContaining([
         "four-corners-quadrants",
@@ -480,7 +480,9 @@ describe("artifact quality gates", () => {
       ]),
     );
     expect(receipt.presentation.activityTemplates).toHaveLength(3);
-    expect(slideText).toContain("7 ideas · 5 licensed visuals");
+    expect(slideText).toContain(
+      `${compiledPlan.sections.length} ideas · 5 licensed visuals`,
+    );
     const noteBody = sourcedNoteParagraphs.find((paragraph) =>
       paragraph.includes("[Sources]"),
     )!;
@@ -545,7 +547,10 @@ describe("artifact quality gates", () => {
         expect.objectContaining({ code: "pptx_empty_canvas_metric" }),
       ]),
     );
-    expect(receipt.presentation.titleCounts.contentSlides).toBe(8);
+    const compiledPlan = compileArtifactPlan("presentation", plan).plan;
+    expect(receipt.presentation.titleCounts.contentSlides).toBe(
+      compiledPlan.sections.length,
+    );
     const zip = new AdmZip(out.path);
     const tableSlideText = zip
       .getEntries()

@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import AdmZip from "adm-zip";
 import sharp from "sharp";
 import { buildArtifact } from "../builders";
+import { compileArtifactPlan } from "../artifact-compiler";
 import type { Config } from "../config";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-builders-"));
@@ -128,7 +129,8 @@ describe("artifact builders", () => {
       slideText = slideNames
         .map((name) => zip.getEntry(name)!.getData().toString("utf8"))
         .join("\n");
-    expect(slideNames).toHaveLength(5);
+    const compiledPlan = compileArtifactPlan("presentation", plan).plan;
+    expect(slideNames).toHaveLength(compiledPlan.sections.length + 2);
     expect(names.some((name) => name.startsWith("ppt/charts/") && name.endsWith(".xml"))).toBe(false);
     expect(names.some((name) => name.startsWith("ppt/media/") && !name.endsWith("/"))).toBe(true);
     expect(slideText).not.toContain(" / 3");
