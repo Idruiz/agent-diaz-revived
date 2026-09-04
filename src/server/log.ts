@@ -1,3 +1,5 @@
+import { appendCurrentArtifactLog, currentArtifactJobId } from "./artifact-run-log.js";
+
 export type Level = "info" | "warn" | "error";
 
 function clean(value: unknown): unknown {
@@ -11,8 +13,16 @@ function clean(value: unknown): unknown {
 }
 
 export function log(level: Level, event: string, data: Record<string, unknown> = {}): void {
-  const entry = { ts: new Date().toISOString(), level, event, ...clean(data) as object };
+  const artifactJobId = currentArtifactJobId();
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...(artifactJobId && !("jobId" in data) ? { jobId: artifactJobId } : {}),
+    ...clean(data) as object,
+  };
   const line = JSON.stringify(entry);
+  appendCurrentArtifactLog(line);
   if (level === "error") console.error(line);
   else if (level === "warn") console.warn(line);
   else console.log(line);

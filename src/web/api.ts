@@ -51,6 +51,20 @@ export const api = {
     call<JobView & { artifacts: ArtifactView[]; approvals: ApprovalView[] }>(
       `/api/jobs/${id}`,
     ),
+  jobLogs: async (id: string): Promise<string> => {
+    const response = await fetch(`/api/jobs/${id}/logs`, {
+      headers: { Accept: "text/plain" },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      let message = text || `Log request failed (${response.status})`;
+      try {
+        message = JSON.parse(text).error || message;
+      } catch {}
+      throw new Error(message);
+    }
+    return text;
+  },
   createJob: (input: {
     prompt: string;
     kind: JobKind;

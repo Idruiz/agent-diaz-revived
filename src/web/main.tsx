@@ -133,6 +133,9 @@ function App() {
     [uploads, setUploads] = useState<PendingUpload[]>([]),
     [sending, setSending] = useState(false),
     [err, setErr] = useState("");
+  const [artifactLogs, setArtifactLogs] = useState<string | null>(null);
+  const [artifactLogsBusy, setArtifactLogsBusy] = useState(false);
+  const [artifactLogsCopied, setArtifactLogsCopied] = useState(false);
   const [skills, setSkills] = useState<SkillView[]>([]),
     [voiceActive, setVoiceActive] = useState(false),
     [voiceStatus, setVoiceStatus] = useState("Off"),
@@ -221,6 +224,10 @@ function App() {
     const timer = setInterval(() => void refresh(), selected ? 1800 : 15_000);
     return () => clearInterval(timer);
   }, [ready, selected, conversationId]);
+  useEffect(() => {
+    setArtifactLogs(null);
+    setArtifactLogsCopied(false);
+  }, [selected]);
   useEffect(() => {
     const chatLog = chatLogRef.current;
     if (!chatLog) return;
@@ -1066,6 +1073,91 @@ function App() {
               )}
               {current.error && <pre className="errorbox">{current.error}</pre>}
             </div>
+            {current.kind !== "chat" && (
+              <div className="artifactLogActions">
+                <button
+                  className="textButton"
+                  disabled={artifactLogsBusy}
+                  onClick={async () => {
+                    if (artifactLogs !== null) {
+                      setArtifactLogs(null);
+                      setArtifactLogsCopied(false);
+                      return;
+                    }
+                    setArtifactLogsBusy(true);
+                    setArtifactLogsCopied(false);
+                    try {
+                      setArtifactLogs(await api.jobLogs(current.id));
+                    } catch (error) {
+                      setErr((error as Error).message);
+                    } finally {
+                      setArtifactLogsBusy(false);
+                    }
+                  }}
+                >
+                  {artifactLogsBusy
+                    ? "Opening run logs…"
+                    : artifactLogs === null
+                      ? "Open / copy artifact run logs"
+                      : "Hide artifact run logs"}
+                </button>
+                {artifactLogs !== null && (
+                  <div className="artifactLogPanel">
+                    <div className="artifactLogHeader">
+                      <div>
+                        <h2>Artifact run logs</h2>
+                        <small>
+                          Complete structured log stream for this artifact job. Secrets are redacted.
+                        </small>
+                      </div>
+                      <div>
+                        <button
+                          className="textButton"
+                          disabled={artifactLogsBusy}
+                          onClick={async () => {
+                            setArtifactLogsBusy(true);
+                            try {
+                              setArtifactLogs(await api.jobLogs(current.id));
+                              setArtifactLogsCopied(false);
+                            } catch (error) {
+                              setErr((error as Error).message);
+                            } finally {
+                              setArtifactLogsBusy(false);
+                            }
+                          }}
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          className="run"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(artifactLogs);
+                              setArtifactLogsCopied(true);
+                            } catch {
+                              setArtifactLogsCopied(false);
+                              setErr(
+                                "Clipboard access was unavailable. Select the log text below and copy it manually.",
+                              );
+                            }
+                          }}
+                        >
+                          {artifactLogsCopied ? "Copied" : "Copy all logs"}
+                        </button>
+                      </div>
+                    </div>
+                    <textarea
+                      className="artifactLogText"
+                      value={artifactLogs}
+                      readOnly
+                      spellCheck={false}
+                      aria-label="Artifact run logs"
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             {detail?.approvals.map((approval) => (
               <div className="approval" key={approval.id}>
                 <p className="eyebrow">APPROVAL REQUIRED</p>

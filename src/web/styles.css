@@ -490,3 +490,65 @@ button {
     width: calc(100% - 1.5rem);
   }
 }
+
+.artifactLogActions {
+  display: grid;
+  gap: 0.65rem;
+}
+.artifactLogPanel {
+  background: #0b1a24;
+  border: 1px solid #345469;
+  border-radius: 14px;
+  padding: 1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+.artifactLogHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.artifactLogHeader h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.artifactLogHeader small {
+  color: #8fa4b1;
+}
+.artifactLogHeader > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.artifactLogHeader .run {
+  padding: 0.55rem 0.8rem;
+}
+.artifactLogText {
+  width: 100%;
+  min-height: 360px;
+  max-height: 60vh;
+  resize: vertical;
+  border: 1px solid #244255;
+  border-radius: 10px;
+  background: #061018;
+  color: #d9e5eb;
+  padding: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
+}
+@media (max-width: 720px) {
+  .artifactLogHeader {
+    display: grid;
+  }
+  .artifactLogHeader > div:last-child {
+    justify-content: flex-start;
+  }
+  .artifactLogText {
+    min-height: 300px;
+  }
+}

@@ -1584,8 +1584,19 @@ describe("agent production paths", () => {
               id: `resp_${kind}_evidence`,
               status: "completed",
               output_text:
-                "Verified evidence dossier with complete findings and https://example.com/verified-source.",
-              output: [],
+                kind === "analysis"
+                  ? "Verified evidence dossier from executed Python: A=10, B=20, C=30. https://example.com/verified-source."
+                  : "Verified evidence dossier with complete findings and https://example.com/verified-source.",
+              output:
+                kind === "analysis"
+                  ? [
+                      {
+                        type: "code_interpreter_call",
+                        status: "completed",
+                        outputs: [{ type: "logs", logs: "A=10\nB=20\nC=30" }],
+                      },
+                    ]
+                  : [],
             };
           return {
             id: `resp_${kind}_structure`,

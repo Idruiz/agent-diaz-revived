@@ -32,6 +32,7 @@ import {
   type ArtifactPlanViolation,
 } from "./artifact-quality.js";
 import { log } from "./log.js";
+import { withArtifactRunLog } from "./artifact-run-log.js";
 import {
   evidenceSteeringForPrompt,
   getSkillForKind,
@@ -1331,6 +1332,38 @@ export class AgentRunner {
   }
 
   private async run(jobId: string): Promise<void> {
+    const job = this.db.getJob(jobId);
+    if (!job) return;
+    const isArtifact = [
+      "research",
+      "analysis",
+      "presentation",
+      "document",
+      "website",
+    ].includes(job.kind);
+    if (!isArtifact) return this.runInternal(jobId);
+    return withArtifactRunLog(this.config, jobId, async () => {
+      log("info", "artifact.run_log_started", {
+        jobId,
+        kind: job.kind,
+        status: job.status,
+      });
+      try {
+        await this.runInternal(jobId);
+      } finally {
+        const finalJob = this.db.getJob(jobId);
+        log("info", "artifact.run_log_finished", {
+          jobId,
+          kind: job.kind,
+          status: finalJob?.status ?? "missing",
+          progress: finalJob?.progress ?? null,
+          error: finalJob?.error ?? null,
+        });
+      }
+    });
+  }
+
+  private async runInternal(jobId: string): Promise<void> {
     const job = this.db.getJob(jobId);
     if (!job || ["completed", "cancelled"].includes(job.status)) return;
     try {

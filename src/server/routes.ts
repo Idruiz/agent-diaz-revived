@@ -20,6 +20,7 @@ import { safeJoin } from "./files.js";
 import { skills } from "./skills.js";
 import { modelProfileFor } from "./openai-agent.js";
 import { log } from "./log.js";
+import { readArtifactRunLog } from "./artifact-run-log.js";
 
 export function apiRoutes(
   config: Config,
@@ -400,6 +401,24 @@ export function apiRoutes(
       artifacts: db.listArtifacts(j.id),
       approvals: db.listApprovals(j.id),
     });
+  });
+  r.get("/jobs/:id/logs", (req, res) => {
+    const j = db.getJob(req.params.id);
+    if (!j) return res.status(404).json({ error: "Job not found" });
+    if (j.kind === "chat")
+      return res.status(400).json({ error: "Run logs are available for artifact jobs only" });
+    const logs = readArtifactRunLog(config, j.id);
+    res.type("text/plain; charset=utf-8").send(
+      logs ||
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          level: "info",
+          event: "artifact.run_log_empty",
+          jobId: j.id,
+          status: j.status,
+          message: "No structured artifact logs have been recorded for this run yet.",
+        }) + "\n",
+    );
   });
   r.post("/jobs/:id/retry", (req, res) => {
     const original = db.getJob(req.params.id);
