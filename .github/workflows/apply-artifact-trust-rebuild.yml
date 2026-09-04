@@ -24,10 +24,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.12.0"
+      - name: Repair one-shot patch driver
+        run: node scripts/fix-trust-driver.mjs
       - name: Apply deterministic source patch
         run: node scripts/apply-artifact-trust-rebuild.mjs
       - name: Remove one-shot patch machinery
         run: |
+          rm -f scripts/fix-trust-driver.mjs
           rm -f scripts/apply-artifact-trust-rebuild.mjs
           rm -f .github/workflows/apply-artifact-trust-rebuild.yml
       - name: Commit rebuilt artifact subsystem
