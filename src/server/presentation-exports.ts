@@ -108,70 +108,77 @@ function escapeHtml(value: string): string {
   );
 }
 
+function assertJpeg(bytes: Buffer): void {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8)
+    throw new Error("Presentation HTML renderer received an invalid JPEG slide");
+}
+
 export function browserPresentationHtml(
   title: string,
-  pdfBytes: Buffer,
+  slideImages: Buffer[],
 ): string {
-  assertPdf(pdfBytes);
-  const encoded = pdfBytes.toString("base64");
+  if (!slideImages.length)
+    throw new Error("Presentation HTML renderer received no slide images");
+  slideImages.forEach(assertJpeg);
   const safeTitle = escapeHtml(title);
+  const slides = slideImages
+    .map(
+      (bytes, index) =>
+        `<figure class="slide${index === 0 ? " active" : ""}" id="slide-${index + 1}" data-slide="${index + 1}"><img src="data:image/jpeg;base64,${bytes.toString("base64")}" alt="Slide ${index + 1} of ${slideImages.length}"></figure>`,
+    )
+    .join("\n");
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
 <title>${safeTitle}</title>
 <style>
 :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b1118;color:#f7f3ea}
-*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#0b1118}
-body{display:grid;grid-template-rows:auto 1fr}.bar{display:flex;align-items:center;gap:.8rem;padding:.6rem .8rem;background:#17324d;border-bottom:3px solid #c99a2e;box-shadow:0 8px 24px #0006;z-index:2}
-.brand{font-weight:800;letter-spacing:.12em;color:#c99a2e;font-size:.78rem;white-space:nowrap}.title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}.actions{display:flex;gap:.5rem;align-items:center}
-button,a.control{appearance:none;border:1px solid #ffffff35;border-radius:.55rem;background:#ffffff12;color:#fff;padding:.48rem .72rem;font:inherit;font-weight:700;cursor:pointer;text-decoration:none}button:hover,a.control:hover{background:#ffffff20}
-.viewer{position:relative;min-height:0;background:#151b22}.viewer iframe{display:block;width:100%;height:100%;border:0;background:#222}.fallback{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:2rem;color:#d9e0e4;pointer-events:none}.fallback strong{color:#fff}
-.hint{font-size:.76rem;color:#d9e0e4;white-space:nowrap}@media(max-width:760px){.hint,.brand{display:none}.bar{padding:.45rem}.actions{gap:.3rem}button,a.control{padding:.42rem .55rem;font-size:.85rem}}
-@media print{.bar{display:none}.viewer{height:100vh}}
+*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;background:#0b1118}body{display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+.bar{display:flex;align-items:center;gap:.7rem;padding:.58rem .75rem;background:#17324d;border-bottom:3px solid #c99a2e;box-shadow:0 8px 24px #0008;z-index:2}.brand{font-weight:850;letter-spacing:.12em;color:#c99a2e;font-size:.78rem;white-space:nowrap}.title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:750}.counter{font-variant-numeric:tabular-nums;color:#d9e0e4;font-size:.85rem;min-width:5.5rem;text-align:center}.actions{display:flex;gap:.35rem;align-items:center}button{appearance:none;border:1px solid #ffffff35;border-radius:.55rem;background:#ffffff12;color:#fff;padding:.45rem .65rem;font:inherit;font-weight:750;cursor:pointer}button:hover{background:#ffffff20}button:disabled{opacity:.4;cursor:default}
+.stage{position:relative;min-height:0;display:grid;place-items:center;padding:.7rem;background:radial-gradient(circle at 50% 35%,#24313d 0,#111820 58%,#090d12 100%);overflow:hidden}.slide{display:none;margin:0;width:min(100%,calc((100vh - 4.5rem) * 16 / 9));max-height:100%;aspect-ratio:16/9;background:#fff;box-shadow:0 24px 80px #000b}.slide.active{display:block}.slide img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}
+.hint{font-size:.72rem;color:#bdc8d1;white-space:nowrap}@media(max-width:820px){.hint,.brand{display:none}.title{font-size:.9rem}.counter{min-width:4rem}.bar{padding:.42rem}.stage{padding:.25rem}button{padding:.4rem .5rem}}
+@media print{html,body{height:auto;background:white;overflow:visible}.bar{display:none}.stage{display:block;padding:0;background:white;overflow:visible}.slide,.slide.active{display:block;width:100%;max-height:none;aspect-ratio:16/9;box-shadow:none;break-after:page;page-break-after:always}.slide:last-child{break-after:auto;page-break-after:auto}}
 </style>
 </head>
 <body>
-<header class="bar">
-  <div class="brand">AGENT DÍAZ</div>
-  <div class="title">${safeTitle}</div>
-  <div class="hint">Browser-native slide view · use the PDF viewer arrows / Page Up / Page Down</div>
-  <div class="actions">
-    <a class="control" id="openPdf" target="_blank" rel="noopener">Open PDF</a>
-    <button id="fullscreen" type="button">Full screen</button>
-  </div>
-</header>
-<main class="viewer" id="viewer">
-  <div class="fallback"><div><strong>Loading presentation…</strong><br>If your browser disables its PDF viewer, use “Open PDF”.</div></div>
-  <iframe id="slides" title="${safeTitle}"></iframe>
-</main>
-<script id="pdf-data" type="application/octet-stream">${encoded}</script>
+<header class="bar"><div class="brand">AGENT DÍAZ</div><div class="title">${safeTitle}</div><div class="hint">Exact PPTX/PDF visual parity · Arrow keys / Page Up / Page Down</div><div class="counter" id="counter">1 / ${slideImages.length}</div><div class="actions"><button id="prev" type="button" aria-label="Previous slide">◀</button><button id="next" type="button" aria-label="Next slide">▶</button><button id="fullscreen" type="button">Full screen</button></div></header>
+<main class="stage" id="stage">${slides}</main>
 <script>
-(()=>{
-  const encoded=document.getElementById("pdf-data").textContent.trim();
-  const binary=atob(encoded);
-  const bytes=new Uint8Array(binary.length);
-  for(let offset=0;offset<binary.length;offset+=65536){
-    const end=Math.min(binary.length,offset+65536);
-    for(let index=offset;index<end;index++)bytes[index]=binary.charCodeAt(index);
-  }
-  const url=URL.createObjectURL(new Blob([bytes],{type:"application/pdf"}));
-  const slides=document.getElementById("slides");
-  slides.src=url+"#view=FitH&toolbar=1&navpanes=0";
-  const openPdf=document.getElementById("openPdf");
-  openPdf.href=url;
-  document.getElementById("fullscreen").addEventListener("click",()=>{
-    const viewer=document.getElementById("viewer");
-    if(document.fullscreenElement)document.exitFullscreen();
-    else viewer.requestFullscreen();
-  });
-  addEventListener("beforeunload",()=>URL.revokeObjectURL(url),{once:true});
-})();
+(()=>{const frames=[...document.querySelectorAll(".slide")],counter=document.getElementById("counter"),prev=document.getElementById("prev"),next=document.getElementById("next");let index=0;const show=value=>{index=Math.max(0,Math.min(frames.length-1,value));frames.forEach((frame,i)=>frame.classList.toggle("active",i===index));counter.textContent=(index+1)+" / "+frames.length;prev.disabled=index===0;next.disabled=index===frames.length-1;};prev.addEventListener("click",()=>show(index-1));next.addEventListener("click",()=>show(index+1));document.getElementById("fullscreen").addEventListener("click",()=>{const stage=document.getElementById("stage");if(document.fullscreenElement)document.exitFullscreen();else stage.requestFullscreen();});addEventListener("keydown",event=>{if(["ArrowRight","PageDown"," "].includes(event.key)){event.preventDefault();show(index+1);}else if(["ArrowLeft","PageUp"].includes(event.key)){event.preventDefault();show(index-1);}else if(event.key==="Home")show(0);else if(event.key==="End")show(frames.length-1);});show(0);})();
 </script>
 </body>
 </html>`;
+}
+
+async function renderPdfSlideJpegs(pdfPath: string): Promise<Buffer[]> {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-html-slides-"));
+  try {
+    const prefix = path.join(tempRoot, "slide");
+    const { stdout, stderr } = await execFileAsync(
+      "pdftoppm",
+      ["-jpeg", "-r", "144", "-jpegopt", "quality=90,progressive=y", pdfPath, prefix],
+      { timeout: 120_000, maxBuffer: 1_000_000 },
+    );
+    const files = fs.readdirSync(tempRoot)
+      .filter((name) => /^slide-\d+\.jpg$/i.test(name))
+      .sort((a, b) => {
+        const an = Number(a.match(/-(\d+)\.jpg$/i)?.[1] ?? 0);
+        const bn = Number(b.match(/-(\d+)\.jpg$/i)?.[1] ?? 0);
+        return an - bn;
+      });
+    if (!files.length)
+      throw new Error(`pdftoppm did not create presentation slide images${stderr ? `: ${stderr.trim()}` : stdout ? `: ${stdout.trim()}` : ""}`);
+    return files.map((name) => {
+      const bytes = fs.readFileSync(path.join(tempRoot, name));
+      assertJpeg(bytes);
+      return bytes;
+    });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 async function renderPdf(
@@ -249,13 +256,15 @@ async function generatePresentationExports(
 
   const pdfStat = fs.statSync(pdfTarget);
   if (!isFreshFile(htmlTarget, pdfStat.mtimeMs, 3_000)) {
+    const slideImages = await renderPdfSlideJpegs(pdfTarget);
     const html = browserPresentationHtml(
       displayTitle(artifact.name),
-      fs.readFileSync(pdfTarget),
+      slideImages,
     );
     if (
       !html.startsWith("<!doctype html>") ||
-      !html.includes('id="pdf-data"')
+      !html.includes('id="slide-1"') ||
+      !html.includes("data:image/jpeg;base64,")
     )
       throw new Error(
         "Generated browser presentation failed deterministic HTML validation",
@@ -265,6 +274,7 @@ async function generatePresentationExports(
       source: artifact.name,
       name: path.basename(htmlTarget),
       size: fs.statSync(htmlTarget).size,
+      renderer:"pdf-page-jpeg-parity",
     });
   }
 

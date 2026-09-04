@@ -21,6 +21,7 @@ import {
 } from "./image-judge.js";
 import { reconcilePresentationPlan } from "./reconcile.js";
 import { compileArtifactPlan } from "./artifact-compiler.js";
+import { planArtifactVisuals } from "./artifact-visual-plan.js";
 import { log } from "./log.js";
 import {
   ArtifactPipelineError,
@@ -198,20 +199,17 @@ async function collectImages(
         )
       : undefined;
 
-    for (const candidate of section.candidates) {
-      if (chosen?.id === candidate.id) continue;
-      rejectedWithReasons.push({
-        sectionIndex: section.sectionIndex,
-        query: section.query,
-        candidateId: candidate.id,
-        title: candidate.title,
-        reason: decision?.reason
-          ? `Not selected by image judge: ${decision.reason}`
-          : "Not selected by image judge.",
-      });
-    }
-
     if (!chosen) {
+      for (const candidate of section.candidates)
+        rejectedWithReasons.push({
+          sectionIndex: section.sectionIndex,
+          query: section.query,
+          candidateId: candidate.id,
+          title: candidate.title,
+          reason: decision?.reason
+            ? `Not selected by image judge: ${decision.reason}`
+            : "Not selected by image judge.",
+        });
       rejectedWithReasons.push({
         sectionIndex: section.sectionIndex,
         query: section.query,
@@ -224,31 +222,71 @@ async function collectImages(
       continue;
     }
 
-    try {
-      const image = await downloadCommonsCandidate(chosen);
-      images.set(section.query, image);
-      fetched++;
-      log("info", "artifact.image_judged_retrieved", {
-        query: section.query,
-        sectionIndex: section.sectionIndex,
-        candidateId: chosen.id,
-        title: chosen.title,
-      });
-    } catch (error) {
+    const downloadOrder = [
+      chosen,
+      ...section.candidates.filter((candidate) => candidate.id !== chosen.id),
+    ];
+    const failedIds = new Set<string>();
+    let selected: CommonsImageCandidate | undefined;
+    for (const candidate of downloadOrder) {
+      try {
+        const image = await downloadCommonsCandidate(candidate);
+        images.set(section.query, image);
+        fetched++;
+        selected = candidate;
+        log(
+          "info",
+          candidate.id === chosen.id
+            ? "artifact.image_judged_retrieved"
+            : "artifact.image_fallback_retrieved",
+          {
+            query: section.query,
+            sectionIndex: section.sectionIndex,
+            candidateId: candidate.id,
+            title: candidate.title,
+            primaryCandidateId: chosen.id,
+          },
+        );
+        break;
+      } catch (error) {
+        failedIds.add(candidate.id);
+        rejectedWithReasons.push({
+          sectionIndex: section.sectionIndex,
+          query: section.query,
+          candidateId: candidate.id,
+          title: candidate.title,
+          reason: `Candidate download failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        log("warn", "artifact.image_candidate_download_failed", {
+          query: section.query,
+          sectionIndex: section.sectionIndex,
+          candidateId: candidate.id,
+          primaryCandidateId: chosen.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    for (const candidate of section.candidates) {
+      if (candidate.id === selected?.id || failedIds.has(candidate.id)) continue;
       rejectedWithReasons.push({
         sectionIndex: section.sectionIndex,
         query: section.query,
-        candidateId: chosen.id,
-        title: chosen.title,
-        reason: `Chosen candidate download failed: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      log("warn", "artifact.image_chosen_download_failed", {
-        query: section.query,
-        sectionIndex: section.sectionIndex,
-        candidateId: chosen.id,
-        error: error instanceof Error ? error.message : String(error),
+        candidateId: candidate.id,
+        title: candidate.title,
+        reason: selected
+          ? `Not used after successfully retrieving '${selected.title}'.`
+          : "Not selected by image judge.",
       });
     }
+    if (!selected)
+      rejectedWithReasons.push({
+        sectionIndex: section.sectionIndex,
+        query: section.query,
+        candidateId: null,
+        title: null,
+        reason: "All judged image candidates failed download.",
+      });
   }
 
   return {
@@ -615,6 +653,15 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
 
   const rendered=await renderAttempt(false);
   const ratios=estimatePptxEmptyCanvasRatio(target).bySlide;
+  collectedImages.metrics.placed=rendered.placedImageQueries.size;
+  log("info", "artifact.image_summary", {
+    kind:"presentation",
+    requested:collectedImages.metrics.requested,
+    judged:collectedImages.metrics.judged,
+    fetched:collectedImages.metrics.fetched,
+    placed:collectedImages.metrics.placed,
+    unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
+  });
   const validationReceipt=await validateBuiltArtifact(
     "presentation",
     prompt,
@@ -777,6 +824,15 @@ async function docx(config:Config,plan:ArtifactPlan,prompt="",kind:Extract<JobKi
   const buf=await Packer.toBuffer(d); if(buf.length<3000)throw new Error("DOCX validation failed: output too small");
   const name=`${slug(plan.title)}.docx`,target=safeJoin(config.artifactDir,name);
   atomicWrite(target,buf);
+  collectedImages.metrics.placed=placedImageQueries.size;
+  log("info", "artifact.image_summary", {
+    kind,
+    requested:collectedImages.metrics.requested,
+    judged:collectedImages.metrics.judged,
+    fetched:collectedImages.metrics.fetched,
+    placed:collectedImages.metrics.placed,
+    unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
+  });
   const validationReceipt=await validateBuiltArtifact(
     kind,
     prompt,
@@ -858,7 +914,7 @@ async function website(
       .update(image.bytes)
       .digest("hex")
       .slice(0,20);
-    const assetPath=`assets/images/${digest}.jpg`;
+    const assetPath=`assets/images/${digest}.${image.extension === "png" ? "png" : "jpg"}`;
     assetByQuery.set(query,assetPath);
     if(!uniqueImageAssets.has(assetPath))
       uniqueImageAssets.set(assetPath,image);
@@ -866,8 +922,9 @@ async function website(
 
   const css=`:root{--ink:#17202a;--gold:#c99a2e;--paper:#f7f3ea;--navy:#17324d;--blue:#2f739c;--white:#fff;--muted:#5a6772}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,Aptos,system-ui,sans-serif;color:var(--ink);background:var(--paper);line-height:1.65}nav{position:sticky;top:0;z-index:5;display:flex;gap:1.35rem;align-items:center;padding:1rem 6vw;background:#101d29f7;color:white;box-shadow:0 3px 18px #0003;backdrop-filter:blur(12px)}nav strong{margin-right:auto;letter-spacing:.04em}nav a{color:white;text-decoration:none;font-weight:650}nav a[aria-current=page]{color:#f1c65b;border-bottom:2px solid}.hero{isolation:isolate;position:relative;overflow:hidden;background:var(--navy);color:white;padding:clamp(5rem,10vw,8rem) 6vw;border-top:8px solid var(--gold)}.hero-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}.hero:before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(90deg,#10283df2 0%,#10283dc9 52%,#10283d52 100%)}.hero .eyebrow{text-transform:uppercase;letter-spacing:.18em;color:#f1c65b;font-size:.78rem;font-weight:800}.hero h1{font-size:clamp(2.8rem,6vw,5.7rem);letter-spacing:-.04em;line-height:.96;margin:.55rem 0 1rem;max-width:15ch}.hero p{font-size:clamp(1.05rem,2vw,1.3rem);max-width:56ch;color:#e0e9f0}main{max-width:1180px;margin:auto;padding:2rem 6vw 4rem}section{padding:clamp(3rem,6vw,5.5rem) 0;border-bottom:1px solid #d9d2c2}section.with-photo{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.92fr);gap:clamp(2rem,5vw,5rem);align-items:center}.with-photo.flip .copy{order:2}.with-photo.flip .photo{order:1}.copy{min-width:0}h2{color:var(--navy);font-size:clamp(2rem,4vw,3.25rem);letter-spacing:-.035em;line-height:1.05;margin:.2rem 0 1.3rem}h3{color:var(--navy);margin:1.3rem 0 .65rem}p{font-size:1.08rem}li{margin:.55rem 0}a{color:#815e09}.photo{margin:0;background:white;padding:.65rem;border-radius:20px;box-shadow:0 18px 55px #12202b22;transform:rotate(.35deg)}.flip .photo{transform:rotate(-.35deg)}.photo img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;border-radius:14px}.photo figcaption{font-size:.75rem;line-height:1.35;color:var(--muted);padding:.65rem .3rem .15rem}.viz,.table-wrap,.activity{grid-column:1/-1;margin:2rem 0 0}.viz svg{width:100%;height:auto;display:block;box-shadow:0 15px 45px #12202b1b;border-radius:18px}.table{overflow:auto;background:white;border-radius:14px;box-shadow:0 12px 35px #12202b14}table{border-collapse:collapse;width:100%;min-width:560px}th,td{padding:.9rem 1rem;border-bottom:1px solid #dbe2e6;text-align:left}th{background:var(--navy);color:white}.activity{background:white;border-left:6px solid var(--gold);padding:1.25rem 1.5rem;border-radius:12px;box-shadow:0 10px 32px #12202b12}.corner-grid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin:1rem 0}.corner-grid div{padding:1rem;background:#eef3f5;border-radius:10px;font-weight:750;color:var(--navy);text-align:center}footer{padding:2.4rem 6vw;background:#101d29;color:#ccd6df}footer a{color:#f1c65b}@media(max-width:760px){nav{align-items:flex-start;flex-wrap:wrap}.hero{padding-top:4rem}nav strong{width:100%}section.with-photo{display:block}.with-photo.flip .copy,.with-photo.flip .photo{order:initial}.photo{margin-top:2rem;transform:none!important}.corner-grid{grid-template-columns:1fr}table{min-width:480px}}`;
 
+  const HOME_FILE="MAIN_HOMEPAGE.html";
   const fileName=(page:(typeof pages)[number])=>
-    page.slug==="index"?"index.html":`${page.slug}.html`;
+    page.slug==="index"?HOME_FILE:`${page.slug}.html`;
   const nav=(active:string)=>`<nav aria-label="Primary"><strong>${escapeHtml(plan.title)}</strong>${pages.map(page=>`<a href="${fileName(page)}"${page.slug===active?' aria-current="page"':""}>${escapeHtml(page.title)}</a>`).join("")}<a href="attributions.html"${active==="attributions"?' aria-current="page"':""}>Credits</a></nav>`;
 
   const renderActivity=(section:ArtifactPlan["sections"][number])=>{
@@ -936,17 +993,21 @@ async function website(
       fallbackHeroPath,
     ),
   });
-  const home=htmlPages.find(page=>page.name==="index.html");
+  const home=htmlPages.find(page=>page.name===HOME_FILE);
   if(!home)
     throw new ArtifactPipelineError(
       "BUILD",
-      "Website build did not produce index.html.",
+      "Website build did not produce the canonical main homepage.",
       {ruleOrPart:"website-index"},
     );
-  htmlPages.push({
-    name:"OPEN_ME_FIRST.html",
-    html:home.html,
-  });
+  // MAIN_HOMEPAGE.html is the clearly labelled local entry point and every
+  // generated navigation bar links back to it. index.html remains the standard
+  // hosting alias, while the OPEN_ME files preserve existing user workflows.
+  htmlPages.push(
+    {name:"index.html",html:home.html},
+    {name:"OPEN_ME_FIRST_HOME_PAGE.html",html:home.html},
+    {name:"OPEN_ME_FIRST.html",html:home.html},
+  );
 
   const unplacedFetched=[...images.keys()].filter(
     query=>!placedImageQueries.has(query),
@@ -980,6 +1041,16 @@ async function website(
   const name=`${slug(plan.title)}_website.zip`;
   const target=safeJoin(config.artifactDir,name);
   atomicWrite(target,buf);
+  collectedImages.metrics.placed=placedImageQueries.size;
+  log("info", "artifact.image_summary", {
+    kind:"website",
+    requested:collectedImages.metrics.requested,
+    judged:collectedImages.metrics.judged,
+    fetched:collectedImages.metrics.fetched,
+    placed:collectedImages.metrics.placed,
+    unresolved:Math.max(0,collectedImages.metrics.requested-collectedImages.metrics.placed),
+    uniqueFiles:uniqueImageAssets.size,
+  });
   const validationReceipt=await validateBuiltArtifact(
     "website",
     prompt,
@@ -1025,7 +1096,9 @@ export async function buildArtifact(
   // Builder boundary is independently safe: callers cannot bypass deterministic
   // pagination/reflow by invoking buildArtifact directly. The compiler is
   // intentionally idempotent, so AgentRunner may also compile before this point.
-  const compiledPlan = compileArtifactPlan(kind, plan).plan;
+  const visualized = planArtifactVisuals(kind, plan, prompt);
+  log("info", "artifact.visual_plan", { kind, ...visualized.receipt });
+  const compiledPlan = compileArtifactPlan(kind, visualized.plan).plan;
   if (kind === "presentation") return pptx(config, compiledPlan, prompt, jobId);
   if (kind === "document" || kind === "analysis" || kind === "research")
     return docx(config, compiledPlan, prompt, kind, jobId);

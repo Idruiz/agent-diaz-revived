@@ -368,6 +368,10 @@ describe("artifact builders", () => {
         "Create a three-page evidence website for a school audience",
       );
       const zip = new AdmZip(out.path);
+      expect(zip.getEntry("MAIN_HOMEPAGE.html")).not.toBeNull();
+      expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
+      const detailsHtml = zip.getEntry("details.html")!.getData().toString("utf8");
+      expect(detailsHtml).toContain('href="MAIN_HOMEPAGE.html"');
       const imageEntries = zip
         .getEntries()
         .filter((entry) => /^assets\/images\/[^/]+\.jpg$/.test(entry.entryName));

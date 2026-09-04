@@ -100,10 +100,19 @@ const plan = {
 };
 
 describe("presentation companion exports", () => {
-  it("rejects invalid PDF bytes before creating a browser presentation", () => {
-    expect(() => browserPresentationHtml("Broken", Buffer.from("not a pdf"))).toThrow(
-      /invalid PDF/i,
-    );
+  it("rejects an empty slide-image set before creating a browser presentation", () => {
+    expect(() => browserPresentationHtml("Broken", [])).toThrow(/no slide images/i);
+  });
+
+  it("creates a standalone browser deck from rendered slide images rather than embedding a PDF viewer", () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const html = browserPresentationHtml("Parity", [jpeg, jpeg]);
+    expect(html).toContain('id="slide-1"');
+    expect(html).toContain('id="slide-2"');
+    expect(html).toContain("data:image/jpeg;base64,");
+    expect(html).toContain("requestFullscreen");
+    expect(html).not.toContain('id="pdf-data"');
+    expect(html).not.toContain("<iframe");
   });
 
   it("keeps the validated PPTX and adds portable PDF plus standalone HTML downloads", async () => {
@@ -129,10 +138,12 @@ describe("presentation companion exports", () => {
 
     const html = fs.readFileSync(exports.html.path, "utf8");
     expect(html).toContain("<!doctype html>");
-    expect(html).toContain('type="application/octet-stream"');
-    expect(html).toContain('id="pdf-data"');
-    expect(html).toContain("Open PDF");
+    expect(html).toContain('id="slide-1"');
+    expect(html).toContain("data:image/jpeg;base64,");
+    expect(html).toContain("Exact PPTX/PDF visual parity");
     expect(html).toContain("requestFullscreen");
+    expect(html).not.toContain('id="pdf-data"');
+    expect(html).not.toContain("<iframe");
     expect(html).not.toMatch(/https?:\/\//i);
 
     const views = presentationArtifactViews(config, [
@@ -154,7 +165,7 @@ describe("presentation companion exports", () => {
       "123e4567-e89b-12d3-a456-426614174000--html",
       "123e4567-e89b-12d3-a456-426614174000--pdf",
     ]);
-    expect(views[1]!.size).toBeGreaterThan(exports.pdf.size);
+    expect(views[1]!.size).toBeGreaterThan(3_000);
     expect(views[2]!.size).toBe(exports.pdf.size);
   }, 30_000);
 });

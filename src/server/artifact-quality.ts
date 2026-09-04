@@ -557,8 +557,13 @@ export function assertWebsitePackage(filePath: string): void {
   const zip = new AdmZip(filePath);
   const entries = zip.getEntries();
   const names = new Set(entries.map((entry) => entry.entryName));
-  if (!names.has("index.html") || !names.has("OPEN_ME_FIRST.html"))
-    throw new Error("Website package validation failed: missing entry page");
+  if (
+    !names.has("index.html") ||
+    !names.has("MAIN_HOMEPAGE.html") ||
+    !names.has("OPEN_ME_FIRST_HOME_PAGE.html") ||
+    !names.has("OPEN_ME_FIRST.html")
+  )
+    throw new Error("Website package validation failed: missing canonical or labelled homepage entry");
   const htmlEntries = entries.filter((entry) => entry.entryName.endsWith(".html"));
   if (htmlEntries.length < 4)
     throw new Error("Website package validation failed: expected at least three pages plus credits");
@@ -568,6 +573,11 @@ export function assertWebsitePackage(filePath: string): void {
       throw new Error(`Website package validation failed: incomplete semantic shell in ${entry.entryName}`);
     if (hasPlaceholderText(html))
       throw new Error(`Website package validation failed: placeholder content in ${entry.entryName}`);
+    if (
+      entry.entryName !== "MAIN_HOMEPAGE.html" &&
+      !html.includes('href="MAIN_HOMEPAGE.html"')
+    )
+      throw new Error(`Website package validation failed: ${entry.entryName} does not link to MAIN_HOMEPAGE.html`);
     if (/data:image\//i.test(html))
       throw new Error(
         `Website package validation failed: embedded base64 image found in ${entry.entryName}`,
