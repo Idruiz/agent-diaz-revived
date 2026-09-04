@@ -201,24 +201,29 @@ function frenchTeachingPlan(): ArtifactPlan {
 }
 
 describe("artifact quality gates", () => {
-  it("moves absent-image references out of visible presentation copy during RECONCILE", () => {
+  it("preserves audience-facing content when an optional image is unavailable during RECONCILE", () => {
     const plan = frenchTeachingPlan();
     plan.sections[0]!.body =
       "Regardez l'image et décrivez la scène. Les élèves utilisent ensuite le présent pour parler de leur routine.";
+    plan.sections[0]!.bullets.push("Observe the photo before responding.");
+    const originalBody = plan.sections[0]!.body;
+    const originalBullets = [...plan.sections[0]!.bullets];
     const result = reconcilePresentationPlan(plan, new Set());
     expect(result.reconciliations).toHaveLength(1);
     expect(result.reconciliations[0]).toMatchObject({
       sectionIndex: 0,
       heading: "Objectifs et mise en route",
+      movedToSpeakerNotes: [],
+      preservedVisibleReferences: expect.arrayContaining([
+        "Regardez l'image et décrivez la scène.",
+        "Observe the photo before responding.",
+      ]),
     });
-    expect(
-      hasVisibleVisualReference(result.plan.sections[0]!.body),
-    ).toBe(false);
-    expect(result.plan.sections[0]!.body).toContain(
-      "Les élèves utilisent ensuite le présent",
-    );
+    expect(result.plan.sections[0]!.body).toBe(originalBody);
+    expect(result.plan.sections[0]!.bullets).toEqual(originalBullets);
+    expect(hasVisibleVisualReference(result.plan.sections[0]!.body)).toBe(true);
     expect(result.plan.sections[0]!.speakerNotes).toContain(
-      "Regardez l'image",
+      "Audience-facing visual references were preserved",
     );
   });
 

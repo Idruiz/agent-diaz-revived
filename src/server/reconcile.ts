@@ -7,7 +7,10 @@ export interface PresentationReconciliation {
   sectionIndex: number;
   heading: string;
   reason: string;
+  /** Legacy field retained for receipt compatibility. Reconciliation no longer
+   * deletes audience-facing copy merely because an optional image failed. */
   movedToSpeakerNotes: string[];
+  preservedVisibleReferences: string[];
 }
 
 export interface ReconciledPresentationPlan {
@@ -31,30 +34,6 @@ export function isGenericFourCornersLabel(value: string): boolean {
   return meaningfulWords.length < 2;
 }
 
-function splitSentences(value: string): string[] {
-  return value
-    .split(/(?<=[.!?;:])\s+|\n+/u)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function reconcileVisibleText(
-  value: string,
-): { visible: string; moved: string[] } {
-  const sentences = splitSentences(value);
-  const moved = sentences.filter((sentence) =>
-    VISUAL_REFERENCE_RE.test(sentence),
-  );
-  if (!moved.length) return { visible: value, moved: [] };
-  const kept = sentences.filter(
-    (sentence) => !VISUAL_REFERENCE_RE.test(sentence),
-  );
-  return {
-    visible: kept.join(" ").trim(),
-    moved,
-  };
-}
-
 export function hasVisibleVisualReference(value: string): boolean {
   return VISUAL_REFERENCE_RE.test(value);
 }
@@ -73,44 +52,25 @@ export function reconcilePresentationPlan(
       placedImageQueries.has(requestedImage!);
     if (imageAvailable) return;
 
-    const moved: string[] = [];
-    const body = reconcileVisibleText(section.body);
-    section.body = body.visible;
-    moved.push(...body.moved);
+    // Optional asset failure is not permission to delete instructional content.
+    // Preserve the exact audience-facing copy and record the missing visual for
+    // honest diagnostics. This keeps semantic validation meaningful: the final
+    // artifact must still contain what the accepted plan promised.
+    const preservedVisibleReferences = [
+      ...section.body
+        .split(/(?<=[.!?;:])\s+|\n+/u)
+        .map((part) => part.trim())
+        .filter((part) => part && hasVisibleVisualReference(part)),
+      ...section.bullets.filter(hasVisibleVisualReference),
+      ...(section.activity?.directions.filter(hasVisibleVisualReference) ?? []),
+      ...(section.activity?.prompts.filter(hasVisibleVisualReference) ?? []),
+      ...(section.activity?.sentenceFrames.filter(hasVisibleVisualReference) ?? []),
+    ];
 
-    section.bullets = section.bullets.filter((bullet) => {
-      if (!hasVisibleVisualReference(bullet)) return true;
-      moved.push(bullet);
-      return false;
-    });
-
-    if (section.activity) {
-      section.activity.directions =
-        section.activity.directions.filter((direction) => {
-          if (!hasVisibleVisualReference(direction)) return true;
-          moved.push(direction);
-          return false;
-        });
-      section.activity.prompts = section.activity.prompts.filter(
-        (prompt) => {
-          if (!hasVisibleVisualReference(prompt)) return true;
-          moved.push(prompt);
-          return false;
-        },
-      );
-      section.activity.sentenceFrames =
-        section.activity.sentenceFrames.filter((frame) => {
-          if (!hasVisibleVisualReference(frame)) return true;
-          moved.push(frame);
-          return false;
-        });
-    }
-
-    if (!moved.length) return;
+    if (!preservedVisibleReferences.length) return;
     section.speakerNotes = [
       section.speakerNotes.trim(),
-      "Reconciled absent-visual references:",
-      ...moved.map((item) => `• ${item}`),
+      `Licensed visual unavailable for query: ${requestedImage || "unspecified"}. Audience-facing visual references were preserved instead of silently deleting them.`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -118,8 +78,9 @@ export function reconcilePresentationPlan(
       sectionIndex,
       heading: section.heading,
       reason:
-        "Visible text referenced a photo/map that was not delivered; the reference was moved to speaker notes.",
-      movedToSpeakerNotes: moved,
+        "The requested visual was unavailable; audience-facing references were preserved exactly and the missing asset was recorded in notes/receipt diagnostics.",
+      movedToSpeakerNotes: [],
+      preservedVisibleReferences,
     });
   });
 
