@@ -66,9 +66,6 @@ describe("visual-plan builder integration", () => {
       sources: [],
     };
 
-    const imageBytes = await sharp({
-      create: { width: 1200, height: 800, channels: 3, background: "#2f739c" },
-    }).jpeg().toBuffer();
     let searchCounter = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
@@ -98,8 +95,23 @@ describe("visual-plan builder integration", () => {
           },
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
-      if (url.startsWith("https://images.example.test/"))
+      const imageMatch = url.match(/https:\/\/images\.example\.test\/(\d+)\.jpg$/);
+      if (imageMatch) {
+        const id = Number(imageMatch[1]);
+        const imageBytes = await sharp({
+          create: {
+            width: 1200,
+            height: 800,
+            channels: 3,
+            background: {
+              r: (id * 37) % 255,
+              g: (id * 71) % 255,
+              b: (id * 109) % 255,
+            },
+          },
+        }).jpeg().toBuffer();
         return new Response(imageBytes, { status: 200, headers: { "content-type": "image/jpeg" } });
+      }
       throw new Error(`Unexpected visual-build fetch: ${url}`);
     });
 
