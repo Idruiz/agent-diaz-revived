@@ -675,7 +675,16 @@ async function renderOfficeArtifact(filePath: string): Promise<string | null> {
 }
 
 function assertOutputCoverage(kind: JobKind, prompt: string, plan: ArtifactPlan, visibleText: string): void {
-  const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  const normalize = (value: string) => value
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019\u02BC]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .replace(/[\u00A0\u202F]/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase();
   const normalized = normalize(visibleText);
   if (normalized.length < 200)
     throw new Error("Artifact output validation failed: finished artifact contains too little visible content");

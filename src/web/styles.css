@@ -552,3 +552,12 @@ button {
     min-height: 300px;
   }
 }
+
+.artifactLogToggle {
+  justify-self: start;
+  width: auto;
+  min-width: 220px;
+  padding: 0.8rem 1rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}

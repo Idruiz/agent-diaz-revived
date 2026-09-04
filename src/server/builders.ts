@@ -390,12 +390,12 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
     };
     const addNarrative=(slide:any,section:ArtifactPlan["sections"][number],box:{x:number;y:number;w:number;h:number},dark=false)=>{
       const color=dark?white:ink,secondary=dark?"E8EEF3":muted;
-      const bodyValue=short(section.body,460);
-      const bodyMax=section.bullets.length?Math.min(1.55,box.h*.36):box.h;
-      if(section.body)addModelText(slide,bodyValue,{x:box.x,y:box.y,w:box.w,fontSize:section.bullets.length?18:24,bold:!section.bullets.length,color,margin:0,breakLine:false,valign:"mid"},{minHeight:.42,maxHeight:bodyMax});
+      const bodyValue=short(section.body,460),hasBody=Boolean(section.body.trim());
+      const bodyMax=hasBody?(section.bullets.length?Math.min(1.55,box.h*.36):box.h):0;
+      if(hasBody)addModelText(slide,bodyValue,{x:box.x,y:box.y,w:box.w,fontSize:section.bullets.length?18:24,bold:!section.bullets.length,color,margin:0,breakLine:false,valign:"mid"},{minHeight:.42,maxHeight:bodyMax});
       if(section.bullets.length){
-        const runs=section.bullets.slice(0,5).map((text,index)=>({text:short(text,180),options:{bullet:{indent:18},breakLine:index<section.bullets.slice(0,5).length-1}}));
-        addModelText(slide,runs,{x:box.x,y:box.y+bodyMax+.16,w:box.w,fontSize:17,color:secondary,margin:0,paraSpaceAfter:9,breakLine:false,valign:"top"},{minHeight:.75,maxHeight:Math.max(.75,box.h-bodyMax-.16)});
+        const runs=section.bullets.slice(0,5).map((text,index)=>({text:short(text,180),options:{bullet:{indent:18},breakLine:index<section.bullets.slice(0,5).length-1}})),bulletOffset=hasBody?bodyMax+.16:0;
+        addModelText(slide,runs,{x:box.x,y:box.y+bulletOffset,w:box.w,fontSize:17,color:secondary,margin:0,paraSpaceAfter:9,breakLine:false,valign:"top"},{minHeight:.75,maxHeight:Math.max(.75,box.h-bulletOffset)});
       }
     };
     const addPhoto=(slide:any,image:RealImage,box:{x:number;y:number;w:number;h:number})=>{
@@ -466,7 +466,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
           addModelText(slide,label,{x:x+.2,y:y+.16,w:5.22,fontSize:22,bold:true,color:navy,align:"center",valign:"mid",margin:.04},{minHeight:.38,maxHeight:.9});
         });
         const directions=activity.directions.map((text,index)=>({text:`${index+1}. ${short(text,180)}`,options:{breakLine:index<activity.directions.length-1}}));
-        addModelText(slide,directions,{x:.92,y:5.35,w:7.35,fontSize:13,color:ink,margin:.08},{minHeight:.42,maxHeight:1.15});
+        if(directions.length)addModelText(slide,directions,{x:.92,y:5.35,w:7.35,fontSize:13,color:ink,margin:.08},{minHeight:.42,maxHeight:1.15});
         if(activity.sentenceFrames.length){
           slide.addShape(p.ShapeType.roundRect,{x:8.52,y:5.26,w:3.9,h:1.18,rectRadius:.05,fill:{color:navy},line:{color:navy}});
           const frames=activity.sentenceFrames.slice(0,3).map((text,index)=>({text:short(text,180),options:{bullet:{indent:14},breakLine:index<Math.min(3,activity.sentenceFrames.length)-1}}));
@@ -480,7 +480,7 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
         slide.addShape(p.ShapeType.roundRect,{x:.82,y:1.5,w:2.18,h:.72,rectRadius:.05,fill:{color:navy},line:{color:navy}});
         addModelText(slide,`${activity.durationMinutes} MIN · ROTATIONS`,{x:1.0,y:1.69,w:1.82,fontSize:15,bold:true,color:white,align:"center",valign:"mid",margin:0},{minHeight:.24,maxHeight:.34});
         const directions=activity.directions.slice(0,5).map((text,index)=>({text:`${index+1}. ${short(text,180)}`,options:{breakLine:index<Math.min(5,activity.directions.length)-1}}));
-        addModelText(slide,directions,{x:.86,y:2.38,w:11.62,fontSize:13.5,color:ink,margin:.06},{minHeight:.45,maxHeight:.78});
+        if(directions.length)addModelText(slide,directions,{x:.86,y:2.38,w:11.62,fontSize:13.5,color:ink,margin:.06},{minHeight:.45,maxHeight:.78});
         const prompts=activity.prompts.slice(0,6),columns=prompts.length===2?2:Math.min(2,prompts.length),rows=Math.ceil(prompts.length/columns);
         const frameCount=Math.min(4,activity.sentenceFrames.length),frameFont=13,lineHeight=(frameFont*1.2)/72;
         const frameH=Math.max(.5,frameCount*lineHeight+.26),frameY=6.68-frameH;
@@ -503,12 +503,14 @@ async function pptx(config:Config,plan:ArtifactPlan,prompt="",jobId=""):Promise<
       const template=activity.type==="guided_practice"?"guided-step-rail":activity.type==="discussion"?"discussion-prompt-cards":"independent-checklist";
       usedActivityTemplates.add(template);
       addModelText(slide,short(section.body,360),{x:.9,y:1.5,w:11.5,fontSize:19,bold:true,color:navy,align:activity.type==="discussion"?"center":"left",margin:0},{minHeight:.34,maxHeight:.68});
-      const directions=activity.directions.slice(0,6),prompts=activity.prompts.slice(0,6);
-      slide.addShape(p.ShapeType.roundRect,{x:.9,y:2.35,w:3.55,h:3.9,rectRadius:.06,fill:{color:pale},line:{color:blue,pt:1}});
-      slide.addText("DIRECTIONS",{x:1.16,y:2.62,w:2.95,h:.25,fontSize:11,bold:true,charSpacing:1.4,color:blue,margin:0});
-      const directionRuns=directions.map((text,index)=>({text:`${index+1}. ${short(text,160)}`,options:{breakLine:index<directions.length-1}}));
-      addModelText(slide,directionRuns,{x:1.16,y:3.04,w:2.95,fontSize:13.5,color:ink,margin:.04},{minHeight:.5,maxHeight:2.85});
-      const promptW=image?5.1:7.6,promptX=4.72,promptGap=.16,promptBottom=activity.sentenceFrames.length?5.72:6.25;
+      const directions=activity.directions.slice(0,6),prompts=activity.prompts.slice(0,6),hasDirections=directions.length>0;
+      if(hasDirections){
+        slide.addShape(p.ShapeType.roundRect,{x:.9,y:2.35,w:3.55,h:3.9,rectRadius:.06,fill:{color:pale},line:{color:blue,pt:1}});
+        slide.addText("DIRECTIONS",{x:1.16,y:2.62,w:2.95,h:.25,fontSize:11,bold:true,charSpacing:1.4,color:blue,margin:0});
+        const directionRuns=directions.map((text,index)=>({text:`${index+1}. ${short(text,160)}`,options:{breakLine:index<directions.length-1}}));
+        addModelText(slide,directionRuns,{x:1.16,y:3.04,w:2.95,fontSize:13.5,color:ink,margin:.04},{minHeight:.5,maxHeight:2.85});
+      }
+      const promptW=image?(hasDirections?5.1:9.0):(hasDirections?7.6:11.55),promptX=hasDirections?4.72:.9,promptGap=.16,promptBottom=activity.sentenceFrames.length?5.72:6.25;
       const promptH=Math.max(.38,(promptBottom-2.35-(prompts.length-1)*promptGap)/Math.max(1,prompts.length));
       prompts.forEach((text,index)=>{
         const y=2.35+index*(promptH+promptGap);

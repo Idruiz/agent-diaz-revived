@@ -1076,7 +1076,7 @@ function App() {
             {current.kind !== "chat" && (
               <div className="artifactLogActions">
                 <button
-                  className="textButton"
+                  className="run artifactLogToggle"
                   disabled={artifactLogsBusy}
                   onClick={async () => {
                     if (artifactLogs !== null) {
@@ -1098,8 +1098,8 @@ function App() {
                   {artifactLogsBusy
                     ? "Opening run logs…"
                     : artifactLogs === null
-                      ? "Open / copy artifact run logs"
-                      : "Hide artifact run logs"}
+                      ? "VIEW / COPY RUN LOGS"
+                      : "HIDE RUN LOGS"}
                 </button>
                 {artifactLogs !== null && (
                   <div className="artifactLogPanel">

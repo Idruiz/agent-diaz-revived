@@ -149,87 +149,102 @@ export function compileArtifactPlan(
       continue;
     }
 
-    if (activity.type === "speed_dating") {
-      const context = supportingFragments(
-        section,
-        section.body,
-        section.bullets,
-      );
-      compiled.push(...context);
-      if (context.length)
-        normalizations.push({
-          code: "presentation_content_reflowed",
-          detail: `Materialized ${context.length} audience-context slide(s) for '${section.heading}' because the Speed Dating template reserves its canvas for directions, prompts, and sentence frames.`,
-        });
-      const primary = structuredClone(section);
-      primary.body = "";
-      primary.bullets = [];
-      compiled.push(primary);
+    // An already-compiled activity section has had verbose setup copy moved to
+    // deterministic support slides. Original model plans cannot arrive in this
+    // state because ArtifactActivitySchema requires at least two directions.
+    // This makes the compiler idempotent when AgentRunner and buildArtifact both
+    // invoke it.
+    if (
+      activity.directions.length === 0 &&
+      activity.sentenceFrames.length === 0 &&
+      section.bullets.length === 0
+    ) {
+      compiled.push(structuredClone(section));
       continue;
     }
 
-    const bodyLimit = activity.type === "four_corners" ? 280 : 340;
-    const bodyChunks = chunks(section.body, bodyLimit);
-    const extraFourCornerFrames =
-      activity.type === "four_corners"
-        ? activity.sentenceFrames.slice(3)
-        : [];
-    const needsSupportingSlide =
-      bodyChunks.length > 1 ||
-      section.bullets.length > 0 ||
-      extraFourCornerFrames.length > 0;
-
-    let primaryBody = section.body.replace(/\s+/g, " ").trim();
-    if (needsSupportingSlide) {
-      const context = supportingFragments(
-        section,
-        section.body,
-        [...section.bullets, ...extraFourCornerFrames],
-      );
-      compiled.push(...context);
-      primaryBody = `${activityLabel(activity.type)} · follow the directions and complete the prompts.`;
+    const context = supportingFragments(
+      section,
+      section.body,
+      section.bullets,
+      "context",
+    );
+    compiled.push(...context);
+    if (context.length)
       normalizations.push({
-        code: "presentation_content_reflowed",
-        detail: `Materialized ${context.length} audience-context slide(s) for '${section.heading}' so narrative, bullets, and template-overflow fields remain visible exactly once.`,
+        code: "presentation_activity_context_reflowed",
+        detail: `Materialized ${context.length} context slide(s) for '${section.heading}' so narrative copy never competes with the activity surface.`,
       });
-    }
 
-    if (activity.type === "four_corners") {
-      const prompts = [...activity.prompts];
-      prompts.forEach((prompt, index) => {
-        const primary = structuredClone(section);
-        primary.heading =
-          index === 0
-            ? section.heading
-            : labelledHeading(section.heading, `round ${index + 1}`);
-        primary.body =
-          index === 0
-            ? primaryBody
-            : `Four Corners round ${index + 1} · choose a corner and explain your choice.`;
-        primary.bullets = [];
-        primary.activity = {
-          ...structuredClone(activity),
-          prompts: [prompt],
-          // The current Four Corners frame box safely renders three frames. Any
-          // fourth frame is preserved on the context slide above instead of being
-          // silently sliced by the renderer.
-          sentenceFrames: activity.sentenceFrames.slice(0, 3),
-        };
-        primary.imageQuery = index === 0 ? section.imageQuery : undefined;
-        compiled.push(primary);
+    const directionSlides = supportingFragments(
+      section,
+      "",
+      activity.directions,
+      "directions",
+    );
+    compiled.push(...directionSlides);
+    if (directionSlides.length)
+      normalizations.push({
+        code: "presentation_activity_directions_reflowed",
+        detail: `Materialized ${directionSlides.length} directions slide(s) for '${section.heading}' so every instruction remains readable at normal classroom size.`,
       });
-      if (prompts.length > 1)
-        normalizations.push({
-          code: "presentation_activity_paginated",
-          detail: `Expanded '${section.heading}' into ${prompts.length} Four Corners round slides so every planned prompt is usable rather than silently discarding prompts after the first.`,
-        });
-      continue;
-    }
 
-    const primary = structuredClone(section);
-    primary.body = needsSupportingSlide ? primaryBody : bodyChunks[0] ?? "";
-    primary.bullets = [];
-    compiled.push(primary);
+    const frameSlides = supportingFragments(
+      section,
+      "",
+      activity.sentenceFrames,
+      "language frames",
+    );
+    compiled.push(...frameSlides);
+    if (frameSlides.length)
+      normalizations.push({
+        code: "presentation_activity_frames_reflowed",
+        detail: `Materialized ${frameSlides.length} language-frame slide(s) for '${section.heading}' instead of shrinking frames into an undersized activity box.`,
+      });
+
+    const promptsPerSlide =
+      activity.type === "four_corners"
+        ? 1
+        : activity.type === "speed_dating"
+          ? 4
+          : 3;
+    const promptGroups = Array.from(
+      { length: Math.ceil(activity.prompts.length / promptsPerSlide) },
+      (_, index) =>
+        activity.prompts.slice(
+          index * promptsPerSlide,
+          index * promptsPerSlide + promptsPerSlide,
+        ),
+    );
+
+    promptGroups.forEach((prompts, index) => {
+      const primary = structuredClone(section);
+      primary.heading =
+        index === 0
+          ? section.heading
+          : labelledHeading(section.heading, `round ${index + 1}`);
+      primary.body =
+        activity.type === "speed_dating"
+          ? ""
+          : activity.type === "four_corners"
+            ? "Choose a corner and explain your choice."
+            : activityLabel(activity.type);
+      primary.bullets = [];
+      primary.activity = {
+        ...structuredClone(activity),
+        directions: [],
+        sentenceFrames: [],
+        prompts,
+      };
+      primary.imageQuery = index === 0 ? section.imageQuery : undefined;
+      compiled.push(primary);
+    });
+
+    if (promptGroups.length > 1)
+      normalizations.push({
+        code: "presentation_activity_paginated",
+        detail: `Expanded '${section.heading}' into ${promptGroups.length} activity round slides so prompt cards stay readable without truncation or extreme auto-shrink.`,
+      });
   }
 
   plan.sections = compiled;
