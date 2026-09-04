@@ -36,8 +36,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Dockerfile .github/workflows/verify.yml src/server/builders.ts src/server/artifact-quality.ts src/server/presentation-exports.ts src/server/__tests__/presentation-exports.test.ts src/server/__tests__/builders.test.ts
+          git add Dockerfile src/server/builders.ts src/server/artifact-quality.ts src/server/presentation-exports.ts src/server/__tests__/presentation-exports.test.ts src/server/__tests__/builders.test.ts
           git diff --cached --quiet && exit 0
           git commit -m "Add cross-artifact visual parity and resilient imagery"
           git push origin HEAD:codex/visual-parity-html-images
-# rerun after focused test typing fix
+# verify.yml is updated separately through the GitHub connector because Actions tokens cannot modify workflows.
