@@ -1,0 +1,42 @@
+name: Apply visual parity
+
+on:
+  push:
+    branches:
+      - codex/visual-parity-html-images
+    paths:
+      - scripts/apply-visual-parity.mjs
+      - .github/workflows/apply-visual-parity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/visual-parity-html-images
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+      - name: Apply source patches
+        run: node scripts/apply-visual-parity.mjs
+      - name: Install dependencies and verify focused changes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-impress-nogui libreoffice-writer-nogui poppler-utils
+          npm ci
+          npm run check
+          npx vitest run --root . src/server/__tests__/artifact-visual-plan.test.ts src/server/__tests__/presentation-exports.test.ts src/server/__tests__/builders.test.ts
+      - name: Commit source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Dockerfile .github/workflows/verify.yml src/server/builders.ts src/server/artifact-quality.ts src/server/presentation-exports.ts src/server/__tests__/presentation-exports.test.ts src/server/__tests__/builders.test.ts
+          git diff --cached --quiet && exit 0
+          git commit -m "Add cross-artifact visual parity and resilient imagery"
+          git push origin HEAD:codex/visual-parity-html-images
