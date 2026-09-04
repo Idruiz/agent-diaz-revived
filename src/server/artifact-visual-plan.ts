@@ -20,6 +20,20 @@ const STOP_WORDS = new Set([
   "about","after","again","also","avec","because","being","dans","des","each","from","have","into","just","more","pour","that","their","them","this","through","une","using","with","your","vous","nous","elle","elles","ils","les","the","and","for","are","was","were","aux","sur","par","que","qui","est","pas","plus","comme","mais","ses","son","sa","ces","dans","une","un","des","du","de","la","le","et","en","au","aux","à","a","an","of","to","in","on","is","it","as","or",
   "context","section","continued","finished","audience","facing","content","implications","implication","conclusion","result","results","overview","summary","language","frames","frame","support","supporting","complete","completed","production","ready","requested","artifact","validation","route",
 ]);
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
 
 function normalizeWords(value: string): string[] {
   return value
@@ -51,10 +65,24 @@ function derivedQuery(plan: ArtifactPlan, section: ArtifactPlan["sections"][numb
   return words.join(" ").trim();
 }
 
+function exactRequestedVisualCount(prompt: string): number | null {
+  const match = prompt.match(
+    /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\s+(?:licensed\s+|relevant\s+|documentary\s+)?(?:images?|photos?|photographs?)\b/i,
+  );
+  if (!match || match.index === undefined) return null;
+  const before = prompt.slice(Math.max(0, match.index - 24), match.index);
+  const after = prompt.slice(match.index + match[0].length, match.index + match[0].length + 20);
+  if (/\b(?:at least|minimum(?: of)?|no fewer than)\s*$/i.test(before)) return null;
+  if (/^\s*(?:per|for each|on each)\b/i.test(after)) return null;
+  const token = match[1]!.toLocaleLowerCase();
+  const parsed = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS[token];
+  return parsed && parsed > 0 ? parsed : null;
+}
+
 function targetFor(kind: JobKind, sectionCount: number, eligibleCount: number): number {
   if (!eligibleCount) return 0;
   if (kind === "website") return Math.min(12, eligibleCount, Math.max(4, Math.round(sectionCount * 0.6)));
-  if (kind === "presentation") return Math.min(10, eligibleCount, Math.max(4, Math.round(sectionCount * 0.42)));
+  if (kind === "presentation") return Math.min(10, eligibleCount, Math.max(4, Math.round(sectionCount * 0.33)));
   if (kind === "research") return Math.min(8, eligibleCount, Math.max(3, Math.round(sectionCount * 0.4)));
   if (kind === "document") return Math.min(7, eligibleCount, Math.max(2, Math.round(sectionCount * 0.34)));
   if (kind === "analysis") return Math.min(3, eligibleCount, Math.max(1, Math.round(sectionCount * 0.18)));
@@ -112,8 +140,19 @@ export function planArtifactVisuals(
   // deterministic fixture semantics; production artifact runs always carry the
   // originating prompt, and explicit model image queries are still honored.
   const mayDerive = Boolean(prompt.trim()) && !disabledByPrompt;
+  const exactCount = mayDerive ? exactRequestedVisualCount(prompt) : null;
+  const automaticTarget = targetFor(
+    kind,
+    plan.sections.length,
+    candidates.length + explicitQueries,
+  );
   const targetSlots = mayDerive
-    ? Math.max(explicitQueries, targetFor(kind, plan.sections.length, candidates.length + explicitQueries))
+    ? Math.max(
+        explicitQueries,
+        exactCount === null
+          ? automaticTarget
+          : Math.min(exactCount, candidates.length + explicitQueries),
+      )
     : explicitQueries;
   const needed = Math.max(0, targetSlots - explicitQueries);
 
