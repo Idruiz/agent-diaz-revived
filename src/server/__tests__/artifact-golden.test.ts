@@ -218,9 +218,30 @@ describe("recorded artifact golden runs", () => {
                 status: "completed",
                 output_text: [
                   "Recorded golden evidence dossier.",
+                  ...(golden.kind === "analysis"
+                    ? [
+                        "Executed Python findings: January 12, February 15, March 18, April 24; month-to-month changes 3, 3, 6; net increase 12.",
+                      ]
+                    : []),
                   sourceText(golden.plan),
                 ].join("\n"),
-                output: [],
+                output:
+                  golden.kind === "analysis"
+                    ? [
+                        {
+                          id: "ci_golden_analysis",
+                          type: "code_interpreter_call",
+                          status: "completed",
+                          code: "# executed fixture analysis",
+                          outputs: [
+                            {
+                              type: "logs",
+                              logs: "values=12,15,18,24; changes=3,3,6; net=12",
+                            },
+                          ],
+                        },
+                      ]
+                    : [],
               }
             : {
                 id: `resp_${golden.id}_structure`,
@@ -293,6 +314,27 @@ describe("recorded artifact golden runs", () => {
         expect(receipt.images.fetched).toBe(receipt.images.placed);
         expect(receipt.llmCalls).toBe(expectedImages > 0 ? 3 : 2);
         expect(receipt.maxLlmCalls).toBe(6);
+        if (golden.kind === "analysis") {
+          const evidenceRequest = create.mock.calls[0]![0] as any;
+          expect(evidenceRequest.tool_choice).toEqual({
+            type: "allowed_tools",
+            mode: "required",
+            tools: [{ type: "code_interpreter" }],
+          });
+          expect(
+            evidenceRequest.tools.find(
+              (tool: any) => tool.type === "code_interpreter",
+            )?.container?.file_ids,
+          ).toContain(`file_${golden.id}`);
+          expect(receipt.analysisProvenance).toMatchObject({
+            source: "prompt+evidence",
+            pythonExecuted: true,
+            unmatchedNumericClaims: [],
+          });
+          expect(
+            receipt.analysisProvenance.numericClaimsChecked,
+          ).toBeGreaterThan(0);
+        }
 
         let checkpointName: string | null = null;
         let checkpointSha256: string | null = null;

@@ -17,6 +17,12 @@ import { personaProfile } from "../shared/personas.js";
 import { buildArtifact } from "./builders.js";
 import { compileArtifactPlan } from "./artifact-compiler.js";
 import {
+  assertAnalysisNumericProvenance,
+  completedCodeInterpreterCalls,
+  evidenceNumericValues,
+  type AnalysisNumericProvenanceReceipt,
+} from "./artifact-provenance.js";
+import {
   ArtifactPipelineError,
   artifactPlanQualityViolations,
   asArtifactPipelineError,
@@ -1500,6 +1506,12 @@ export class AgentRunner {
             : "Gathering evidence: resuming",
         });
 
+      const analysisHasSpreadsheet =
+        job.kind === "analysis" &&
+        this.db
+          .getUploads(this.db.getJobFileIds(jobId))
+          .some((upload) => isSpreadsheetUpload(upload.name, upload.mime));
+
       const createEvidenceResponse = async () => {
         const instructions = [
           personaInstructions(job.persona),
@@ -1513,12 +1525,22 @@ export class AgentRunner {
         ]
           .filter(Boolean)
           .join("\n\n");
+        const tools = this.toolset(activeMessages, skill.tools);
         const request = {
           model: job.model,
           reasoning: { effort: job.reasoningEffort, context: "all_turns" },
           instructions,
           input: activeMessages.map((message) => this.messageInput(message)),
-          tools: this.toolset(activeMessages, skill.tools),
+          tools,
+          ...(analysisHasSpreadsheet
+            ? {
+                tool_choice: {
+                  type: "allowed_tools",
+                  mode: "required",
+                  tools: [{ type: "code_interpreter" }],
+                },
+              }
+            : {}),
           background: true,
           store: true,
           safety_identifier: "agent-diaz-owner",
@@ -1571,13 +1593,17 @@ export class AgentRunner {
         output = "";
       if (isArtifact) {
         let structureResponse: any;
-        if (resumingStructure) {
+        const canResumeStructure =
+          resumingStructure &&
+          (job.kind !== "analysis" ||
+            Array.isArray(artifactRunState?.evidenceNumericValues));
+        if (canResumeStructure) {
           structureResponse = await this.client.responses.retrieve(
             existingResponseId!,
           );
         } else {
           let evidenceResponse: any;
-          if (existingResponseId)
+          if (existingResponseId && !resumingStructure)
             evidenceResponse = await this.client.responses.retrieve(
               existingResponseId,
             );
@@ -1601,6 +1627,30 @@ export class AgentRunner {
           const evidence = evidenceResponse.output_text?.trim() || "";
           if (!evidence)
             throw new Error("Evidence phase returned no usable content");
+          if (job.kind === "analysis") {
+            const pythonCalls = completedCodeInterpreterCalls(evidenceResponse);
+            if (analysisHasSpreadsheet && pythonCalls < 1)
+              throw new ArtifactPipelineError(
+                "INFRA",
+                "Analysis evidence contract failed: the uploaded spreadsheet was not executed with code_interpreter",
+                { ruleOrPart: "analysis-python-evidence" },
+              );
+            if (artifactRunState) {
+              artifactRunState.evidenceNumericValues = evidenceNumericValues(
+                evidence,
+                evidenceResponse,
+              );
+              artifactRunState.evidencePythonExecuted = pythonCalls > 0;
+              persistArtifactRunState();
+            }
+            log("info", "artifact.analysis_evidence_provenance", {
+              jobId,
+              spreadsheetRequired: analysisHasSpreadsheet,
+              pythonCalls,
+              numericValues:
+                artifactRunState?.evidenceNumericValues?.length ?? 0,
+            });
+          }
           structureResponse = await createStructureResponse(evidence);
           this.db.updateJob(jobId, {
             providerResponseId: structureResponse.id,
@@ -1649,6 +1699,7 @@ export class AgentRunner {
           const minVisuals = getSkillForKind(job.kind).minVisuals;
           let plan: ArtifactPlan;
           let planNormalizations: ArtifactNormalizationReceipt[] = [];
+          let analysisProvenance: AnalysisNumericProvenanceReceipt | null = null;
           let repairAttempt = 0;
           let buildAttempt = 0;
 
@@ -1666,6 +1717,17 @@ export class AgentRunner {
                 );
                 plan = parsedPlan.plan;
                 planNormalizations = parsedPlan.normalizations;
+                analysisProvenance =
+                  job.kind === "analysis"
+                    ? assertAnalysisNumericProvenance({
+                        plan,
+                        prompt: job.prompt,
+                        evidenceNumericValues:
+                          artifactRunState?.evidenceNumericValues ?? [],
+                        pythonExecuted:
+                          artifactRunState?.evidencePythonExecuted ?? null,
+                      })
+                    : null;
                 if (repairAttempt > 0)
                   log("info", "artifact.plan_repaired", {
                     jobId,
@@ -1818,6 +1880,8 @@ export class AgentRunner {
               file.validationReceipt.normalizations = [
                 ...planNormalizations,
               ];
+              if (job.kind === "analysis" && analysisProvenance)
+                file.validationReceipt.analysisProvenance = analysisProvenance;
               const id = crypto.randomUUID();
               const extension = path.extname(file.name);
               const durableName = `${path.basename(file.name, extension)}-${id.slice(0, 12)}${extension}`;

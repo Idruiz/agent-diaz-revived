@@ -23,6 +23,8 @@ export interface ArtifactRunState {
   llmCalls: number;
   maxLlmCalls: number;
   attempts: ArtifactAttemptReceipt[];
+  evidenceNumericValues?: string[];
+  evidencePythonExecuted?: boolean;
 }
 
 export interface Db {

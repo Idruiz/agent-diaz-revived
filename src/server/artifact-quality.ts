@@ -8,6 +8,7 @@ import AdmZip from "adm-zip";
 import { validateFile } from "@xarsh/ooxml-validator";
 import type { ArtifactPlan, JobKind } from "../shared/contracts.js";
 import { log } from "./log.js";
+import type { AnalysisNumericProvenanceReceipt } from "./artifact-provenance.js";
 import {
   FOUR_CORNERS_LABEL_REPAIR_MESSAGE,
   isGenericFourCornersLabel,
@@ -140,6 +141,7 @@ export interface ArtifactValidationReceipt {
   attempts: ArtifactAttemptReceipt[];
   normalizations: ArtifactNormalizationReceipt[];
   qualityWarnings: ArtifactNormalizationReceipt[];
+  analysisProvenance?: AnalysisNumericProvenanceReceipt;
 }
 
 export function asArtifactPipelineError(

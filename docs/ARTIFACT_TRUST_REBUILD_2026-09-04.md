@@ -13,6 +13,7 @@ This branch is a production-safety rebuild of Agent Díaz artifact delivery. It 
 - Four Corners must render all prompts, exactly four meaningful labels, movement/discussion directions, and all sentence frames into the finished artifact.
 - HTML and PDF presentation companions are additive and downstream. The validated PPTX is the primary artifact and companion generation must not delay or block its availability.
 - Finished-file validation remains strict for package integrity, OOXML/Microsoft 365 schema checks (with the documented PptxGenJS notesMaster ordering exception), LibreOffice rendering, required visible-content coverage, internal website resource integrity, and deterministic artifact receipts.
+- Spreadsheet analysis forces a completed code_interpreter call during evidence gathering, persists the executed numeric evidence across restarts, and rejects any numerical claim introduced only during JSON structuring.
 
 ## Verification scope
 
