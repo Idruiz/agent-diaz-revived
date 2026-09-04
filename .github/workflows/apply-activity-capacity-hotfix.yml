@@ -6,6 +6,7 @@ on:
       - codex/activity-capacity-hotfix
     paths:
       - scripts/apply-activity-capacity-hotfix.mjs
+      - .github/workflows/apply-activity-capacity-hotfix.yml
 
 permissions:
   contents: write
