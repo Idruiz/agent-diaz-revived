@@ -1,1 +1,158 @@
-const base = (process.env.DIAZ_BASE_URL || "").replace(/\/$/, "");\nconst password = process.env.DIAZ_ADMIN_PASSWORD || "";\nif (!base || !password) {\n  console.error("Set DIAZ_BASE_URL and DIAZ_ADMIN_PASSWORD to run real-provider acceptance.");\n  process.exit(2);\n}\n\nlet cookie = "";\nasync function request(route, init = {}) {\n  const headers = new Headers(init.headers || {});\n  if (cookie) headers.set("cookie", cookie);\n  const response = await fetch(base + route, { ...init, headers });\n  if (!response.ok) throw new Error(route + " -> " + response.status + ": " + await response.text());\n  return response;\n}\n\nconst login = await request("/api/login", {\n  method: "POST",\n  headers: { "content-type": "application/json", origin: base },\n  body: JSON.stringify({ password }),\n});\ncookie = login.headers.get("set-cookie")?.split(";")[0] || "";\nif (!cookie) throw new Error("Login cookie missing");\n\nconst cases = [\n  ["presentation", "Create a teaching presentation to teach the present tense in French, connect it to French culture, and include complete Speed Dating and Four Corners student practice."],\n  ["document", "Create a professional student-facing document about everyday culture in Spain with authentic examples and a discussion activity."],\n  ["research", "Research current evidence about teen social media use in Canada and create a sourced professional report with clear limitations."],\n  ["website", "Create a complete three-page website explaining public spaces in Barcelona with real licensed photography, working navigation, and sources."],\n];\n\nconst results = [];\nfor (const [kind, prompt] of cases) {\n  const conversation = await (await request("/api/conversations", {\n    method: "POST",\n    headers: { "content-type": "application/json", origin: base },\n    body: JSON.stringify({ title: "Acceptance " + kind }),\n  })).json();\n  const job = await (await request("/api/jobs", {\n    method: "POST",\n    headers: { "content-type": "application/json", origin: base },\n    body: JSON.stringify({ kind, prompt, conversationId: conversation.id, fileIds: [] }),\n  })).json();\n  let current;\n  const deadline = Date.now() + 20 * 60 * 1000;\n  do {\n    await new Promise((r) => setTimeout(r, 2500));\n    current = await (await request("/api/jobs/" + job.id)).json();\n    if (["failed", "blocked", "cancelled"].includes(current.status))\n      throw new Error(kind + " failed: " + (current.error || current.message));\n  } while (current.status !== "completed" && Date.now() < deadline);\n  if (current.status !== "completed") throw new Error(kind + " timed out");\n  if (current.artifacts?.length !== 1) throw new Error(kind + " produced " + (current.artifacts?.length ?? 0) + " artifacts");\n  const artifact = current.artifacts[0];\n  const attempts = artifact.receipt?.attempts || [];\n  if (attempts.length) throw new Error(kind + " was not first-pass: " + JSON.stringify(attempts));\n  if (kind === "presentation" && artifact.receipt?.presentation?.layoutFitting?.retried)\n    throw new Error("presentation used a layout repair pass");\n  const download = await request("/api/artifacts/" + artifact.id + "/download");\n  const bytes = new Uint8Array(await download.arrayBuffer());\n  if (bytes.length < 1500) throw new Error(kind + " download unexpectedly small");\n  results.push({ kind, jobId: job.id, artifact: artifact.name, bytes: bytes.length, firstPass: true });\n  console.log("[acceptance] " + kind + ": first-pass OK (" + artifact.name + ", " + bytes.length + " bytes)");\n}\nconsole.log(JSON.stringify({ base, results }, null, 2));\n
+const base = (process.env.DIAZ_BASE_URL || "").replace(/\/$/, "");
+const password = process.env.DIAZ_ADMIN_PASSWORD || "";
+if (!base || !password) {
+  console.error("Set DIAZ_BASE_URL and DIAZ_ADMIN_PASSWORD to run real-provider acceptance.");
+  process.exit(2);
+}
+
+let cookie = "";
+async function request(route, init = {}) {
+  const headers = new Headers(init.headers || {});
+  if (cookie) headers.set("cookie", cookie);
+  const response = await fetch(base + route, { ...init, headers });
+  if (!response.ok)
+    throw new Error(route + " -> " + response.status + ": " + (await response.text()));
+  return response;
+}
+
+const login = await request("/api/login", {
+  method: "POST",
+  headers: { "content-type": "application/json", origin: base },
+  body: JSON.stringify({ password }),
+});
+cookie = login.headers.get("set-cookie")?.split(";")[0] || "";
+if (!cookie) throw new Error("Login cookie missing");
+
+async function uploadCsv(conversationId) {
+  const csv = [
+    "cohort,week,minutes",
+    "A,1,42",
+    "A,2,51",
+    "B,1,37",
+    "B,2,45",
+    "C,1,40",
+    "C,2,49",
+  ].join("\n");
+  const body = new FormData();
+  body.append("files", new Blob([csv], { type: "text/csv" }), "acceptance-data.csv");
+  const response = await request("/api/uploads", {
+    method: "POST",
+    headers: { origin: base },
+    body,
+  });
+  const payload = await response.json();
+  if (payload.errors?.length)
+    throw new Error("analysis upload errors: " + JSON.stringify(payload.errors));
+  const id = payload.uploads?.[0]?.id;
+  if (!id) throw new Error("analysis upload returned no file id");
+  return id;
+}
+
+const cases = [
+  {
+    kind: "presentation",
+    prompt:
+      "Create a teaching presentation to teach the present tense in French, connect it to French culture, and include complete Speed Dating and Four Corners student practice.",
+  },
+  {
+    kind: "document",
+    prompt:
+      "Create a professional student-facing document about everyday culture in Spain with authentic examples and a discussion activity.",
+  },
+  {
+    kind: "research",
+    prompt:
+      "Research current evidence about teen social media use in Canada and create a sourced professional report with clear limitations.",
+  },
+  {
+    kind: "website",
+    prompt:
+      "Create a complete three-page website explaining public spaces in Barcelona with real licensed photography, working navigation, and sources.",
+  },
+  {
+    kind: "analysis",
+    prompt:
+      "Analyze the attached CSV with Python. Calculate exact cohort totals and means, explain methods and limitations, and create a professional report with at least two evidence-based tables or charts. Do not invent unavailable values.",
+    uploadCsv: true,
+  },
+];
+
+const results = [];
+for (const testCase of cases) {
+  const { kind, prompt } = testCase;
+  const conversation = await (
+    await request("/api/conversations", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ title: "Acceptance " + kind }),
+    })
+  ).json();
+  const fileIds = testCase.uploadCsv ? [await uploadCsv(conversation.id)] : [];
+  const job = await (
+    await request("/api/jobs", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ kind, prompt, conversationId: conversation.id, fileIds }),
+    })
+  ).json();
+
+  let current;
+  const deadline = Date.now() + 20 * 60 * 1000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    current = await (await request("/api/jobs/" + job.id)).json();
+    if (["failed", "blocked", "cancelled"].includes(current.status))
+      throw new Error(kind + " failed: " + (current.error || current.message));
+  } while (current.status !== "completed" && Date.now() < deadline);
+
+  if (current.status !== "completed") throw new Error(kind + " timed out");
+  const originals = (current.artifacts || []).filter(
+    (artifact) => !/--(?:html|pdf)$/i.test(artifact.id),
+  );
+  if (originals.length !== 1)
+    throw new Error(kind + " produced " + originals.length + " primary artifacts");
+  const artifact = originals[0];
+  const attempts = artifact.receipt?.attempts || [];
+  if (attempts.length)
+    throw new Error(kind + " was not first-pass: " + JSON.stringify(attempts));
+  if (kind === "presentation" && artifact.receipt?.presentation?.layoutFitting?.retried)
+    throw new Error("presentation used a layout repair pass");
+
+  const download = await request("/api/artifacts/" + artifact.id + "/download");
+  const bytes = new Uint8Array(await download.arrayBuffer());
+  if (bytes.length < 1500) throw new Error(kind + " download unexpectedly small");
+
+  if (kind === "presentation") {
+    const views = current.artifacts || [];
+    const html = views.find((item) => item.id === artifact.id + "--html");
+    const pdf = views.find((item) => item.id === artifact.id + "--pdf");
+    if (!html || !pdf)
+      throw new Error("presentation completed without both HTML and PDF companion downloads");
+    for (const companion of [html, pdf]) {
+      const response = await request("/api/artifacts/" + companion.id + "/download");
+      const companionBytes = new Uint8Array(await response.arrayBuffer());
+      if (companionBytes.length < 2000)
+        throw new Error(companion.name + " download unexpectedly small");
+    }
+  }
+
+  results.push({
+    kind,
+    jobId: job.id,
+    artifact: artifact.name,
+    bytes: bytes.length,
+    firstPass: true,
+    uploadedFiles: fileIds.length,
+  });
+  console.log(
+    "[acceptance] " +
+      kind +
+      ": first-pass OK (" +
+      artifact.name +
+      ", " +
+      bytes.length +
+      " bytes)",
+  );
+}
+
+console.log(JSON.stringify({ base, results }, null, 2));
