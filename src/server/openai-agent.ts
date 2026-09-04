@@ -47,6 +47,7 @@ import {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const MAX_ARTIFACT_LLM_CALLS = 6;
 const MAX_ARTIFACT_WALL_TIME_MS = 20 * 60 * 1000;
+const MAX_SAME_PLAN_BUILD_ATTEMPTS = 2;
 
 function sha256Text(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -83,7 +84,12 @@ export function artifactFailureFingerprint(input: {
   packageSha: string | null;
   strategy: string;
 }): string {
-  return sha256Text(JSON.stringify(input));
+  // The package SHA is evidence, not retry identity. Deterministic builders can
+  // serialize byte-different packages on successive attempts while failing the
+  // same logical rule. Including packageSha let identical failures masquerade
+  // as new failures and is how a job could reach "attempt 6".
+  const { packageSha: _packageSha, ...stableIdentity } = input;
+  return sha256Text(JSON.stringify(stableIdentity));
 }
 
 export interface ModelProfile {
@@ -1038,9 +1044,6 @@ export class AgentRunner {
               rewriteScore,
               failures: finalReport.failures,
             });
-            // Style is not a safety boundary. A model may miss a quantitative
-            // target, but the app must still return the best available answer.
-            // Keeping this observable lets us tune Javier without breaking chat.
           } else {
             output = candidate;
             log("info", "javier.style_gate_passed_after_rewrite", {
@@ -1850,6 +1853,31 @@ export class AgentRunner {
               if (failureRecord.classified.failureClass === "INFRA")
                 throw failureRecord.classified;
 
+              if (buildAttempt >= MAX_SAME_PLAN_BUILD_ATTEMPTS) {
+                log("error", "artifact.build_retry_budget_exhausted", {
+                  jobId,
+                  kind: job.kind,
+                  buildAttempt,
+                  maxAttempts: MAX_SAME_PLAN_BUILD_ATTEMPTS,
+                  failureClass: failureRecord.classified.failureClass,
+                  ruleOrPart: failureRecord.classified.ruleOrPart,
+                  fingerprint: failureRecord.fingerprint,
+                  diagnosticPath:
+                    failureRecord.classified.diagnosticPath,
+                });
+                throw new ArtifactPipelineError(
+                  failureRecord.classified.failureClass,
+                  `Same-plan build retry budget exhausted after ${buildAttempt} attempts: ${validationError}`,
+                  {
+                    ruleOrPart: failureRecord.classified.ruleOrPart,
+                    diagnosticPath:
+                      failureRecord.classified.diagnosticPath,
+                    packageSha:
+                      failureRecord.classified.packageSha,
+                  },
+                );
+              }
+
               if (failureRecord.duplicateCount >= 2)
                 throw new ArtifactPipelineError(
                   failureRecord.classified.failureClass,
@@ -1883,7 +1911,8 @@ export class AgentRunner {
               );
               if (this.db.getJob(jobId)?.status === "cancelled") return;
               continue;
-            }          }
+            }
+          }
         } else
           log("info", "artifact.build_resume_reused", {
             jobId,
