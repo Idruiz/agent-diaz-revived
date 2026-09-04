@@ -10,6 +10,14 @@ function replaceOnce(file, before, after) {
   s = s.slice(0, a) + after + s.slice(a + before.length);
   write(file, s);
 }
+function replaceCount(file, before, after, expectedCount) {
+  let s = read(file);
+  const actual = s.split(before).length - 1;
+  if (actual !== expectedCount)
+    throw new Error(`Expected ${expectedCount} anchors in ${file}, found ${actual}: ${before.slice(0, 100)}`);
+  s = s.split(before).join(after);
+  write(file, s);
+}
 
 // Compiler: pagination and renderer-loss handling are separate. A standard slide
 // that merely needs pagination must not get a duplicate context slide.
@@ -79,15 +87,11 @@ replaceOnce(
   `          normalizations: [],`,
   `          normalizations: expect.any(Array),`
 );
-replaceOnce(
+replaceCount(
   "src/server/__tests__/artifact-golden.test.ts",
   `              contentSections: golden.plan.sections.length,`,
-  `              contentSections: compiledGolden.sections.length,`
-);
-replaceOnce(
-  "src/server/__tests__/artifact-golden.test.ts",
-  `              contentSections: golden.plan.sections.length,`,
-  `              contentSections: compiledGolden.sections.length,`
+  `              contentSections: compiledGolden.sections.length,`,
+  2,
 );
 replaceOnce(
   "src/server/__tests__/artifact-golden.test.ts",
