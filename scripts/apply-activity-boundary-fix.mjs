@@ -59,21 +59,4 @@ trust = replaceOnce(
 );
 fs.writeFileSync(trustPath, trust);
 
-// 4. Make the new physical PPTX regression compare decoded text, not raw XML entities.
-const activityTestPath = "src/server/__tests__/activity-capacity-regression.test.ts";
-let activityTest = fs.readFileSync(activityTestPath, "utf8");
-activityTest = replaceOnce(
-  activityTest,
-  `function visibleXml(filePath: string): string {\n  const zip = new AdmZip(filePath);\n  return zip.getEntries()\n    .filter((entry) => /^ppt\\\\/slides\\\\/slide\\\\d+\\\\.xml$/.test(entry.entryName))\n    .map((entry) => entry.getData().toString("utf8"))\n    .join("\\\\n");\n}`,
-  `function decodeXml(value: string): string {\n  return value\n    .replace(/&lt;/g, "<")\n    .replace(/&gt;/g, ">")\n    .replace(/&quot;/g, '\"')\n    .replace(/&apos;/g, "'")\n    .replace(/&amp;/g, "&")\n    .replace(/&#(\\d+);/g, (_, code) => String.fromCharCode(Number(code)));\n}\n\nfunction visibleText(filePath: string): string {\n  const zip = new AdmZip(filePath);\n  return zip.getEntries()\n    .filter((entry) => /^ppt\\\\/slides\\\\/slide\\\\d+\\\\.xml$/.test(entry.entryName))\n    .flatMap((entry) =>\n      [...entry.getData().toString("utf8").matchAll(/<a:t>([\\s\\S]*?)<\\/a:t>/g)]\n        .map((match) => decodeXml(match[1]!)),\n    )\n    .join(" ")\n    .replace(/\\s+/g, " ")\n    .trim();\n}`,
-  "decoded PPTX text helper",
-);
-activityTest = replaceOnce(
-  activityTest,
-  `    const xml = visibleXml(built.path);\n    for (const value of [...longDirections, ...frames, ...prompts])\n      expect(xml).toContain(value.replace(/&/g, "&amp;"));`,
-  `    const text = visibleText(built.path);\n    for (const value of [...longDirections, ...frames, ...prompts])\n      expect(text).toContain(value);`,
-  "decoded PPTX assertion",
-);
-fs.writeFileSync(activityTestPath, activityTest);
-
 console.log("Applied semantic/physical activity boundary and fidelity fixes.");
