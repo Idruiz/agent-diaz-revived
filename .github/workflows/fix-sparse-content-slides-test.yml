@@ -1,0 +1,35 @@
+name: Fix sparse deck topology assertion
+
+on:
+  push:
+    branches:
+      - codex/artifact-trust-rebuild
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[sparse-topology-fixed]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/artifact-trust-rebuild
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+      - name: Fix assertion
+        run: node scripts/fix-sparse-content-slides-test.mjs
+      - name: Remove one-shot migration
+        run: |
+          rm -f scripts/fix-sparse-content-slides-test.mjs
+          rm -f .github/workflows/fix-sparse-content-slides-test.yml
+      - name: Commit test correction
+        run: |
+          git config user.name "Agent Diaz Trust Rebuild"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Assert sparse presentation physical topology [sparse-topology-fixed]"
+          git push origin HEAD:codex/artifact-trust-rebuild
