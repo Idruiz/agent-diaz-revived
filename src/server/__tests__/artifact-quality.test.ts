@@ -227,7 +227,6 @@ describe("artifact quality gates", () => {
     );
   });
 
-
   it("preserves a BUILD specimen in diagnostics instead of deleting evidence", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-build-diag-"));
     const filePath = path.join(root, "broken.pptx");
@@ -254,7 +253,6 @@ describe("artifact quality gates", () => {
     expect(entries.some((name) => name.endsWith(".pptx.json"))).toBe(true);
     fs.rmSync(root, { recursive: true, force: true });
   });
-
 
   it("accepts the exact French teaching request only when both named activities are complete", () => {
     const plan = frenchTeachingPlan();
@@ -535,7 +533,7 @@ describe("artifact quality gates", () => {
       config,
       "presentation",
       plan,
-      exactPrompt,
+      `${exactPrompt}. Use only explicitly requested images.`,
     );
     const receipt = out.validationReceipt as any;
     expect(receipt.images).toMatchObject({
@@ -785,8 +783,10 @@ describe("artifact quality gates", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-website-quality-"));
     const target = path.join(root, "broken.zip");
     const zip = new AdmZip();
-    const page = (href: string) => `<!doctype html><html><head><title>Page</title></head><body><nav><a href="${href}">Next</a></nav><main>Complete professional content for this page.</main></body></html>`;
+    const page = (href: string) => `<!doctype html><html><head><title>Page</title></head><body><nav><a href="MAIN_HOMEPAGE.html">Home</a><a href="${href}">Next</a></nav><main>Complete professional content for this page.</main></body></html>`;
+    zip.addFile("MAIN_HOMEPAGE.html", Buffer.from(page("index.html")));
     zip.addFile("index.html", Buffer.from(page("missing.html")));
+    zip.addFile("OPEN_ME_FIRST_HOME_PAGE.html", Buffer.from(page("index.html")));
     zip.addFile("OPEN_ME_FIRST.html", Buffer.from(page("index.html")));
     zip.addFile("about.html", Buffer.from(page("index.html")));
     zip.addFile("attributions.html", Buffer.from(page("index.html")));
