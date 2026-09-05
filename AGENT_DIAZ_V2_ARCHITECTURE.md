@@ -6,48 +6,116 @@ Production `main` and `snapshot/main-2026-09-04-green` are intentionally not mod
 
 ## Goal
 
-Agent Díaz V2 is not a scripted sequence of model calls. It is an agentic artifact-production runtime that owns a real work loop and keeps revising until a deterministic production validator accepts a downloadable artifact.
+Agent Díaz V2 is not a scripted sequence of model calls. It is an agentic artifact-production runtime that owns a real workspace and a real revision loop, and it keeps working until the deterministic production validator accepts a downloadable artifact.
+
+The existing Agent Díaz renderers, visual hardening, PowerPoint/PDF/HTML export behavior, and deterministic validators are retained. V2 changes the orchestration layer above them rather than throwing away the parts that already work.
 
 ## Core runtime
 
-- OpenAI Agents SDK (`@openai/agents`)
-- SandboxAgent execution harness
-- Real sandbox filesystem, shell, patching, image inspection, and context compaction
+- OpenAI Agents SDK `@openai/agents` 0.17.0
+- OpenAI Agents extensions `@openai/agents-extensions` 0.17.0
+- `SandboxAgent` execution harness
+- Real sandbox workspace with filesystem editing, shell execution, patching, image inspection, and context compaction
 - Hosted OpenAI web search and code interpreter tools
-- Optional Streamable HTTP MCP server integration
+- Multiple MCP servers at the same time through Streamable HTTP and stdio transports
 - Existing Agent Díaz deterministic renderers and validators exposed as an agent tool
-- Explicit terminal acceptance tool that can only accept a build that already passed validation
-- Normal Agent SDK tracing plus Agent Díaz structured application logs
-- Cancellation through AbortSignal
+- Explicit terminal acceptance tool that can accept only a build that already passed validation
+- Agent SDK tracing plus Agent Díaz structured application logs
+- Cancellation through `AbortSignal`
 
 ## Artifact loop
 
-1. The agent reads the request and input files in its sandbox workspace.
-2. It researches or executes code where evidence requires it.
-3. It creates a complete ArtifactPlan.
+1. The agent receives the current request and explicitly attached files in `/workspace`.
+2. It researches current or factual claims when needed and uses code execution for quantitative work.
+3. It develops a complete `ArtifactPlan` in the agent loop.
 4. It calls `build_and_validate_artifact`.
-5. The existing deterministic builder renders the real PPTX/DOCX/ZIP artifact and runs the real validators.
-6. If validation fails, the agent receives the exact failure class, rule, diagnostic, and repair guidance.
-7. The agent revises or retries and calls the builder again.
-8. There is no legacy two-repair/six-LLM-call ceiling controlling V2.
-9. Only a successful build receives a build ID.
-10. The run terminates only when the agent calls `accept_validated_artifact` using one of those validated build IDs.
+5. The existing deterministic builder renders the real PPTX/DOCX/ZIP artifact and runs the real production validators.
+6. If validation fails, the agent receives the exact failure class, rule, diagnostic path when available, and repair guidance.
+7. The agent revises the plan, layout, content, image queries, or retries a transient infrastructure operation as appropriate.
+8. It calls `build_and_validate_artifact` again. V2 has no legacy two-repair/six-LLM-call ceiling controlling this loop.
+9. Only a successful validated build receives a `buildId`.
+10. The run can finish successfully only by calling `accept_validated_artifact` with one of those validated build IDs.
 11. The accepted file is promoted into the normal Agent Díaz artifact store and becomes downloadable through the existing UI/API.
+12. Presentation artifacts continue to expose the existing PowerPoint, PDF, and browser-HTML download paths from the accepted PPTX.
+
+The model cannot finish by merely saying an artifact is ready. The acceptance tool is the terminal production-readiness gate.
 
 ## Failure policy
 
-- `PLAN_CONTENT`: repair requirements, structure, or content and rebuild.
-- `PLAN_NORMALIZABLE`: normalize/repair the plan and rebuild.
+- `PLAN_CONTENT`: repair missing/incorrect requirements, structure, or content and rebuild.
+- `PLAN_NORMALIZABLE`: normalize the plan without discarding valid user requirements and rebuild.
 - `ASSET`: improve image queries or retry transient image acquisition without degrading requested visual coverage.
 - `BUILD`: use the deterministic rule/diagnostic to revise layout or content and rebuild.
 - `INFRA`: preserve good content and retry the infrastructure operation rather than rewriting the artifact to dodge an outage.
 
-The agent may only stop without a downloadable artifact when the user explicitly cancels or an unrecoverable external dependency prevents further progress. Failures must remain observable in logs and job state; nothing fails silently.
+The runtime must not fail silently. Failures and retries are recorded through structured job/application logs. The only normal reasons to end without a downloadable artifact are explicit user cancellation or an unrecoverable external dependency.
 
-## Filesystem and MCP
+## Filesystem and sandbox isolation
 
-The sandbox filesystem is the canonical workspace for the agent. MCP is an extension layer for external systems and specialized tools. This avoids using MCP as a fake filesystem abstraction when the Agents SDK already provides a real workspace, while still supporting remote MCP servers through the current `MCP_SERVER_URL`, `MCP_SERVER_LABEL`, and `MCP_AUTHORIZATION` configuration.
+The sandbox filesystem is the canonical agent workspace. Exact uploaded files are materialized into `/workspace/inputs`; V2 does not grant the agent the broader host upload directory.
 
-## Compatibility
+Sandbox backend selection is pluggable:
 
-The legacy artifact pipeline remains in the V2 branch as a compatibility fallback selected with `AGENT_RUNTIME=legacy`. The V2 branch defaults to `AGENT_RUNTIME=v2`. `main` remains unchanged.
+- `cloudflare`: hosted Cloudflare Sandbox bridge through the OpenAI Agents extension client
+- `docker`: isolated local Docker sandbox
+- `unix`: Unix-local sandbox for development/fallback
+
+Configuration:
+
+```text
+AGENT_SANDBOX_PROVIDER=cloudflare|docker|unix
+CLOUDFLARE_SANDBOX_WORKER_URL=https://<your-sandbox-bridge-worker>
+CLOUDFLARE_SANDBOX_API_KEY=<optional bridge bearer key>
+AGENT_SANDBOX_DOCKER_IMAGE=node:22-bookworm-slim
+```
+
+If `AGENT_SANDBOX_PROVIDER` is not set but `CLOUDFLARE_SANDBOX_WORKER_URL` is present, V2 automatically selects the hosted Cloudflare sandbox. Otherwise it falls back to Unix-local and emits a warning when that fallback is used in production. This keeps V2 usable immediately while allowing production shell/filesystem execution to move behind a hosted isolation boundary without another architectural rewrite.
+
+## MCP
+
+MCP is an extension layer for external systems and specialist tools; it is not being used as a fake replacement for the native sandbox filesystem.
+
+V2 supports multiple MCP servers simultaneously through `MCP_SERVERS_JSON`. For example:
+
+```json
+[
+  {
+    "transport": "http",
+    "name": "Research MCP",
+    "url": "https://example.com/mcp",
+    "authorizationEnv": "RESEARCH_MCP_AUTH"
+  },
+  {
+    "transport": "stdio",
+    "name": "Filesystem MCP",
+    "fullCommand": "npx -y @modelcontextprotocol/server-filesystem /workspace"
+  },
+  {
+    "transport": "stdio",
+    "name": "Playwright MCP",
+    "fullCommand": "npx -y @playwright/mcp@latest --headless"
+  }
+]
+```
+
+Server names must be unique. HTTP credentials can be referenced by environment-variable name rather than embedded in the JSON. MCP tools are server-prefixed to avoid collisions, connection failures clean up already-connected servers, and all servers are closed at the end of the run.
+
+The existing single-server settings remain supported for backward compatibility:
+
+```text
+MCP_SERVER_URL
+MCP_SERVER_LABEL
+MCP_AUTHORIZATION
+```
+
+## Compatibility and rollout
+
+- Real artifact jobs on `variant/agent-diaz-v2` use V2 by default.
+- `AGENT_RUNTIME=legacy` is an emergency compatibility override on the V2 branch.
+- Existing regression tests remain on the proven legacy harness unless a V2 test explicitly opts into `AGENT_RUNTIME=v2`; this preserves renderer/validator regression coverage while the new harness is tested separately.
+- `main` is unchanged.
+- The frozen rollback branch `snapshot/main-2026-09-04-green` is unchanged.
+
+## Maturity note
+
+The OpenAI Agents SDK is the production agent runtime used by V2. The newer Sandbox Agents layer is still marked beta upstream, so the sandbox provider is deliberately isolated behind a small adapter. Agent Díaz can move among Cloudflare-hosted, Docker, or local sandbox implementations without changing the artifact loop, MCP layer, validators, or UI contract.
