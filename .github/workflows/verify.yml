@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "codex/**"
+      - variant/agent-diaz-v2
   pull_request:
 
 permissions:
