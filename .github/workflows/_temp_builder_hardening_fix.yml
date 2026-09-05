@@ -5,7 +5,8 @@ on:
     branches:
       - codex/builder-visual-progress-hardening
     paths:
-      - .github/workflows/_temp_builder_hardening_fix.yml
+      - "scripts/temp-patch-visual-tests.mjs"
+      - ".github/workflows/_temp_builder_hardening_fix.yml"
 
 permissions:
   contents: write
@@ -17,62 +18,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: codex/builder-visual-progress-hardening
-      - name: Patch stale image-budget expectations
+      - name: Patch stale visual-budget tests
+        run: node scripts/temp-patch-visual-tests.mjs
+      - name: Commit patched tests
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          # agent.test.ts: this test is about one qualitative judge call, not a hardcoded
-          # number of model-authored image briefs. Assert the deterministic budget instead.
-          p = Path("src/server/__tests__/agent.test.ts")
-          text = p.read_text()
-          test_anchor = 'it("counts one qualitative image-judge call in the successful artifact receipt"'
-          test_start = text.index(test_anchor)
-          receipt_start = text.index('    expect(artifact.receipt).toMatchObject({', test_start)
-          state_start = text.index('    expect(db.getArtifactRunState(job.id)).toMatchObject({', receipt_start)
-          replacement = '''    expect(artifact.receipt).toMatchObject({
-              llmCalls: 3,
-              maxLlmCalls: 6,
-              images: {
-                judgeCalls: 1,
-              },
-            });
-            const imageReceipt = (artifact.receipt as any).images;
-            expect(imageReceipt.requested).toBeGreaterThan(0);
-            expect(imageReceipt.requested).toBeLessThanOrEqual(10);
-            expect(imageReceipt.fetched).toBe(imageReceipt.requested);
-            expect(imageReceipt.placed).toBe(imageReceipt.requested);
-'''
-          text = text[:receipt_start] + replacement + text[state_start:]
-          p.write_text(text)
-
-          # artifact-golden.test.ts: derive expected image count using the same deterministic
-          # visual planner used by production rather than counting pre-budget model fields.
-          p = Path("src/server/__tests__/artifact-golden.test.ts")
-          text = p.read_text()
-          import_anchor = 'import { compileArtifactPlan } from "../artifact-compiler";\n'
-          if 'import { planArtifactVisuals }' not in text:
-              if import_anchor not in text:
-                  raise SystemExit("artifact-golden import anchor missing")
-              text = text.replace(
-                  import_anchor,
-                  import_anchor + 'import { planArtifactVisuals } from "../artifact-visual-plan";\n',
-                  1,
-              )
-          expected_start = text.index('        const expectedImages = golden.plan.sections.filter(')
-          expected_end_marker = '        expect(receipt.images).toMatchObject({'
-          expected_end = text.index(expected_end_marker, expected_start)
-          replacement = '''        const expectedImages = planArtifactVisuals(
-                  golden.kind,
-                  compiledGolden,
-                  golden.prompt,
-                ).receipt.plannedSlots;
-'''
-          text = text[:expected_start] + replacement + text[expected_end:]
-          p.write_text(text)
-          PY
-      - name: Commit regression updates
-        run: |
+          if git diff --quiet -- src/server/__tests__/agent.test.ts src/server/__tests__/artifact-golden.test.ts; then
+            echo "No test patch needed"
+            exit 0
+          fi
           git config user.name "Idruiz"
           git config user.email "152026201+Idruiz@users.noreply.github.com"
           git add src/server/__tests__/agent.test.ts src/server/__tests__/artifact-golden.test.ts
