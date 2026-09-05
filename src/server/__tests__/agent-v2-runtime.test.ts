@@ -3,6 +3,7 @@ import {
   classifyV2BuildFailure,
   v2ArtifactAgentInstructions,
 } from "../v2/artifact-agent-runtime.js";
+import { parseV2McpDefinitions } from "../v2/mcp-runtime.js";
 import { ArtifactPipelineError } from "../artifact-quality.js";
 
 describe("Agent Díaz v2 artifact runtime contract", () => {
@@ -34,5 +35,53 @@ describe("Agent Díaz v2 artifact runtime contract", () => {
     );
     expect(failure.failureClass).toBe("INFRA");
     expect(failure.ruleOrPart).toBe("agent-v2-infrastructure");
+  });
+
+  it("accepts multiple HTTP and stdio MCP servers", () => {
+    const definitions = parseV2McpDefinitions(
+      JSON.stringify([
+        {
+          transport: "http",
+          name: "Research MCP",
+          url: "https://example.com/mcp",
+          authorizationEnv: "RESEARCH_MCP_AUTH",
+        },
+        {
+          transport: "stdio",
+          name: "Filesystem MCP",
+          fullCommand: "npx -y @modelcontextprotocol/server-filesystem /workspace",
+        },
+        {
+          transport: "stdio",
+          name: "Playwright MCP",
+          fullCommand: "npx -y @playwright/mcp@latest --headless",
+        },
+      ]),
+    );
+    expect(definitions).toHaveLength(3);
+    expect(definitions.map((item) => item.transport)).toEqual([
+      "http",
+      "stdio",
+      "stdio",
+    ]);
+  });
+
+  it("rejects duplicate MCP server names before starting an agent run", () => {
+    expect(() =>
+      parseV2McpDefinitions(
+        JSON.stringify([
+          {
+            transport: "http",
+            name: "tools",
+            url: "https://example.com/mcp",
+          },
+          {
+            transport: "stdio",
+            name: "TOOLS",
+            fullCommand: "node server.js",
+          },
+        ]),
+      ),
+    ).toThrow(/Duplicate MCP server name/);
   });
 });
