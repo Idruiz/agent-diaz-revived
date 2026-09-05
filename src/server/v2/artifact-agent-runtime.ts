@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  MCPServerStreamableHttp,
   codeInterpreterTool,
   run,
   tool,
@@ -26,6 +25,11 @@ import {
   type ArtifactFailureClass,
 } from "../artifact-quality.js";
 import { log } from "../log.js";
+import {
+  closeV2McpServers,
+  connectV2McpServers,
+  createV2McpRuntime,
+} from "./mcp-runtime.js";
 import {
   ArtifactPlanSchema,
   type ArtifactPlan,
@@ -324,24 +328,8 @@ export async function runV2ArtifactRuntime(
     ...(grantedPaths.length ? { extraPathGrants: grantedPaths } : {}),
   });
 
-  const mcpServers: MCPServerStreamableHttp[] = [];
-  let configuredMcp: MCPServerStreamableHttp | null = null;
-  if (input.config.MCP_SERVER_URL) {
-    configuredMcp = new MCPServerStreamableHttp({
-      url: input.config.MCP_SERVER_URL,
-      name: input.config.MCP_SERVER_LABEL,
-      cacheToolsList: true,
-      timeout: 60_000,
-      ...(input.config.MCP_AUTHORIZATION
-        ? {
-            requestInit: {
-              headers: { Authorization: input.config.MCP_AUTHORIZATION },
-            },
-          }
-        : {}),
-    });
-    mcpServers.push(configuredMcp);
-  }
+  const mcpRuntime = createV2McpRuntime(input.config);
+  const mcpServers = mcpRuntime.servers;
 
   const agent = new SandboxAgent({
     name: "Agent Díaz V2 Artifact Engineer",
@@ -369,13 +357,14 @@ export async function runV2ArtifactRuntime(
   });
 
   try {
-    if (configuredMcp) await configuredMcp.connect();
+    await connectV2McpServers(mcpRuntime, input.jobId);
     log("info", "agent_v2.run_started", {
       jobId: input.jobId,
       kind: input.kind,
       model: input.model,
       attachments: attachments.length,
-      mcpEnabled: Boolean(configuredMcp),
+      mcpEnabled: mcpServers.length > 0,
+      mcpServers: mcpRuntime.descriptions,
     });
     const result = await run(
       agent,
@@ -412,7 +401,7 @@ export async function runV2ArtifactRuntime(
       version: "v2",
       harness: "@openai/agents",
       sandbox: "unix-local",
-      mcp: configuredMcp ? "streamable-http" : "disabled",
+      mcp: mcpRuntime.descriptions,
       attempts: attempt,
       acceptance: "explicit-validated-build",
     };
@@ -430,15 +419,6 @@ export async function runV2ArtifactRuntime(
       finalOutput: result.finalOutput,
     };
   } finally {
-    if (configuredMcp) {
-      try {
-        await configuredMcp.close();
-      } catch (error) {
-        log("warn", "agent_v2.mcp_close_failed", {
-          jobId: input.jobId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+    await closeV2McpServers(mcpRuntime, input.jobId);
   }
 }
