@@ -8,7 +8,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-${{ github.workflow }}-${{ github.ref }}
@@ -20,71 +20,6 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Apply one-time visual-hardening regression alignment
-        if: github.ref == 'refs/heads/codex/builder-visual-progress-hardening'
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-
-          const agentPath = 'src/server/__tests__/agent.test.ts';
-          let agent = fs.readFileSync(agentPath, 'utf8');
-          const testAnchor = 'it("counts one qualitative image-judge call in the successful artifact receipt"';
-          const testStart = agent.indexOf(testAnchor);
-          if (testStart < 0) throw new Error('agent test anchor missing');
-          const receiptStart = agent.indexOf('    expect(artifact.receipt).toMatchObject({', testStart);
-          const stateStart = agent.indexOf('    expect(db.getArtifactRunState(job.id)).toMatchObject({', receiptStart);
-          if (receiptStart < 0 || stateStart < 0) throw new Error('agent receipt anchors missing');
-          if (agent.slice(receiptStart, stateStart).includes('imageReceipt.requested')) {
-            console.log('agent image-budget expectation already aligned');
-          } else {
-            const replacement = `    expect(artifact.receipt).toMatchObject({
-              llmCalls: 3,
-              maxLlmCalls: 6,
-              images: {
-                judgeCalls: 1,
-              },
-            });
-            const imageReceipt = (artifact.receipt as any).images;
-            expect(imageReceipt.requested).toBeGreaterThan(0);
-            expect(imageReceipt.requested).toBeLessThanOrEqual(10);
-            expect(imageReceipt.fetched).toBe(imageReceipt.requested);
-            expect(imageReceipt.placed).toBe(imageReceipt.requested);
-`;
-            agent = agent.slice(0, receiptStart) + replacement + agent.slice(stateStart);
-            fs.writeFileSync(agentPath, agent);
-          }
-
-          const goldenPath = 'src/server/__tests__/artifact-golden.test.ts';
-          let golden = fs.readFileSync(goldenPath, 'utf8');
-          const importAnchor = 'import { compileArtifactPlan } from "../artifact-compiler";\n';
-          if (!golden.includes('import { planArtifactVisuals } from "../artifact-visual-plan";')) {
-            if (!golden.includes(importAnchor)) throw new Error('golden import anchor missing');
-            golden = golden.replace(importAnchor, importAnchor + 'import { planArtifactVisuals } from "../artifact-visual-plan";\n');
-          }
-          const expectedStartNeedle = '        const expectedImages = golden.plan.sections.filter(';
-          const expectedStart = golden.indexOf(expectedStartNeedle);
-          if (expectedStart >= 0) {
-            const expectedEndNeedle = '        expect(receipt.images).toMatchObject({';
-            const expectedEnd = golden.indexOf(expectedEndNeedle, expectedStart);
-            if (expectedEnd < 0) throw new Error('golden expected-images end anchor missing');
-            const replacement = `        const expectedImages = planArtifactVisuals(
-                  golden.kind,
-                  compiledGolden,
-                  golden.prompt,
-                ).receipt.plannedSlots;
-`;
-            golden = golden.slice(0, expectedStart) + replacement + golden.slice(expectedEnd);
-          }
-          fs.writeFileSync(goldenPath, golden);
-          NODE
-          if ! git diff --quiet -- src/server/__tests__/agent.test.ts src/server/__tests__/artifact-golden.test.ts; then
-            git config user.name "Idruiz"
-            git config user.email "152026201+Idruiz@users.noreply.github.com"
-            git add src/server/__tests__/agent.test.ts src/server/__tests__/artifact-golden.test.ts
-            git commit -m "Align visual hardening regressions with image budgets"
-            git push origin HEAD:codex/builder-visual-progress-hardening
-            exit 0
-          fi
       - uses: actions/setup-node@v4
         with:
           node-version: "22.12.0"
