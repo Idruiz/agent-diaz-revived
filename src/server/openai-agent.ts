@@ -1418,7 +1418,7 @@ export class AgentRunner {
               job.status === "blocked"),
         );
 
-      if (isArtifact && process.env.AGENT_RUNTIME !== "legacy") {
+      if (isArtifact && process.env.AGENT_RUNTIME !== "legacy" && (this.config.NODE_ENV !== "test" || process.env.AGENT_RUNTIME === "v2")) {
         const existingArtifacts = this.db.listArtifacts(jobId);
         if (existingArtifacts.length) {
           const userOutput = `Completed ${job.kind} artifact: ${existingArtifacts.map((a) => a.name).join(", ")}. The finished file is ready to download.`;
