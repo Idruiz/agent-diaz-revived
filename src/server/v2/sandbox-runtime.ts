@@ -17,6 +17,10 @@ export interface V2SandboxRuntime {
   client: V2SandboxClient;
 }
 
+function enabled(value: string | undefined): boolean {
+  return /^(?:1|true|yes|on)$/i.test(value?.trim() ?? "");
+}
+
 export function resolveV2SandboxProvider(
   env: NodeJS.ProcessEnv = process.env,
 ): V2SandboxProvider {
@@ -32,18 +36,33 @@ export function resolveV2SandboxProvider(
   return "unix";
 }
 
+export function assertV2SandboxProviderReady(
+  provider: V2SandboxProvider,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (provider === "cloudflare" && !env.CLOUDFLARE_SANDBOX_WORKER_URL?.trim())
+    throw new Error(
+      "AGENT_SANDBOX_PROVIDER=cloudflare requires CLOUDFLARE_SANDBOX_WORKER_URL",
+    );
+  if (
+    provider === "unix" &&
+    env.NODE_ENV === "production" &&
+    !enabled(env.AGENT_SANDBOX_ALLOW_UNSAFE_UNIX)
+  )
+    throw new Error(
+      "Agent Díaz V2 refuses Unix-local shell execution in production. Configure CLOUDFLARE_SANDBOX_WORKER_URL, select AGENT_SANDBOX_PROVIDER=docker, or explicitly set AGENT_SANDBOX_ALLOW_UNSAFE_UNIX=true for an emergency override.",
+    );
+}
+
 export function createV2SandboxRuntime(
   jobId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): V2SandboxRuntime {
   const provider = resolveV2SandboxProvider(env);
+  assertV2SandboxProviderReady(provider, env);
 
   if (provider === "cloudflare") {
-    const workerUrl = env.CLOUDFLARE_SANDBOX_WORKER_URL?.trim();
-    if (!workerUrl)
-      throw new Error(
-        "AGENT_SANDBOX_PROVIDER=cloudflare requires CLOUDFLARE_SANDBOX_WORKER_URL",
-      );
+    const workerUrl = env.CLOUDFLARE_SANDBOX_WORKER_URL!.trim();
     const client = new CloudflareSandboxClient({
       workerUrl,
       ...(env.CLOUDFLARE_SANDBOX_API_KEY
@@ -75,19 +94,17 @@ export function createV2SandboxRuntime(
     return { provider, client };
   }
 
-  if (env.NODE_ENV === "production")
-    log("warn", "agent_v2.unix_sandbox_in_production", {
-      jobId,
-      provider,
-      recommendation:
-        "Configure CLOUDFLARE_SANDBOX_WORKER_URL or AGENT_SANDBOX_PROVIDER=docker for a stronger execution boundary.",
-    });
-  else
-    log("info", "agent_v2.sandbox_selected", {
+  log(
+    env.NODE_ENV === "production" ? "warn" : "info",
+    "agent_v2.sandbox_selected",
+    {
       jobId,
       provider,
       hosted: false,
-    });
-
+      unsafeProductionOverride:
+        env.NODE_ENV === "production" &&
+        enabled(env.AGENT_SANDBOX_ALLOW_UNSAFE_UNIX),
+    },
+  );
   return { provider, client: new UnixLocalSandboxClient() };
 }

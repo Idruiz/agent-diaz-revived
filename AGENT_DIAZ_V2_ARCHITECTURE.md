@@ -119,3 +119,20 @@ MCP_AUTHORIZATION
 ## Maturity note
 
 The OpenAI Agents SDK is the production agent runtime used by V2. The newer Sandbox Agents layer is still marked beta upstream, so the sandbox provider is deliberately isolated behind a small adapter. Agent Díaz can move among Cloudflare-hosted, Docker, or local sandbox implementations without changing the artifact loop, MCP layer, validators, or UI contract.
+
+
+## Final production-readiness contract
+
+V2 now separates liveness from agent readiness:
+
+- `GET /healthz` answers whether the web process is alive.
+- `GET /readyz` answers whether the selected V2 sandbox/MCP configuration is safe enough to start artifact work. It returns HTTP 503 when the agent runtime is not deployable.
+- `GET /version` exposes only non-secret runtime metadata: Agents SDK version, selected runtime, sandbox provider, readiness flag, and MCP server count.
+
+Production fails closed for agent shell execution. Unix-local is accepted for development, but production requires a hosted Cloudflare sandbox or an explicitly selected Docker sandbox unless `AGENT_SANDBOX_ALLOW_UNSAFE_UNIX=true` is deliberately set as an emergency override.
+
+Stdio MCP servers are likewise development-friendly but execute on the application host. Production therefore prefers Streamable HTTP MCP and rejects stdio by default unless `AGENT_MCP_ALLOW_STDIO_IN_PRODUCTION=true` is deliberately enabled. `MCP_SERVERS_JSON` supports per-server `allowedTools` and `blockedTools` filters.
+
+Every rejected build now returns model-readable diagnostic evidence. When available, the exact preserved failed artifact is attached as a function-tool file output; PPTX/DOCX failures also receive a LibreOffice-rendered diagnostic PDF when conversion succeeds. Host filesystem diagnostic paths are never relied on as the model's evidence channel.
+
+Every V2 attempt persists its complete ArtifactPlan plus an append-only `REVISION_HISTORY.jsonl`. If the app process restarts before completion, the latest plan and revision ledger are materialized into `recovery/` in the new sandbox so the agent can resume from the last known strategy instead of blindly restarting. Repeated identical non-infrastructure failures produce a `stagnationCount` and explicit instruction to change strategy rather than dead-horse the same plan.

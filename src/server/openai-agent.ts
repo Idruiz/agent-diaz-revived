@@ -2286,8 +2286,13 @@ export class AgentRunner {
           diagnosticPath: e.diagnosticPath,
           error: message,
         });
-        if (blocked && this.config.NODE_ENV !== "test") {
+        if (
+          blocked &&
+          e.ruleOrPart !== "agent-v2-configuration" &&
+          this.config.NODE_ENV !== "test"
+        ) {
           const state = this.db.getArtifactRunState(jobId);
+          if (!state) return;
           const latest = state?.attempts.at(-1);
           const duplicateCount = latest
             ? state!.attempts.filter(

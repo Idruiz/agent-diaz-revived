@@ -6,18 +6,24 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { log } from "../log.js";
 
+const ToolNameListSchema = z.array(z.string().min(1).max(128)).max(100).optional();
+
 const HttpMcpSchema = z.object({
   transport: z.literal("http"),
   name: z.string().min(1).max(80),
   url: z.string().url(),
   authorizationEnv: z.string().min(1).optional(),
   timeoutMs: z.number().int().min(1_000).max(300_000).default(60_000),
+  allowedTools: ToolNameListSchema,
+  blockedTools: ToolNameListSchema,
 });
 
 const StdioMcpSchema = z.object({
   transport: z.literal("stdio"),
   name: z.string().min(1).max(80),
   fullCommand: z.string().min(1).max(2_000),
+  allowedTools: ToolNameListSchema,
+  blockedTools: ToolNameListSchema,
 });
 
 const McpDefinitionSchema = z.discriminatedUnion("transport", [
@@ -26,7 +32,8 @@ const McpDefinitionSchema = z.discriminatedUnion("transport", [
 ]);
 
 const McpDefinitionsSchema = z.array(McpDefinitionSchema).max(12);
-
+export type V2McpDefinition = z.infer<typeof McpDefinitionSchema>;
+export type V2McpDefinitions = z.infer<typeof McpDefinitionsSchema>;
 export type V2McpServer = MCPServerStreamableHttp | MCPServerStdio;
 
 export interface V2McpRuntime {
@@ -37,9 +44,11 @@ export interface V2McpRuntime {
   }>;
 }
 
-function uniqueDefinitions(
-  definitions: z.infer<typeof McpDefinitionsSchema>,
-): z.infer<typeof McpDefinitionsSchema> {
+function enabled(value: string | undefined): boolean {
+  return /^(?:1|true|yes|on)$/i.test(value?.trim() ?? "");
+}
+
+function uniqueDefinitions(definitions: V2McpDefinitions): V2McpDefinitions {
   const seen = new Set<string>();
   return definitions.filter((definition) => {
     const key = definition.name.trim().toLocaleLowerCase();
@@ -52,7 +61,7 @@ function uniqueDefinitions(
 
 export function parseV2McpDefinitions(
   raw: string | undefined,
-): z.infer<typeof McpDefinitionsSchema> {
+): V2McpDefinitions {
   if (!raw?.trim()) return [];
   let parsed: unknown;
   try {
@@ -72,15 +81,36 @@ export function parseV2McpDefinitions(
   return uniqueDefinitions(result.data);
 }
 
+export function assertV2McpEnvironmentSafe(
+  definitions: V2McpDefinitions,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (
+    env.NODE_ENV === "production" &&
+    definitions.some((definition) => definition.transport === "stdio") &&
+    !enabled(env.AGENT_MCP_ALLOW_STDIO_IN_PRODUCTION)
+  )
+    throw new Error(
+      "Agent Díaz V2 refuses host-level stdio MCP processes in production by default. Use Streamable HTTP MCP servers, or explicitly set AGENT_MCP_ALLOW_STDIO_IN_PRODUCTION=true after reviewing the commands.",
+    );
+}
+
+function toolFilterFor(definition: V2McpDefinition) {
+  const allowed = new Set(definition.allowedTools ?? []);
+  const blocked = new Set(definition.blockedTools ?? []);
+  if (!allowed.size && !blocked.size) return undefined;
+  return async (_context: any, tool: any) => {
+    const name = String(tool?.name ?? "");
+    return (!allowed.size || allowed.has(name)) && !blocked.has(name);
+  };
+}
+
 export function createV2McpRuntime(
   config: Config,
   env: NodeJS.ProcessEnv = process.env,
 ): V2McpRuntime {
   const definitions = parseV2McpDefinitions(env.MCP_SERVERS_JSON);
 
-  // Preserve the existing single Streamable-HTTP MCP configuration. If a JSON
-  // multi-server configuration is supplied, it is additive unless it repeats
-  // the same server name.
   if (config.MCP_SERVER_URL) {
     const fallbackName = config.MCP_SERVER_LABEL || "Agent Diaz MCP";
     if (
@@ -98,9 +128,12 @@ export function createV2McpRuntime(
       });
   }
 
+  assertV2McpEnvironmentSafe(definitions, env);
+
   const servers: V2McpServer[] = [];
   const descriptions: V2McpRuntime["descriptions"] = [];
   for (const definition of definitions) {
+    const toolFilter = toolFilterFor(definition);
     if (definition.transport === "http") {
       const authorization = definition.authorizationEnv
         ? env[definition.authorizationEnv]
@@ -117,6 +150,8 @@ export function createV2McpRuntime(
           name: definition.name,
           cacheToolsList: true,
           timeout: definition.timeoutMs,
+          useStructuredContent: true,
+          ...(toolFilter ? { toolFilter } : {}),
           ...(authorization
             ? { requestInit: { headers: { Authorization: authorization } } }
             : {}),
@@ -131,6 +166,8 @@ export function createV2McpRuntime(
         name: definition.name,
         fullCommand: definition.fullCommand,
         cacheToolsList: true,
+        useStructuredContent: true,
+        ...(toolFilter ? { toolFilter } : {}),
       }),
     );
     descriptions.push({ name: definition.name, transport: "stdio" });

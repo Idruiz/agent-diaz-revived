@@ -29,6 +29,12 @@ import {
   connectV2McpServers,
   createV2McpRuntime,
 } from "./mcp-runtime.js";
+import { buildFailureToolOutput } from "./diagnostic-evidence.js";
+import {
+  appendV2RevisionEntry,
+  listV2RecoveryFiles,
+  writeV2AttemptPlan,
+} from "./revision-ledger.js";
 import { createV2SandboxRuntime } from "./sandbox-runtime.js";
 import {
   ArtifactPlanSchema,
@@ -146,6 +152,9 @@ export function v2ArtifactAgentInstructions(kind: JobKind): string {
     "Work iteratively. Create a complete ArtifactPlan, call build_and_validate_artifact, read the exact failure, revise the plan or retry the infrastructure operation as appropriate, and call the tool again. Do not abandon a valid user requirement to make validation easier.",
     "If failureClass is INFRA, do not rewrite good content merely to dodge infrastructure; retry after doing any useful independent work. If failureClass is ASSET, improve image queries or retry. If failureClass is PLAN_CONTENT or BUILD, revise the plan/layout/content based on the reported rule.",
     "There is no arbitrary two-repair or six-call ceiling in this V2 loop. Continue until a build returns ok:true unless the user cancels or an unrecoverable external dependency makes progress impossible.",
+    "If recovery/REVISION_HISTORY.jsonl or recovery/LATEST_PLAN.json exists, inspect it before restarting work so a process restart does not erase the last known revision strategy.",
+    "A rejected build may include the exact failed artifact and a rendered diagnostic PDF as tool outputs. Inspect those files with code execution when the failure is visual, structural, or otherwise unclear before changing the plan.",
+    "Do not dead-horse an unchanged rejected plan. If stagnationCount is 2 or greater, materially change the plan, layout, asset strategy, or diagnostic approach before rebuilding unless the failure is explicitly transient infrastructure.",
     "A successful build is not final until you call accept_validated_artifact with the exact buildId returned by the successful build. Never claim completion before that acceptance call succeeds.",
     "Preserve explicit user requirements, requested language, audience, pedagogy, visual intent, and requested deliverable type. Finished visible copy must be audience-facing, not production notes or placeholders.",
     "For presentations specifically: avoid rigid text stuffing. Prefer reflow, pagination, shorter visible copy, speaker notes, and responsive visual layouts. Every image must be relevant to its section and every fetched image must be placed or explicitly rejected before acceptance.",
@@ -191,6 +200,7 @@ export async function runV2ArtifactRuntime(
   let attempt = 0;
   let acceptedBuildId: string | null = null;
   const successfulBuilds = new Map<string, BuiltFile>();
+  const failureFingerprints = new Map<string, number>();
 
   const buildTool = tool({
     name: "build_and_validate_artifact",
@@ -202,12 +212,16 @@ export async function runV2ArtifactRuntime(
     async execute({ plan }: { plan: ArtifactPlan }) {
       if (input.signal?.aborted) throw new Error("Agent Díaz V2 run cancelled");
       attempt += 1;
-      const attemptDir = path.join(workRoot, `attempt-${attempt}`);
-      fs.mkdirSync(attemptDir, { recursive: true });
+      const { attemptDir, planSha } = writeV2AttemptPlan(
+        workRoot,
+        attempt,
+        plan,
+      );
       log("info", "agent_v2.artifact_build_started", {
         jobId: input.jobId,
         kind: input.kind,
         attempt,
+        planSha,
       });
       try {
         const built = await buildArtifact(
@@ -224,11 +238,18 @@ export async function runV2ArtifactRuntime(
         );
         const buildId = crypto.randomUUID();
         successfulBuilds.set(buildId, built);
+        appendV2RevisionEntry(workRoot, {
+          attempt,
+          planSha,
+          status: "validated",
+          buildId,
+        });
         log("info", "agent_v2.artifact_build_validated", {
           jobId: input.jobId,
           kind: input.kind,
           attempt,
           buildId,
+          planSha,
           name: built.name,
           size: built.size,
         });
@@ -243,23 +264,49 @@ export async function runV2ArtifactRuntime(
         };
       } catch (error) {
         const failure = classifyV2BuildFailure(error);
+        const fingerprint = `${failure.failureClass}:${failure.ruleOrPart}:${planSha}`;
+        const stagnationCount =
+          failure.failureClass === "INFRA"
+            ? 1
+            : (failureFingerprints.get(fingerprint) ?? 0) + 1;
+        if (failure.failureClass !== "INFRA")
+          failureFingerprints.set(fingerprint, stagnationCount);
+        const baseAdvice = retryAdvice(failure);
+        const advice =
+          stagnationCount >= 2 && failure.failureClass !== "INFRA"
+            ? `${baseAdvice} This exact plan/failure fingerprint has repeated ${stagnationCount} times; do not submit the unchanged plan again. Inspect the diagnostic evidence and materially change strategy.`
+            : baseAdvice;
+        appendV2RevisionEntry(workRoot, {
+          attempt,
+          planSha,
+          status: "rejected",
+          failureClass: failure.failureClass,
+          ruleOrPart: failure.ruleOrPart,
+          message: failure.message,
+          stagnationCount,
+        });
         log("warn", "agent_v2.artifact_build_rejected", {
           jobId: input.jobId,
           kind: input.kind,
           attempt,
+          planSha,
+          stagnationCount,
           ...failure,
         });
-        return {
-          ok: false as const,
+        return await buildFailureToolOutput({
+          jobId: input.jobId,
+          kind: input.kind,
           attempt,
           failureClass: failure.failureClass,
           ruleOrPart: failure.ruleOrPart,
           message: failure.message,
+          retryAdvice: advice,
+          planSha,
+          stagnationCount,
           ...(failure.diagnosticPath
             ? { diagnosticPath: failure.diagnosticPath }
             : {}),
-          retryAdvice: retryAdvice(failure),
-        };
+        });
       }
     },
   });
@@ -315,6 +362,11 @@ export async function runV2ArtifactRuntime(
     });
   });
 
+  for (const recoveryFile of listV2RecoveryFiles(workRoot))
+    manifestEntries[recoveryFile.workspacePath] = localFile({
+      src: recoveryFile.hostPath,
+    });
+
   // localFile() materializes only the explicitly attached file into the sandbox.
   // Do not grant the agent its host upload directory: hosted/Docker sandboxes do
   // not need it, and Unix-local should not receive broader host filesystem access.
@@ -323,8 +375,18 @@ export async function runV2ArtifactRuntime(
     entries: manifestEntries,
   });
 
-  const sandboxRuntime = createV2SandboxRuntime(input.jobId);
-  const mcpRuntime = createV2McpRuntime(input.config);
+  let sandboxRuntime: ReturnType<typeof createV2SandboxRuntime>;
+  let mcpRuntime: ReturnType<typeof createV2McpRuntime>;
+  try {
+    sandboxRuntime = createV2SandboxRuntime(input.jobId);
+    mcpRuntime = createV2McpRuntime(input.config);
+  } catch (error) {
+    throw new ArtifactPipelineError(
+      "INFRA",
+      `Agent Díaz V2 configuration error: ${error instanceof Error ? error.message : String(error)}`,
+      { ruleOrPart: "agent-v2-configuration", cause: error },
+    );
+  }
   const mcpServers = mcpRuntime.servers;
 
   const agent = new SandboxAgent({
@@ -353,7 +415,15 @@ export async function runV2ArtifactRuntime(
   });
 
   try {
-    await connectV2McpServers(mcpRuntime, input.jobId);
+    try {
+      await connectV2McpServers(mcpRuntime, input.jobId);
+    } catch (error) {
+      throw new ArtifactPipelineError(
+        "INFRA",
+        `Agent Díaz V2 MCP connection failed: ${error instanceof Error ? error.message : String(error)}`,
+        { ruleOrPart: "agent-v2-mcp-connect", cause: error },
+      );
+    }
     log("info", "agent_v2.run_started", {
       jobId: input.jobId,
       kind: input.kind,
@@ -402,6 +472,8 @@ export async function runV2ArtifactRuntime(
       mcp: mcpRuntime.descriptions,
       attempts: attempt,
       acceptance: "explicit-validated-build",
+      recovery: "revision-ledger",
+      diagnostics: "model-readable-file-output",
     };
 
     log("info", "agent_v2.run_completed", {
