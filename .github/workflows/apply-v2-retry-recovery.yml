@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'Apply V2 retry recovery patch'
+    if: github.event.head_commit.message == 'Retry V2 recovery patch after type fix'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,9 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
       - name: Apply retry recovery patch
-        run: python scripts/finalize_v2_retry_recovery.py
+        run: |
+          python scripts/finalize_v2_retry_recovery.py
+          python scripts/fix_v2_retry_recovery_types.py
       - name: Typecheck
         run: npm run check
       - name: Run V2 contract tests
