@@ -9,6 +9,7 @@ import { AgentRunner, modelProfileFor } from "../openai-agent";
 import { openDatabase } from "../db";
 import { setImageJudgeProviderForTests } from "../image-judge";
 import { compileArtifactPlan } from "../artifact-compiler";
+import { planArtifactVisuals } from "../artifact-visual-plan";
 import type { Config } from "../config";
 import {
   artifactGoldenCases,
@@ -303,9 +304,11 @@ describe("recorded artifact golden runs", () => {
         expect(receipt.scores.notesCoverage.score).toBeGreaterThanOrEqual(0);
         expect(receipt.scores.notesCoverage.score).toBeLessThanOrEqual(1);
 
-        const expectedImages = golden.plan.sections.filter(
-          (section) => section.imageQuery,
-        ).length;
+        const expectedImages = planArtifactVisuals(
+          golden.kind,
+          compiledGolden,
+          golden.prompt,
+        ).receipt.plannedSlots;
         expect(receipt.images).toMatchObject({
           requested: expectedImages,
           fetched: expectedImages,

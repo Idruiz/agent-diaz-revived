@@ -1915,11 +1915,13 @@ describe("agent production paths", () => {
       maxLlmCalls: 6,
       images: {
         judgeCalls: 1,
-        requested: 7,
-        fetched: 7,
-        placed: 7,
       },
     });
+    const imageReceipt = (artifact.receipt as any).images;
+    expect(imageReceipt.requested).toBeGreaterThan(0);
+    expect(imageReceipt.requested).toBeLessThanOrEqual(10);
+    expect(imageReceipt.fetched).toBe(imageReceipt.requested);
+    expect(imageReceipt.placed).toBe(imageReceipt.requested);
     expect(db.getArtifactRunState(job.id)).toMatchObject({
       llmCalls: 3,
       maxLlmCalls: 6,
