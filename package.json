@@ -22,6 +22,7 @@
     "verify": "npm run check && npm test && npm run build && npm run smoke && npm run audit:reviewed"
   },
   "dependencies": {
+    "@openai/agents": "0.17.0",
     "@xarsh/ooxml-validator": "0.3.0",
     "adm-zip": "^0.6.0",
     "archiver": "^7.0.1",

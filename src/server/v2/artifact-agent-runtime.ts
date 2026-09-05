@@ -78,7 +78,7 @@ const BuildToolResultSchema = z.discriminatedUnion("ok", [
   z.object({
     ok: z.literal(false),
     attempt: z.number().int().positive(),
-    failureClass: z.enum(["PLAN_CONTENT", "ASSET", "BUILD", "INFRA"]),
+    failureClass: z.enum(["PLAN_CONTENT", "PLAN_NORMALIZABLE", "ASSET", "BUILD", "INFRA"]),
     ruleOrPart: z.string(),
     message: z.string(),
     diagnosticPath: z.string().optional(),
@@ -195,7 +195,6 @@ export async function runV2ArtifactRuntime(
     parameters: z.object({
       plan: ArtifactPlanSchema,
     }),
-    outputSchema: BuildToolResultSchema,
     async execute({ plan }: { plan: ArtifactPlan }) {
       if (input.signal?.aborted) throw new Error("Agent Díaz V2 run cancelled");
       attempt += 1;
@@ -291,7 +290,7 @@ export async function runV2ArtifactRuntime(
     },
   });
 
-  const manifestEntries: Record<string, ReturnType<typeof file> | ReturnType<typeof localFile>> = {
+  const manifestEntries: Record<string, any> = {
     "REQUEST.md": file({
       content: [
         `# Agent Díaz V2 task`,

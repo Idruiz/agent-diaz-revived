@@ -38,6 +38,7 @@ import {
   getSkillForKind,
 } from "./skills.js";
 import { personaInstructions } from "./personas.js";
+import { runV2ArtifactRuntime } from "./v2/artifact-agent-runtime.js";
 import {
   clearsJavierRewriteFloor,
   inspectJavierStyle,
@@ -1416,6 +1417,151 @@ export class AgentRunner {
               job.status === "building" ||
               job.status === "blocked"),
         );
+
+      if (isArtifact && process.env.AGENT_RUNTIME !== "legacy") {
+        const existingArtifacts = this.db.listArtifacts(jobId);
+        if (existingArtifacts.length) {
+          const userOutput = `Completed ${job.kind} artifact: ${existingArtifacts.map((a) => a.name).join(", ")}. The finished file is ready to download.`;
+          this.db.updateJob(jobId, {
+            status: "completed",
+            progress: 100,
+            message: "Completed",
+            outputText: userOutput,
+            error: null,
+          });
+          const existingMessage = this.db.raw
+            .prepare("SELECT id FROM messages WHERE job_id=? AND role='assistant' ORDER BY created_at DESC LIMIT 1")
+            .get(jobId) as { id: string } | undefined;
+          if (existingMessage)
+            this.db.updateMessage(existingMessage.id, {
+              content: userOutput,
+              status: "complete",
+              error: null,
+            });
+          else
+            this.db.addMessage({
+              id: crypto.randomUUID(),
+              conversationId: job.conversationId,
+              role: "assistant",
+              content: userOutput,
+              jobId,
+            });
+          log("info", "agent_v2.resume_reused_artifact", {
+            jobId,
+            kind: job.kind,
+            artifactCount: existingArtifacts.length,
+          });
+          return;
+        }
+
+        const controller = new AbortController();
+        this.activeStreams.set(jobId, controller);
+        try {
+          this.db.updateJob(jobId, {
+            status: "running",
+            progress: 12,
+            message: "Agent V2 workspace starting",
+            error: null,
+          });
+          log("info", "agent_v2.integration_started", {
+            jobId,
+            kind: job.kind,
+            model: job.model,
+            runtimeOverride: process.env.AGENT_RUNTIME ?? "v2-default",
+          });
+          const attachments = this.db.getUploads(this.db.getJobFileIds(jobId));
+          this.db.updateJob(jobId, {
+            status: "running",
+            progress: 20,
+            message: "Agent V2 researching, planning, and revising in workspace",
+            error: null,
+          });
+          const result = await runV2ArtifactRuntime({
+            config: this.config,
+            jobId,
+            kind: job.kind,
+            prompt: job.prompt,
+            model: job.model,
+            reasoningEffort: job.reasoningEffort,
+            attachments,
+            priorContext: priorArtifactContext,
+            signal: controller.signal,
+            onProgress: (event) => {
+              const currentProgress = this.db.getJob(jobId)?.progress ?? 20;
+              this.db.updateJob(jobId, {
+                status: "building",
+                progress: Math.max(currentProgress, Math.min(99, event.progress)),
+                error: null,
+                message: event.message,
+              });
+              log("info", "agent_v2.build_progress", {
+                jobId,
+                kind: job.kind,
+                ...event,
+              });
+            },
+          });
+
+          const file = result.file;
+          const id = crypto.randomUUID();
+          const extension = path.extname(file.name);
+          const durableName = `${path.basename(file.name, extension)}-${id.slice(0, 12)}${extension}`;
+          const durablePath = path.join(this.config.artifactDir, durableName);
+          fs.mkdirSync(this.config.artifactDir, { recursive: true });
+          fs.renameSync(file.path, durablePath);
+          file.name = durableName;
+          file.path = durablePath;
+          fs.rmSync(path.join(this.config.artifactDir, ".agent-v2", jobId), {
+            recursive: true,
+            force: true,
+          });
+          this.db.addArtifact({
+            id,
+            jobId,
+            name: file.name,
+            mime: file.mime,
+            size: file.size,
+            path: file.path,
+            receipt: file.validationReceipt,
+          });
+
+          const userOutput = `Completed ${job.kind} artifact: ${file.name}. Agent Díaz V2 iterated through ${result.attempts} build attempt${result.attempts === 1 ? "" : "s"}; the accepted file passed production validation and is ready to download.`;
+          this.db.updateJob(jobId, {
+            status: "completed",
+            progress: 100,
+            message: "Completed",
+            outputText: userOutput,
+            error: null,
+          });
+          const existingMessage = this.db.raw
+            .prepare("SELECT id FROM messages WHERE job_id=? AND role='assistant' ORDER BY created_at DESC LIMIT 1")
+            .get(jobId) as { id: string } | undefined;
+          if (existingMessage)
+            this.db.updateMessage(existingMessage.id, {
+              content: userOutput,
+              status: "complete",
+              error: null,
+            });
+          else
+            this.db.addMessage({
+              id: crypto.randomUUID(),
+              conversationId: job.conversationId,
+              role: "assistant",
+              content: userOutput,
+              jobId,
+            });
+          log("info", "agent_v2.integration_completed", {
+            jobId,
+            kind: job.kind,
+            attempts: result.attempts,
+            name: file.name,
+            size: file.size,
+          });
+          return;
+        } finally {
+          this.activeStreams.delete(jobId);
+        }
+      }
 
       let artifactRunState = isArtifact
         ? this.db.getArtifactRunState(jobId)
