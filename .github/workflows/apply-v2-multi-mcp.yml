@@ -1,0 +1,39 @@
+name: Apply Agent Diaz V2 Multi MCP
+
+on:
+  push:
+    branches:
+      - variant/agent-diaz-v2
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'Apply Agent Díaz v2 multi-MCP integration'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: variant/agent-diaz-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+      - run: npm ci
+      - run: python scripts/patch_v2_multi_mcp.py
+      - run: npm run check
+      - run: npm test -- src/server/__tests__/agent-v2-runtime.test.ts
+      - name: Commit integration
+        shell: bash
+        run: |
+          git config user.name "Agent Diaz V2 MCP"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/server/v2/artifact-agent-runtime.ts
+          if git diff --cached --quiet; then
+            echo "No integration changes to commit"
+            exit 0
+          fi
+          git commit -m "Wire Agent Díaz v2 multi-MCP runtime"
+          git push origin HEAD:variant/agent-diaz-v2
