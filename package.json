@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@openai/agents": "0.17.0",
+    "@openai/agents-extensions": "0.17.0",
     "@xarsh/ooxml-validator": "0.3.0",
     "adm-zip": "^0.6.0",
     "archiver": "^7.0.1",

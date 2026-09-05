@@ -4,6 +4,7 @@ import {
   v2ArtifactAgentInstructions,
 } from "../v2/artifact-agent-runtime.js";
 import { parseV2McpDefinitions } from "../v2/mcp-runtime.js";
+import { resolveV2SandboxProvider } from "../v2/sandbox-runtime.js";
 import { ArtifactPipelineError } from "../artifact-quality.js";
 
 describe("Agent Díaz v2 artifact runtime contract", () => {
@@ -83,5 +84,25 @@ describe("Agent Díaz v2 artifact runtime contract", () => {
         ]),
       ),
     ).toThrow(/Duplicate MCP server name/);
+  });
+
+  it("prefers the hosted Cloudflare sandbox whenever a bridge URL is configured", () => {
+    expect(
+      resolveV2SandboxProvider({
+        CLOUDFLARE_SANDBOX_WORKER_URL: "https://sandbox.example.workers.dev",
+      }),
+    ).toBe("cloudflare");
+  });
+
+  it("supports explicit Docker and Unix sandbox selection", () => {
+    expect(resolveV2SandboxProvider({ AGENT_SANDBOX_PROVIDER: "docker" })).toBe(
+      "docker",
+    );
+    expect(resolveV2SandboxProvider({ AGENT_SANDBOX_PROVIDER: "unix" })).toBe(
+      "unix",
+    );
+    expect(() =>
+      resolveV2SandboxProvider({ AGENT_SANDBOX_PROVIDER: "spaceship" }),
+    ).toThrow(/cloudflare, docker, or unix/);
   });
 });

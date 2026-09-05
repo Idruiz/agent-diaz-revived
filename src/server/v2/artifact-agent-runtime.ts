@@ -12,7 +12,6 @@ import {
   file,
   localFile,
 } from "@openai/agents/sandbox";
-import { UnixLocalSandboxClient } from "@openai/agents/sandbox/local";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import {
@@ -30,6 +29,7 @@ import {
   connectV2McpServers,
   createV2McpRuntime,
 } from "./mcp-runtime.js";
+import { createV2SandboxRuntime } from "./sandbox-runtime.js";
 import {
   ArtifactPlanSchema,
   type ArtifactPlan,
@@ -315,19 +315,15 @@ export async function runV2ArtifactRuntime(
     });
   });
 
-  const grantedPaths = [
-    ...new Set(attachments.map((attachment) => path.dirname(attachment.path))),
-  ].map((grantedPath) => ({
-    path: grantedPath,
-    readOnly: true,
-    description: "Agent Díaz V2 uploaded input source",
-  }));
-
+  // localFile() materializes only the explicitly attached file into the sandbox.
+  // Do not grant the agent its host upload directory: hosted/Docker sandboxes do
+  // not need it, and Unix-local should not receive broader host filesystem access.
   const manifest = new Manifest({
+    root: "/workspace",
     entries: manifestEntries,
-    ...(grantedPaths.length ? { extraPathGrants: grantedPaths } : {}),
   });
 
+  const sandboxRuntime = createV2SandboxRuntime(input.jobId);
   const mcpRuntime = createV2McpRuntime(input.config);
   const mcpServers = mcpRuntime.servers;
 
@@ -365,6 +361,7 @@ export async function runV2ArtifactRuntime(
       attachments: attachments.length,
       mcpEnabled: mcpServers.length > 0,
       mcpServers: mcpRuntime.descriptions,
+      sandboxProvider: sandboxRuntime.provider,
     });
     const result = await run(
       agent,
@@ -373,11 +370,12 @@ export async function runV2ArtifactRuntime(
         maxTurns: null,
         signal: input.signal,
         sandbox: {
-          client: new UnixLocalSandboxClient(),
+          client: sandboxRuntime.client,
           concurrencyLimits: {
             manifestEntries: 4,
             localDirFiles: 12,
           },
+          archiveLimits: {},
         },
       },
     );
@@ -400,7 +398,7 @@ export async function runV2ArtifactRuntime(
     receipt.agentRuntime = {
       version: "v2",
       harness: "@openai/agents",
-      sandbox: "unix-local",
+      sandbox: sandboxRuntime.provider,
       mcp: mcpRuntime.descriptions,
       attempts: attempt,
       acceptance: "explicit-validated-build",
