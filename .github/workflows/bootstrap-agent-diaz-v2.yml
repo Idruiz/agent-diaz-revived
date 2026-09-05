@@ -1,0 +1,233 @@
+name: Bootstrap Agent Diaz V2
+
+on:
+  push:
+    branches:
+      - variant/agent-diaz-v2
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.event.head_commit.message == 'Bootstrap Agent Díaz v2 dependency and wiring'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: variant/agent-diaz-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+
+      - name: Install OpenAI Agents SDK
+        run: npm install --save-exact @openai/agents@0.17.0
+
+      - name: Wire V2 runtime into the application
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          config = Path('src/server/config.ts')
+          text = config.read_text()
+          anchor = '  MCP_AUTHORIZATION: z.string().optional().default(""),\n'
+          addition = anchor + '  AGENT_RUNTIME: z.enum(["legacy", "v2"]).default("v2"),\n'
+          if 'AGENT_RUNTIME:' not in text:
+              assert anchor in text, 'config anchor missing'
+              text = text.replace(anchor, addition, 1)
+              config.write_text(text)
+
+          runtime = Path('src/server/v2/artifact-agent-runtime.ts')
+          text = runtime.read_text()
+          text = text.replace(
+              'z.enum(["PLAN_CONTENT", "ASSET", "BUILD", "INFRA"]),',
+              'z.enum(["PLAN_CONTENT", "PLAN_NORMALIZABLE", "ASSET", "BUILD", "INFRA"]),'
+          )
+          text = text.replace(
+              'const manifestEntries: Record<string, ReturnType<typeof file> | ReturnType<typeof localFile>> = {',
+              'const manifestEntries: Record<string, any> = {'
+          )
+          runtime.write_text(text)
+
+          agent = Path('src/server/openai-agent.ts')
+          text = agent.read_text()
+          import_anchor = 'import { personaInstructions } from "./personas.js";\n'
+          import_line = 'import { runV2ArtifactRuntime } from "./v2/artifact-agent-runtime.js";\n'
+          if import_line not in text:
+              assert import_anchor in text, 'openai-agent import anchor missing'
+              text = text.replace(import_anchor, import_anchor + import_line, 1)
+
+          insertion_anchor = '      let artifactRunState = isArtifact\n'
+          if 'agent_v2.integration_started' not in text:
+              assert insertion_anchor in text, 'runInternal insertion anchor missing'
+              block = r'''      if (isArtifact && this.config.AGENT_RUNTIME === "v2") {
+        const existingArtifacts = this.db.listArtifacts(jobId);
+        if (existingArtifacts.length) {
+          const userOutput = `Completed ${job.kind} artifact: ${existingArtifacts.map((a) => a.name).join(", ")}. The finished file is ready to download.`;
+          this.db.updateJob(jobId, {
+            status: "completed",
+            progress: 100,
+            message: "Completed",
+            outputText: userOutput,
+            error: null,
+          });
+          const existingMessage = this.db.raw
+            .prepare("SELECT id FROM messages WHERE job_id=? AND role='assistant' ORDER BY created_at DESC LIMIT 1")
+            .get(jobId) as { id: string } | undefined;
+          if (existingMessage)
+            this.db.updateMessage(existingMessage.id, {
+              content: userOutput,
+              status: "complete",
+              error: null,
+            });
+          else
+            this.db.addMessage({
+              id: crypto.randomUUID(),
+              conversationId: job.conversationId,
+              role: "assistant",
+              content: userOutput,
+              jobId,
+            });
+          log("info", "agent_v2.resume_reused_artifact", {
+            jobId,
+            kind: job.kind,
+            artifactCount: existingArtifacts.length,
+          });
+          return;
+        }
+
+        const controller = new AbortController();
+        this.activeStreams.set(jobId, controller);
+        try {
+          this.db.updateJob(jobId, {
+            status: "running",
+            progress: 12,
+            message: "Agent V2 workspace starting",
+            error: null,
+          });
+          log("info", "agent_v2.integration_started", {
+            jobId,
+            kind: job.kind,
+            model: job.model,
+          });
+          const attachments = this.db.getUploads(this.db.getJobFileIds(jobId));
+          this.db.updateJob(jobId, {
+            status: "running",
+            progress: 20,
+            message: "Agent V2 researching, planning, and revising in workspace",
+            error: null,
+          });
+          const result = await runV2ArtifactRuntime({
+            config: this.config,
+            jobId,
+            kind: job.kind,
+            prompt: job.prompt,
+            model: job.model,
+            reasoningEffort: job.reasoningEffort,
+            attachments,
+            priorContext: priorArtifactContext,
+            signal: controller.signal,
+            onProgress: (event) => {
+              const currentProgress = this.db.getJob(jobId)?.progress ?? 20;
+              this.db.updateJob(jobId, {
+                status: "building",
+                progress: Math.max(currentProgress, Math.min(99, event.progress)),
+                error: null,
+                message: event.message,
+              });
+              log("info", "agent_v2.build_progress", {
+                jobId,
+                kind: job.kind,
+                ...event,
+              });
+            },
+          });
+
+          const file = result.file;
+          const id = crypto.randomUUID();
+          const extension = path.extname(file.name);
+          const durableName = `${path.basename(file.name, extension)}-${id.slice(0, 12)}${extension}`;
+          const durablePath = path.join(this.config.artifactDir, durableName);
+          fs.mkdirSync(this.config.artifactDir, { recursive: true });
+          fs.renameSync(file.path, durablePath);
+          file.name = durableName;
+          file.path = durablePath;
+          fs.rmSync(path.join(this.config.artifactDir, ".agent-v2", jobId), {
+            recursive: true,
+            force: true,
+          });
+          this.db.addArtifact({
+            id,
+            jobId,
+            name: file.name,
+            mime: file.mime,
+            size: file.size,
+            path: file.path,
+            receipt: file.validationReceipt,
+          });
+
+          const userOutput = `Completed ${job.kind} artifact: ${file.name}. Agent Díaz V2 iterated through ${result.attempts} build attempt${result.attempts === 1 ? "" : "s"}; the accepted file passed production validation and is ready to download.`;
+          this.db.updateJob(jobId, {
+            status: "completed",
+            progress: 100,
+            message: "Completed",
+            outputText: userOutput,
+            error: null,
+          });
+          const existingMessage = this.db.raw
+            .prepare("SELECT id FROM messages WHERE job_id=? AND role='assistant' ORDER BY created_at DESC LIMIT 1")
+            .get(jobId) as { id: string } | undefined;
+          if (existingMessage)
+            this.db.updateMessage(existingMessage.id, {
+              content: userOutput,
+              status: "complete",
+              error: null,
+            });
+          else
+            this.db.addMessage({
+              id: crypto.randomUUID(),
+              conversationId: job.conversationId,
+              role: "assistant",
+              content: userOutput,
+              jobId,
+            });
+          log("info", "agent_v2.integration_completed", {
+            jobId,
+            kind: job.kind,
+            attempts: result.attempts,
+            name: file.name,
+            size: file.size,
+          });
+          return;
+        } finally {
+          this.activeStreams.delete(jobId);
+        }
+      }
+
+'''
+              text = text.replace(insertion_anchor, block + insertion_anchor, 1)
+          agent.write_text(text)
+          PY
+
+      - name: Typecheck V2
+        run: npm run check
+
+      - name: Test V2 contract
+        run: npm test -- src/server/__tests__/agent-v2-runtime.test.ts
+
+      - name: Commit V2 wiring and lockfile
+        shell: bash
+        run: |
+          git config user.name "Agent Diaz V2 Bootstrap"
+          git config user.email "actions@users.noreply.github.com"
+          git add package.json package-lock.json src/server/config.ts src/server/openai-agent.ts src/server/v2/artifact-agent-runtime.ts
+          if git diff --cached --quiet; then
+            echo "No bootstrap changes to commit"
+            exit 0
+          fi
+          git commit -m "Wire Agent Díaz v2 agentic runtime"
+          git push origin HEAD:variant/agent-diaz-v2
