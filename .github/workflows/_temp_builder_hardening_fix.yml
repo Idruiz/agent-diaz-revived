@@ -21,6 +21,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           def replace_once(path, old, new):
               p = Path(path)
@@ -38,28 +39,32 @@ jobs:
 
           replace_once(
               "src/server/__tests__/agent.test.ts",
-              '''    expect(artifact.receipt).toMatchObject({
-              llmCalls: 3,
-              maxLlmCalls: 6,
-              images: {
-                judgeCalls: 1,
-                requested: 7,
-                fetched: 7,
-                placed: 7,
-              },
-            });''',
-              '''    expect(artifact.receipt).toMatchObject({
-              llmCalls: 3,
-              maxLlmCalls: 6,
-              images: {
-                judgeCalls: 1,
-              },
-            });
-            const imageReceipt = (artifact.receipt as any).images;
-            expect(imageReceipt.requested).toBeGreaterThan(0);
-            expect(imageReceipt.requested).toBeLessThanOrEqual(10);
-            expect(imageReceipt.fetched).toBe(imageReceipt.requested);
-            expect(imageReceipt.placed).toBe(imageReceipt.requested);''',
+              dedent('''\
+                  expect(artifact.receipt).toMatchObject({
+                    llmCalls: 3,
+                    maxLlmCalls: 6,
+                    images: {
+                      judgeCalls: 1,
+                      requested: 7,
+                      fetched: 7,
+                      placed: 7,
+                    },
+                  });
+              ''').rstrip(),
+              dedent('''\
+                  expect(artifact.receipt).toMatchObject({
+                    llmCalls: 3,
+                    maxLlmCalls: 6,
+                    images: {
+                      judgeCalls: 1,
+                    },
+                  });
+                  const imageReceipt = (artifact.receipt as any).images;
+                  expect(imageReceipt.requested).toBeGreaterThan(0);
+                  expect(imageReceipt.requested).toBeLessThanOrEqual(10);
+                  expect(imageReceipt.fetched).toBe(imageReceipt.requested);
+                  expect(imageReceipt.placed).toBe(imageReceipt.requested);
+              ''').rstrip(),
           )
 
           golden = Path("src/server/__tests__/artifact-golden.test.ts")
@@ -69,123 +74,136 @@ jobs:
               if import_anchor not in text:
                   raise SystemExit("artifact-golden import anchor missing")
               text = text.replace(import_anchor, import_anchor + 'import { planArtifactVisuals } from "../artifact-visual-plan";\n', 1)
-          old = '''        const expectedImages = golden.plan.sections.filter(
-                  (section) => section.imageQuery,
-                ).length;'''
-          new = '''        const expectedImages = planArtifactVisuals(
-                  golden.kind,
-                  compiledGolden,
-                  golden.prompt,
-                ).receipt.plannedSlots;'''
+          old = dedent('''\
+                  const expectedImages = golden.plan.sections.filter(
+                    (section) => section.imageQuery,
+                  ).length;
+          ''').rstrip()
+          new = dedent('''\
+                  const expectedImages = planArtifactVisuals(
+                    golden.kind,
+                    compiledGolden,
+                    golden.prompt,
+                  ).receipt.plannedSlots;
+          ''').rstrip()
           if text.count(old) != 1:
               raise SystemExit(f"artifact-golden expectedImages anchor count={text.count(old)}")
           golden.write_text(text.replace(old, new, 1))
 
           visual_build = Path("src/server/__tests__/artifact-visual-build.test.ts")
           text = visual_build.read_text()
-          old = '''      const out = await buildArtifact(
-                config,
-                "website",
-                plan,
-                "Create a cultural website about Québec and Francophone communities with engaging visuals",
-              );'''
-          new = '''      const progressEvents: Array<{ stage: string; message: string; progress: number }> = [];
-              const out = await buildArtifact(
-                config,
-                "website",
-                plan,
-                "Create a cultural website about Québec and Francophone communities with engaging visuals",
-                "visual-build-progress",
-                (event) => progressEvents.push(event),
-              );'''
+          old = dedent('''\
+                  const out = await buildArtifact(
+                    config,
+                    "website",
+                    plan,
+                    "Create a cultural website about Québec and Francophone communities with engaging visuals",
+                  );
+          ''').rstrip()
+          new = dedent('''\
+                  const progressEvents: Array<{ stage: string; message: string; progress: number }> = [];
+                  const out = await buildArtifact(
+                    config,
+                    "website",
+                    plan,
+                    "Create a cultural website about Québec and Francophone communities with engaging visuals",
+                    "visual-build-progress",
+                    (event) => progressEvents.push(event),
+                  );
+          ''').rstrip()
           if text.count(old) != 1:
               raise SystemExit(f"artifact-visual-build build anchor count={text.count(old)}")
           text = text.replace(old, new, 1)
-          anchor = '''      expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
-              for (const name of ["culture.html", "voyage.html"])
-                expect(zip.getEntry(name)!.getData().toString("utf8")).toContain('href="MAIN_HOMEPAGE.html"');'''
-          replacement = '''      expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
-              for (const name of ["culture.html", "voyage.html"])
-                expect(zip.getEntry(name)!.getData().toString("utf8")).toContain('href="MAIN_HOMEPAGE.html"');
-              const stages = new Set(progressEvents.map((event) => event.stage));
-              for (const stage of ["visual-plan", "image-search", "image-judge", "image-download", "render", "validate", "package"])
-                expect(stages.has(stage)).toBe(true);
-              expect(progressEvents.some((event) => /Finding visual \d+ of \d+/.test(event.message))).toBe(true);
-              expect(progressEvents.some((event) => /Rendering 3 website pages/.test(event.message))).toBe(true);
-              expect(progressEvents.at(-1)).toMatchObject({ stage: "package", progress: 99 });'''
+          anchor = dedent('''\
+                  expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
+                  for (const name of ["culture.html", "voyage.html"])
+                    expect(zip.getEntry(name)!.getData().toString("utf8")).toContain('href="MAIN_HOMEPAGE.html"');
+          ''').rstrip()
+          replacement = dedent('''\
+                  expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
+                  for (const name of ["culture.html", "voyage.html"])
+                    expect(zip.getEntry(name)!.getData().toString("utf8")).toContain('href="MAIN_HOMEPAGE.html"');
+                  const stages = new Set(progressEvents.map((event) => event.stage));
+                  for (const stage of ["visual-plan", "image-search", "image-judge", "image-download", "render", "validate", "package"])
+                    expect(stages.has(stage)).toBe(true);
+                  expect(progressEvents.some((event) => /Finding visual \d+ of \d+/.test(event.message))).toBe(true);
+                  expect(progressEvents.some((event) => /Rendering 3 website pages/.test(event.message))).toBe(true);
+                  expect(progressEvents.at(-1)).toMatchObject({ stage: "package", progress: 99 });
+          ''').rstrip()
           if text.count(anchor) != 1:
               raise SystemExit(f"artifact-visual-build assertion anchor count={text.count(anchor)}")
           visual_build.write_text(text.replace(anchor, replacement, 1))
 
           rate_limit = Path("src/server/__tests__/image-rate-limit.test.ts")
-          rate_limit.write_text(r'''import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-          import {
-            resetImageProviderStateForTests,
-            searchCommonsCandidates,
-            type ImageProviderEvent,
-          } from "../real-images";
+          rate_limit.write_text(dedent(r'''\
+              import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+              import {
+                resetImageProviderStateForTests,
+                searchCommonsCandidates,
+                type ImageProviderEvent,
+              } from "../real-images";
 
-          describe("image provider rate-limit handling", () => {
-            beforeEach(() => {
-              process.env.NODE_ENV = "test";
-              resetImageProviderStateForTests();
-            });
+              describe("image provider rate-limit handling", () => {
+                beforeEach(() => {
+                  process.env.NODE_ENV = "test";
+                  resetImageProviderStateForTests();
+                });
 
-            afterEach(() => {
-              vi.restoreAllMocks();
-              resetImageProviderStateForTests();
-            });
+                afterEach(() => {
+                  vi.restoreAllMocks();
+                  resetImageProviderStateForTests();
+                });
 
-            it("honors a bounded Commons cooldown and emits progress before succeeding", async () => {
-              const events: ImageProviderEvent[] = [];
-              let calls = 0;
-              const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-                calls++;
-                if (calls === 1)
-                  return new Response("rate limited", {
-                    status: 429,
-                    headers: { "retry-after": "0" },
-                  });
-                return new Response(
-                  JSON.stringify({
-                    query: {
-                      pages: {
-                        1: {
-                          pageid: 1,
-                          title: "Segovia Aqueduct",
-                          categories: [{ title: "Category:Roman aqueducts in Spain" }],
-                          imageinfo: [{
-                            thumburl: "https://upload.wikimedia.org/example/segovia.jpg",
-                            descriptionurl: "https://commons.wikimedia.org/wiki/File:Segovia_Aqueduct.jpg",
-                            width: 1200,
-                            height: 800,
-                            extmetadata: {
-                              ObjectName: { value: "Segovia Aqueduct" },
-                              ImageDescription: { value: "Roman aqueduct in Segovia, Spain." },
-                              Artist: { value: "Fixture photographer" },
-                              LicenseShortName: { value: "CC BY 4.0" },
+                it("honors a bounded Commons cooldown and emits progress before succeeding", async () => {
+                  const events: ImageProviderEvent[] = [];
+                  let calls = 0;
+                  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+                    calls++;
+                    if (calls === 1)
+                      return new Response("rate limited", {
+                        status: 429,
+                        headers: { "retry-after": "0" },
+                      });
+                    return new Response(
+                      JSON.stringify({
+                        query: {
+                          pages: {
+                            1: {
+                              pageid: 1,
+                              title: "Segovia Aqueduct",
+                              categories: [{ title: "Category:Roman aqueducts in Spain" }],
+                              imageinfo: [{
+                                thumburl: "https://upload.wikimedia.org/example/segovia.jpg",
+                                descriptionurl: "https://commons.wikimedia.org/wiki/File:Segovia_Aqueduct.jpg",
+                                width: 1200,
+                                height: 800,
+                                extmetadata: {
+                                  ObjectName: { value: "Segovia Aqueduct" },
+                                  ImageDescription: { value: "Roman aqueduct in Segovia, Spain." },
+                                  Artist: { value: "Fixture photographer" },
+                                  LicenseShortName: { value: "CC BY 4.0" },
+                                },
+                              }],
                             },
-                          }],
+                          },
                         },
-                      },
-                    },
-                  }),
-                  { status: 200, headers: { "content-type": "application/json" } },
-                );
-              });
+                      }),
+                      { status: 200, headers: { "content-type": "application/json" } },
+                    );
+                  });
 
-              const result = await searchCommonsCandidates("Segovia aqueduct Spain", 1, {
-                onEvent: (event) => events.push(event),
-              });
+                  const result = await searchCommonsCandidates("Segovia aqueduct Spain", 1, {
+                    onEvent: (event) => events.push(event),
+                  });
 
-              expect(fetchMock).toHaveBeenCalledTimes(2);
-              expect(result.candidates).toHaveLength(1);
-              expect(events.some((event) => event.type === "rate_limit")).toBe(true);
-              expect(events.some((event) => event.type === "cooldown_wait")).toBe(true);
-              expect(events.filter((event) => event.type === "rate_limit")).toHaveLength(1);
-            });
-          });
-          '''.replace(/^          /gm, ""))
+                  expect(fetchMock).toHaveBeenCalledTimes(2);
+                  expect(result.candidates).toHaveLength(1);
+                  expect(events.some((event) => event.type === "rate_limit")).toBe(true);
+                  expect(events.some((event) => event.type === "cooldown_wait")).toBe(true);
+                  expect(events.filter((event) => event.type === "rate_limit")).toHaveLength(1);
+                });
+              });
+          '''))
           PY
       - name: Commit regression updates
         run: |
