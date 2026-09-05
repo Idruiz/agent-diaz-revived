@@ -135,7 +135,7 @@ describe("finished artifact fidelity", () => {
       config,
       "document",
       plan,
-      "Create a professional document with exactly 13 licensed evidence photographs",
+      "Create a professional document with exactly 13 licensed photographs",
       "render-fidelity-images",
     );
     expect((built.validationReceipt as any).images).toMatchObject({
