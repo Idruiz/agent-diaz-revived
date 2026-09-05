@@ -22,49 +22,38 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from textwrap import dedent
+          import re
 
-          def replace_once(path, old, new):
+          def regex_replace_once(path, pattern, replacement):
               p = Path(path)
               text = p.read_text()
-              count = text.count(old)
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
               if count != 1:
-                  raise SystemExit(f"{path}: expected one match, found {count}")
-              p.write_text(text.replace(old, new, 1))
+                  raise SystemExit(f"{path}: expected one regex match, found {count}")
+              p.write_text(updated)
 
-          replace_once(
-              "src/server/__tests__/artifact-render-fidelity.test.ts",
-              '"Create a professional document with licensed evidence photographs",',
-              '"Create a professional document with exactly 13 licensed evidence photographs",',
-          )
+          p = Path("src/server/__tests__/artifact-render-fidelity.test.ts")
+          text = p.read_text()
+          old = '"Create a professional document with licensed evidence photographs",'
+          if text.count(old) != 1:
+              raise SystemExit(f"artifact-render-fidelity prompt anchor count={text.count(old)}")
+          p.write_text(text.replace(old, '"Create a professional document with exactly 13 licensed evidence photographs",', 1))
 
-          replace_once(
+          regex_replace_once(
               "src/server/__tests__/agent.test.ts",
-              dedent('''\
-                  expect(artifact.receipt).toMatchObject({
-                    llmCalls: 3,
-                    maxLlmCalls: 6,
-                    images: {
-                      judgeCalls: 1,
-                      requested: 7,
-                      fetched: 7,
-                      placed: 7,
-                    },
-                  });
-              ''').rstrip(),
-              dedent('''\
-                  expect(artifact.receipt).toMatchObject({
-                    llmCalls: 3,
-                    maxLlmCalls: 6,
-                    images: {
-                      judgeCalls: 1,
-                    },
-                  });
-                  const imageReceipt = (artifact.receipt as any).images;
-                  expect(imageReceipt.requested).toBeGreaterThan(0);
-                  expect(imageReceipt.requested).toBeLessThanOrEqual(10);
-                  expect(imageReceipt.fetched).toBe(imageReceipt.requested);
-                  expect(imageReceipt.placed).toBe(imageReceipt.requested);
-              ''').rstrip(),
+              r'expect\(artifact\.receipt\)\.toMatchObject\(\{\s*llmCalls: 3,\s*maxLlmCalls: 6,\s*images: \{\s*judgeCalls: 1,\s*requested: 7,\s*fetched: 7,\s*placed: 7,\s*\},\s*\}\);',
+              '''expect(artifact.receipt).toMatchObject({
+              llmCalls: 3,
+              maxLlmCalls: 6,
+              images: {
+                judgeCalls: 1,
+              },
+            });
+            const imageReceipt = (artifact.receipt as any).images;
+            expect(imageReceipt.requested).toBeGreaterThan(0);
+            expect(imageReceipt.requested).toBeLessThanOrEqual(10);
+            expect(imageReceipt.fetched).toBe(imageReceipt.requested);
+            expect(imageReceipt.placed).toBe(imageReceipt.requested);''',
           )
 
           golden = Path("src/server/__tests__/artifact-golden.test.ts")
@@ -74,68 +63,61 @@ jobs:
               if import_anchor not in text:
                   raise SystemExit("artifact-golden import anchor missing")
               text = text.replace(import_anchor, import_anchor + 'import { planArtifactVisuals } from "../artifact-visual-plan";\n', 1)
-          old = dedent('''\
-                  const expectedImages = golden.plan.sections.filter(
-                    (section) => section.imageQuery,
-                  ).length;
-          ''').rstrip()
-          new = dedent('''\
-                  const expectedImages = planArtifactVisuals(
-                    golden.kind,
-                    compiledGolden,
-                    golden.prompt,
-                  ).receipt.plannedSlots;
-          ''').rstrip()
-          if text.count(old) != 1:
-              raise SystemExit(f"artifact-golden expectedImages anchor count={text.count(old)}")
-          golden.write_text(text.replace(old, new, 1))
+          updated, count = re.subn(
+              r'const expectedImages = golden\.plan\.sections\.filter\(\s*\(section\) => section\.imageQuery,\s*\)\.length;',
+              '''const expectedImages = planArtifactVisuals(
+                  golden.kind,
+                  compiledGolden,
+                  golden.prompt,
+                ).receipt.plannedSlots;''',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"artifact-golden expectedImages regex count={count}")
+          golden.write_text(updated)
 
           visual_build = Path("src/server/__tests__/artifact-visual-build.test.ts")
           text = visual_build.read_text()
-          old = dedent('''\
-                  const out = await buildArtifact(
-                    config,
-                    "website",
-                    plan,
-                    "Create a cultural website about Québec and Francophone communities with engaging visuals",
-                  );
-          ''').rstrip()
-          new = dedent('''\
-                  const progressEvents: Array<{ stage: string; message: string; progress: number }> = [];
-                  const out = await buildArtifact(
-                    config,
-                    "website",
-                    plan,
-                    "Create a cultural website about Québec and Francophone communities with engaging visuals",
-                    "visual-build-progress",
-                    (event) => progressEvents.push(event),
-                  );
-          ''').rstrip()
-          if text.count(old) != 1:
-              raise SystemExit(f"artifact-visual-build build anchor count={text.count(old)}")
-          text = text.replace(old, new, 1)
-          anchor = dedent('''\
-                  expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
-                  for (const name of ["culture.html", "voyage.html"])
-                    expect(zip.getEntry(name)!.getData().toString("utf8")).toContain('href="MAIN_HOMEPAGE.html"');
-          ''').rstrip()
-          replacement = dedent('''\
-                  expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
-                  for (const name of ["culture.html", "voyage.html"])
-                    expect(zip.getEntry(name)!.getData().toString("utf8")).toContain('href="MAIN_HOMEPAGE.html"');
-                  const stages = new Set(progressEvents.map((event) => event.stage));
-                  for (const stage of ["visual-plan", "image-search", "image-judge", "image-download", "render", "validate", "package"])
-                    expect(stages.has(stage)).toBe(true);
-                  expect(progressEvents.some((event) => /Finding visual \d+ of \d+/.test(event.message))).toBe(true);
-                  expect(progressEvents.some((event) => /Rendering 3 website pages/.test(event.message))).toBe(true);
-                  expect(progressEvents.at(-1)).toMatchObject({ stage: "package", progress: 99 });
-          ''').rstrip()
-          if text.count(anchor) != 1:
-              raise SystemExit(f"artifact-visual-build assertion anchor count={text.count(anchor)}")
-          visual_build.write_text(text.replace(anchor, replacement, 1))
+          updated, count = re.subn(
+              r'const out = await buildArtifact\(\s*config,\s*"website",\s*plan,\s*"Create a cultural website about Québec and Francophone communities with engaging visuals",\s*\);',
+              '''const progressEvents: Array<{ stage: string; message: string; progress: number }> = [];
+              const out = await buildArtifact(
+                config,
+                "website",
+                plan,
+                "Create a cultural website about Québec and Francophone communities with engaging visuals",
+                "visual-build-progress",
+                (event) => progressEvents.push(event),
+              );''',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"artifact-visual-build build regex count={count}")
+          text = updated
+          updated, count = re.subn(
+              r'expect\(zip\.getEntry\("OPEN_ME_FIRST_HOME_PAGE\.html"\)\)\.not\.toBeNull\(\);\s*for \(const name of \["culture\.html", "voyage\.html"\]\)\s*expect\(zip\.getEntry\(name\)!\.getData\(\)\.toString\("utf8"\)\)\.toContain\(\'href="MAIN_HOMEPAGE\.html"\'\);',
+              '''expect(zip.getEntry("OPEN_ME_FIRST_HOME_PAGE.html")).not.toBeNull();
+              for (const name of ["culture.html", "voyage.html"])
+                expect(zip.getEntry(name)!.getData().toString("utf8")).toContain('href="MAIN_HOMEPAGE.html"');
+              const stages = new Set(progressEvents.map((event) => event.stage));
+              for (const stage of ["visual-plan", "image-search", "image-judge", "image-download", "render", "validate", "package"])
+                expect(stages.has(stage)).toBe(true);
+              expect(progressEvents.some((event) => /Finding visual \\d+ of \\d+/.test(event.message))).toBe(true);
+              expect(progressEvents.some((event) => /Rendering 3 website pages/.test(event.message))).toBe(true);
+              expect(progressEvents.at(-1)).toMatchObject({ stage: "package", progress: 99 });''',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"artifact-visual-build assertion regex count={count}")
+          visual_build.write_text(updated)
 
-          rate_limit = Path("src/server/__tests__/image-rate-limit.test.ts")
-          rate_limit.write_text(dedent(r'''\
+          Path("src/server/__tests__/image-rate-limit.test.ts").write_text(dedent(r'''\
               import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
               import {
                 resetImageProviderStateForTests,
