@@ -9,16 +9,15 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+# Keep AGENT_RUNTIME out of Config so the existing production/test Config contract
+# remains source-compatible. V2 is branch-default; AGENT_RUNTIME=legacy is an
+# emergency environment override read at runtime.
 config = Path("src/server/config.ts")
 text = config.read_text()
-anchor = '  MCP_AUTHORIZATION: z.string().optional().default(""),\n'
-if "AGENT_RUNTIME:" not in text:
-    text = replace_once(
-        text,
-        anchor,
-        anchor + '  AGENT_RUNTIME: z.enum(["legacy", "v2"]).default("v2"),\n',
-        "config AGENT_RUNTIME",
-    )
+text = text.replace(
+    '  AGENT_RUNTIME: z.enum(["legacy", "v2"]).default("v2"),\n',
+    "",
+)
 config.write_text(text)
 
 runtime = Path("src/server/v2/artifact-agent-runtime.ts")
@@ -30,6 +29,14 @@ text = text.replace(
 text = text.replace(
     "const manifestEntries: Record<string, ReturnType<typeof file> | ReturnType<typeof localFile>> = {",
     "const manifestEntries: Record<string, any> = {",
+)
+# @openai/agents 0.17 accepts object-shaped Zod output schemas for function tools;
+# this tool intentionally returns either success or failure, so let the SDK encode
+# the returned object rather than forcing a discriminated-union output schema.
+text = text.replace(
+    "    outputSchema: BuildToolResultSchema,\n",
+    "",
+    1,
 )
 runtime.write_text(text)
 
@@ -47,7 +54,7 @@ if import_line not in text:
 
 insertion_anchor = "      let artifactRunState = isArtifact\n"
 if "agent_v2.integration_started" not in text:
-    block = r'''      if (isArtifact && this.config.AGENT_RUNTIME === "v2") {
+    block = r'''      if (isArtifact && process.env.AGENT_RUNTIME !== "legacy") {
         const existingArtifacts = this.db.listArtifacts(jobId);
         if (existingArtifacts.length) {
           const userOutput = `Completed ${job.kind} artifact: ${existingArtifacts.map((a) => a.name).join(", ")}. The finished file is ready to download.`;
@@ -96,6 +103,7 @@ if "agent_v2.integration_started" not in text:
             jobId,
             kind: job.kind,
             model: job.model,
+            runtimeOverride: process.env.AGENT_RUNTIME ?? "v2-default",
           });
           const attachments = this.db.getUploads(this.db.getJobFileIds(jobId));
           this.db.updateJob(jobId, {
@@ -197,6 +205,11 @@ if "agent_v2.integration_started" not in text:
         insertion_anchor,
         block + insertion_anchor,
         "openai-agent V2 run integration",
+    )
+else:
+    text = text.replace(
+        'if (isArtifact && this.config.AGENT_RUNTIME === "v2") {',
+        'if (isArtifact && process.env.AGENT_RUNTIME !== "legacy") {',
     )
 agent.write_text(text)
 
