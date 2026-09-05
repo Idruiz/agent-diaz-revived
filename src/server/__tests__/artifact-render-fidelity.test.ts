@@ -111,7 +111,7 @@ describe("finished artifact fidelity", () => {
     expect((built.validationReceipt as any).attempts).toEqual([]);
   }, 30_000);
 
-  it("counts and attempts every planned image query instead of silently capping at ten", async () => {
+  it("counts and attempts every explicitly user-requested image query instead of silently capping it", async () => {
     const sections = Array.from({ length: 13 }, (_, index) => ({
       heading: `Image evidence section ${index + 1}`,
       body: `Complete audience-facing explanation for image evidence section ${index + 1}, retained even when no licensed photo candidate is available.`,
@@ -135,7 +135,7 @@ describe("finished artifact fidelity", () => {
       config,
       "document",
       plan,
-      "Create a professional document with licensed evidence photographs",
+      "Create a professional document with exactly 13 licensed evidence photographs",
       "render-fidelity-images",
     );
     expect((built.validationReceipt as any).images).toMatchObject({
