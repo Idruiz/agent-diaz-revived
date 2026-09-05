@@ -13,7 +13,11 @@ import {
 } from "../v2/mcp-runtime.js";
 import {
   appendV2RevisionEntry,
+  clearV2InfrastructureRetry,
+  hasV2InfrastructureRetryPending,
   listV2RecoveryFiles,
+  readV2InfrastructureRetry,
+  recordV2InfrastructureRetry,
   writeV2AttemptPlan,
 } from "../v2/revision-ledger.js";
 import { inspectV2RuntimeReadiness } from "../v2/runtime-readiness.js";
@@ -229,4 +233,30 @@ describe("Agent Díaz v2 artifact runtime contract", () => {
       fs.rmSync(temp, { recursive: true, force: true });
     }
   });
+
+  it("persists transient infrastructure retry state across process restarts", () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "diaz-v2-infra-retry-"));
+    try {
+      expect(hasV2InfrastructureRetryPending(temp)).toBe(false);
+      const first = recordV2InfrastructureRetry(
+        temp,
+        "agent-v2-mcp-connect",
+        "503 from remote MCP",
+      );
+      expect(first.count).toBe(1);
+      expect(hasV2InfrastructureRetryPending(temp)).toBe(true);
+      const second = recordV2InfrastructureRetry(
+        temp,
+        "agent-v2-mcp-connect",
+        "503 from remote MCP",
+      );
+      expect(second.count).toBe(2);
+      expect(readV2InfrastructureRetry(temp)?.count).toBe(2);
+      clearV2InfrastructureRetry(temp);
+      expect(hasV2InfrastructureRetryPending(temp)).toBe(false);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
 });

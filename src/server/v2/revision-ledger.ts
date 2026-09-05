@@ -72,3 +72,60 @@ export function listV2RecoveryFiles(
   }
   return out;
 }
+
+
+export interface V2InfrastructureRetryState {
+  count: number;
+  ruleOrPart: string;
+  message: string;
+  updatedAt: string;
+}
+
+const INFRA_RETRY_FILENAME = "INFRA_RETRY.json";
+
+export function recordV2InfrastructureRetry(
+  workRoot: string,
+  ruleOrPart: string,
+  message: string,
+): V2InfrastructureRetryState {
+  fs.mkdirSync(workRoot, { recursive: true });
+  const target = path.join(workRoot, INFRA_RETRY_FILENAME);
+  let previous: V2InfrastructureRetryState | null = null;
+  try {
+    if (fs.existsSync(target))
+      previous = JSON.parse(fs.readFileSync(target, "utf8")) as V2InfrastructureRetryState;
+  } catch {
+    previous = null;
+  }
+  const next: V2InfrastructureRetryState = {
+    count: Math.max(0, Number(previous?.count ?? 0)) + 1,
+    ruleOrPart,
+    message,
+    updatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(target, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  return next;
+}
+
+export function readV2InfrastructureRetry(
+  workRoot: string,
+): V2InfrastructureRetryState | null {
+  const target = path.join(workRoot, INFRA_RETRY_FILENAME);
+  try {
+    if (!fs.existsSync(target)) return null;
+    const parsed = JSON.parse(fs.readFileSync(target, "utf8")) as V2InfrastructureRetryState;
+    if (!Number.isFinite(parsed.count) || parsed.count < 1 || !parsed.ruleOrPart)
+      return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function hasV2InfrastructureRetryPending(workRoot: string): boolean {
+  return readV2InfrastructureRetry(workRoot) !== null;
+}
+
+export function clearV2InfrastructureRetry(workRoot: string): void {
+  fs.rmSync(path.join(workRoot, INFRA_RETRY_FILENAME), { force: true });
+}

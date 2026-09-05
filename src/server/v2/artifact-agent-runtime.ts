@@ -433,28 +433,40 @@ export async function runV2ArtifactRuntime(
       mcpServers: mcpRuntime.descriptions,
       sandboxProvider: sandboxRuntime.provider,
     });
-    const result = await run(
-      agent,
-      `Open REQUEST.md and complete the ${input.kind} request. Use the workspace, research/code tools as needed, and iterate build_and_validate_artifact until it passes. Finish only by calling accept_validated_artifact.`,
-      {
-        maxTurns: null,
-        signal: input.signal,
-        sandbox: {
-          client: sandboxRuntime.client,
-          concurrencyLimits: {
-            manifestEntries: 4,
-            localDirFiles: 12,
+    let result: any;
+    try {
+      result = await run(
+        agent,
+        `Open REQUEST.md and complete the ${input.kind} request. Use the workspace, research/code tools as needed, and iterate build_and_validate_artifact until it passes. Finish only by calling accept_validated_artifact.`,
+        {
+          maxTurns: null,
+          signal: input.signal,
+          sandbox: {
+            client: sandboxRuntime.client,
+            concurrencyLimits: {
+              manifestEntries: 4,
+              localDirFiles: 12,
+            },
+            archiveLimits: {},
           },
-          archiveLimits: {},
         },
-      },
-    );
+      );
+    } catch (error: any) {
+      if (input.signal?.aborted || error?.name === "AbortError") throw error;
+      if (error instanceof ArtifactPipelineError) throw error;
+      const failure = classifyV2BuildFailure(error);
+      throw new ArtifactPipelineError(
+        failure.failureClass,
+        `Agent Díaz V2 runtime failure: ${failure.message}`,
+        { ruleOrPart: failure.ruleOrPart, cause: error },
+      );
+    }
 
     if (!acceptedBuildId)
       throw new ArtifactPipelineError(
-        "BUILD",
-        "Agent Díaz V2 ended without accepting a validated artifact.",
-        { ruleOrPart: "agent-v2-acceptance" },
+        "INFRA",
+        "Agent Díaz V2 agent loop ended without accepting a validated artifact; the run will resume from its revision ledger.",
+        { ruleOrPart: "agent-v2-agent-loop-ended" },
       );
     const accepted = successfulBuilds.get(acceptedBuildId);
     if (!accepted)

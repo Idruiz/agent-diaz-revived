@@ -40,6 +40,11 @@ import {
 import { personaInstructions } from "./personas.js";
 import { runV2ArtifactRuntime } from "./v2/artifact-agent-runtime.js";
 import {
+  clearV2InfrastructureRetry,
+  hasV2InfrastructureRetryPending,
+  recordV2InfrastructureRetry,
+} from "./v2/revision-ledger.js";
+import {
   clearsJavierRewriteFloor,
   inspectJavierStyle,
   javierStyleScore,
@@ -862,14 +867,24 @@ export class AgentRunner {
   }
 
   resume(): void {
+    const v2Enabled = process.env.AGENT_RUNTIME !== "legacy";
     for (const j of this.db
       .listJobs(100)
-      .filter(
-        (j) =>
-          j.kind !== "chat" &&
-          ["queued", "running", "building"].includes(j.status),
-      ))
+      .filter((j) => {
+        if (j.kind === "chat") return false;
+        if (["queued", "running", "building"].includes(j.status)) return true;
+        if (!v2Enabled || j.status !== "blocked") return false;
+        return hasV2InfrastructureRetryPending(
+          path.join(this.config.artifactDir, ".agent-v2", j.id),
+        );
+      })) {
+      if (j.status === "blocked")
+        log("warn", "agent_v2.infrastructure_retry_resumed_after_restart", {
+          jobId: j.id,
+          kind: j.kind,
+        });
       this.start(j.id);
+    }
   }
 
   async cancel(jobId: string): Promise<void> {
@@ -2245,6 +2260,10 @@ export class AgentRunner {
         });
     } catch (e: any) {
       const message = e instanceof Error ? e.message : "Unknown job failure";
+      if (String(this.db.getJob(jobId)?.status ?? "") === "cancelled") {
+        log("info", "job.cancelled_preserved", { jobId });
+        return;
+      }
       const current = this.db.getJob(jobId);
       const artifactKinds = [
         "research",
@@ -2286,30 +2305,64 @@ export class AgentRunner {
           diagnosticPath: e.diagnosticPath,
           error: message,
         });
-        if (
-          blocked &&
-          e.ruleOrPart !== "agent-v2-configuration" &&
-          this.config.NODE_ENV !== "test"
-        ) {
-          const state = this.db.getArtifactRunState(jobId);
-          if (!state) return;
-          const latest = state?.attempts.at(-1);
-          const duplicateCount = latest
-            ? state!.attempts.filter(
-                (attempt) => attempt.fingerprint === latest.fingerprint,
-              ).length
-            : 1;
-          if (duplicateCount < 2) {
-            const delayMs = Math.min(
-              60_000,
-              5000 * 2 ** Math.max(0, duplicateCount - 1),
-            );
-            log("warn", "artifact.infrastructure_retry_scheduled", {
-              jobId,
-              delayMs,
-              fingerprint: latest?.fingerprint ?? null,
-            });
-            setTimeout(() => this.start(jobId), delayMs);
+        if (blocked && this.config.NODE_ENV !== "test") {
+          const v2Enabled = process.env.AGENT_RUNTIME !== "legacy";
+          const v2WorkRoot = path.join(
+            this.config.artifactDir,
+            ".agent-v2",
+            jobId,
+          );
+          if (v2Enabled) {
+            if (e.ruleOrPart === "agent-v2-configuration") {
+              clearV2InfrastructureRetry(v2WorkRoot);
+              log("error", "agent_v2.configuration_blocked_no_retry", {
+                jobId,
+                ruleOrPart: e.ruleOrPart,
+                error: message,
+              });
+            } else {
+              const retryState = recordV2InfrastructureRetry(
+                v2WorkRoot,
+                e.ruleOrPart,
+                message,
+              );
+              const delayMs = Math.min(
+                60_000,
+                5000 * 2 ** Math.min(4, Math.max(0, retryState.count - 1)),
+              );
+              this.db.updateJob(jobId, {
+                status: "blocked",
+                message: `blocked: infrastructure; automatic retry ${retryState.count} scheduled`,
+                error: message,
+              });
+              log("warn", "agent_v2.infrastructure_retry_scheduled", {
+                jobId,
+                delayMs,
+                retryCount: retryState.count,
+                ruleOrPart: e.ruleOrPart,
+              });
+              setTimeout(() => this.start(jobId), delayMs);
+            }
+          } else {
+            const state = this.db.getArtifactRunState(jobId);
+            const latest = state?.attempts.at(-1);
+            const duplicateCount = latest
+              ? state!.attempts.filter(
+                  (attempt) => attempt.fingerprint === latest.fingerprint,
+                ).length
+              : 1;
+            if (duplicateCount < 2) {
+              const delayMs = Math.min(
+                60_000,
+                5000 * 2 ** Math.max(0, duplicateCount - 1),
+              );
+              log("warn", "artifact.infrastructure_retry_scheduled", {
+                jobId,
+                delayMs,
+                fingerprint: latest?.fingerprint ?? null,
+              });
+              setTimeout(() => this.start(jobId), delayMs);
+            }
           }
         }
         return;
