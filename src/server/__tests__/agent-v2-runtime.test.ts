@@ -24,6 +24,8 @@ import { inspectV2RuntimeReadiness } from "../v2/runtime-readiness.js";
 import {
   assertV2SandboxProviderReady,
   resolveV2SandboxProvider,
+  V2_PERSIST_MOUNT,
+  V2_WORKSPACE_ROOT,
 } from "../v2/sandbox-runtime.js";
 import { ArtifactPipelineError } from "../artifact-quality.js";
 
@@ -153,6 +155,38 @@ describe("Agent Díaz v2 artifact runtime contract", () => {
     ).not.toThrow();
   });
 
+  it("requires authenticated Cloudflare bridge and durable R2 binding in production", () => {
+    expect(() =>
+      assertV2SandboxProviderReady("cloudflare", {
+        NODE_ENV: "production",
+        CLOUDFLARE_SANDBOX_WORKER_URL: "https://sandbox.example.workers.dev",
+      }),
+    ).toThrow(/CLOUDFLARE_SANDBOX_API_KEY/);
+
+    expect(() =>
+      assertV2SandboxProviderReady("cloudflare", {
+        NODE_ENV: "production",
+        CLOUDFLARE_SANDBOX_WORKER_URL: "https://sandbox.example.workers.dev",
+        CLOUDFLARE_SANDBOX_API_KEY: "secret",
+      }),
+    ).toThrow(/CLOUDFLARE_SANDBOX_R2_BINDING/);
+
+    expect(() =>
+      assertV2SandboxProviderReady("cloudflare", {
+        NODE_ENV: "production",
+        CLOUDFLARE_SANDBOX_WORKER_URL: "https://sandbox.example.workers.dev",
+        CLOUDFLARE_SANDBOX_API_KEY: "secret",
+        CLOUDFLARE_SANDBOX_R2_BINDING: "not-valid-binding!",
+      }),
+    ).toThrow(/valid Worker binding identifier/);
+  });
+
+  it("uses one canonical Linux workspace and a durable mounted subdirectory", () => {
+    expect(V2_WORKSPACE_ROOT).toBe("/workspace");
+    expect(V2_PERSIST_MOUNT).toBe("/workspace/persist");
+    expect(V2_PERSIST_MOUNT.startsWith(`${V2_WORKSPACE_ROOT}/`)).toBe(true);
+  });
+
   it("supports explicit Docker and Unix sandbox selection", () => {
     expect(resolveV2SandboxProvider({ AGENT_SANDBOX_PROVIDER: "docker" })).toBe(
       "docker",
@@ -178,8 +212,10 @@ describe("Agent Díaz v2 artifact runtime contract", () => {
       AGENT_RUNTIME: "v2",
       CLOUDFLARE_SANDBOX_WORKER_URL: "https://sandbox.example.workers.dev",
       CLOUDFLARE_SANDBOX_API_KEY: "super-secret-value",
+      CLOUDFLARE_SANDBOX_R2_BINDING: "AGENT_WORKSPACE",
     });
     expect(ready.ready).toBe(true);
+    expect(ready.warnings.join(" ")).toMatch(/POSIX sentinel/);
     expect(JSON.stringify(ready)).not.toContain("super-secret-value");
   });
 
@@ -258,5 +294,4 @@ describe("Agent Díaz v2 artifact runtime contract", () => {
       fs.rmSync(temp, { recursive: true, force: true });
     }
   });
-
 });
