@@ -1,0 +1,19 @@
+{
+  "name": "@agent-diaz/cloudflare-sandbox-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "typecheck": "wrangler types && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/sandbox": "0.12.9",
+    "@cloudflare/workers-types": "4.20251126.0",
+    "hono": "4.13.0",
+    "typescript": "5.9.3",
+    "wrangler": "4.102.0"
+  }
+}
