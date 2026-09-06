@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "codex/**"
+      - "upgrade/**"
       - variant/agent-diaz-v2
   pull_request:
 
@@ -18,7 +19,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,6 +34,34 @@ jobs:
         run: npm ci
       - name: Verify application
         run: npm run verify
+      - name: Typecheck Cloudflare sandbox bridge
+        run: |
+          npm install --prefix cloudflare/sandbox-bridge --no-package-lock
+          npm run typecheck --prefix cloudflare/sandbox-bridge
+      - name: Build Cloudflare real-filesystem browser sandbox image
+        run: |
+          docker build \
+            --tag agent-diaz-cloudflare-sandbox:${{ github.sha }} \
+            cloudflare/sandbox-bridge
+      - name: Prove POSIX filesystem plus Puppeteer and MCP share the Cloudflare image workspace
+        run: |
+          docker run --rm --entrypoint /bin/sh \
+            agent-diaz-cloudflare-sandbox:${{ github.sha }} \
+            -lc '
+              set -eu
+              token="ci-$RANDOM-$$"
+              printf "%s" "$token" > /workspace/posix.tmp
+              mv /workspace/posix.tmp /workspace/posix.renamed
+              test "$(cat /workspace/posix.renamed)" = "$token"
+              rm /workspace/posix.renamed
+              command -v chromium
+              command -v playwright-mcp
+              command -v chrome-devtools-mcp
+              command -v mcp-server-filesystem
+              chrome-devtools-mcp --help >/dev/null
+              node /opt/agent-diaz-tools/browser-smoke.mjs
+              node /opt/agent-diaz-tools/mcp-smoke.mjs
+            '
       - name: Build containerized exact-prompt regression environment
         run: docker build --target regression --tag agent-diaz-regression:${{ github.sha }} .
       - name: Generate checkpoint-3 golden matrix inside container
