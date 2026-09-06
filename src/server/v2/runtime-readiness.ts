@@ -38,14 +38,15 @@ export function inspectV2RuntimeReadiness(
   try {
     sandboxProvider = resolveV2SandboxProvider(env);
     assertV2SandboxProviderReady(sandboxProvider, env);
+    if (sandboxProvider === "cloudflare")
+      warnings.push(
+        "Cloudflare deployment configuration is present. Every real sandbox session still performs a live /workspace POSIX sentinel, R2 mount sentinel, and browser/MCP toolchain preflight before the model is allowed to use it.",
+      );
     if (sandboxProvider === "docker")
       warnings.push(
         "Docker sandbox readiness is verified when the first sandbox session is created; the host must expose a working Docker daemon.",
       );
-    if (
-      sandboxProvider === "unix" &&
-      env.NODE_ENV === "production"
-    )
+    if (sandboxProvider === "unix" && env.NODE_ENV === "production")
       warnings.push(
         "Unix-local sandbox is running under an explicit unsafe production override.",
       );
