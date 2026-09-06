@@ -1,81 +1,138 @@
 # Agent Díaz V2 — 2026 Agentic Architecture
 
-Branch: `variant/agent-diaz-v2`
+Upgrade branch: `upgrade/cloudflare-real-fs`
 
-Production `main` and `snapshot/main-2026-09-04-green` are intentionally not modified by this work.
+Rollback references remain intact. This branch is promoted to `main` only after the complete repository and Cloudflare-image verification gates pass.
 
 ## Goal
 
-Agent Díaz V2 is not a scripted sequence of model calls. It is an agentic artifact-production runtime that owns a real workspace and a real revision loop, and it keeps working until the deterministic production validator accepts a downloadable artifact.
+Agent Díaz V2 is an agentic artifact-production runtime with a real workspace and an iterative repair loop. It keeps working until the existing deterministic production validators accept a downloadable artifact.
 
-The existing Agent Díaz renderers, visual hardening, PowerPoint/PDF/HTML export behavior, and deterministic validators are retained. V2 changes the orchestration layer above them rather than throwing away the parts that already work.
+The proven Agent Díaz renderers, PowerPoint/PDF/HTML export behavior, visual hardening, validators, persistence, and UI/API contracts are retained. V2 modernizes the orchestration and execution layer around them.
 
 ## Core runtime
 
 - OpenAI Agents SDK `@openai/agents` 0.17.0
 - OpenAI Agents extensions `@openai/agents-extensions` 0.17.0
 - `SandboxAgent` execution harness
-- Real sandbox workspace with filesystem editing, shell execution, patching, image inspection, and context compaction
-- Hosted OpenAI web search and code interpreter tools
-- Multiple MCP servers at the same time through Streamable HTTP and stdio transports
-- Existing Agent Díaz deterministic renderers and validators exposed as an agent tool
-- Explicit terminal acceptance tool that can accept only a build that already passed validation
-- Agent SDK tracing plus Agent Díaz structured application logs
-- Cancellation through `AbortSignal`
+- real sandbox filesystem, shell, patching, file inspection, and context compaction
+- hosted OpenAI web search and code interpreter tools
+- external MCP support through Streamable HTTP, plus reviewed stdio for non-production/development use
+- existing Agent Díaz renderer/validator exposed as `build_and_validate_artifact`
+- explicit terminal `accept_validated_artifact` gate
+- structured logs, tracing, cancellation, revision history, and restart-safe infrastructure retry state
 
 ## Artifact loop
 
-1. The agent receives the current request and explicitly attached files in `/workspace`.
-2. It researches current or factual claims when needed and uses code execution for quantitative work.
-3. It develops a complete `ArtifactPlan` in the agent loop.
-4. It calls `build_and_validate_artifact`.
-5. The existing deterministic builder renders the real PPTX/DOCX/ZIP artifact and runs the real production validators.
-6. If validation fails, the agent receives the exact failure class, rule, diagnostic path when available, and repair guidance.
-7. The agent revises the plan, layout, content, image queries, or retries a transient infrastructure operation as appropriate.
-8. It calls `build_and_validate_artifact` again. V2 has no legacy two-repair/six-LLM-call ceiling controlling this loop.
-9. Only a successful validated build receives a `buildId`.
-10. The run can finish successfully only by calling `accept_validated_artifact` with one of those validated build IDs.
-11. The accepted file is promoted into the normal Agent Díaz artifact store and becomes downloadable through the existing UI/API.
-12. Presentation artifacts continue to expose the existing PowerPoint, PDF, and browser-HTML download paths from the accepted PPTX.
+1. The request and explicitly attached files are materialized into the sandbox `/workspace`.
+2. The agent researches or computes when needed and develops a complete `ArtifactPlan`.
+3. It calls `build_and_validate_artifact`.
+4. The existing deterministic builder renders the actual PPTX/DOCX/ZIP artifact and runs the production validators.
+5. A rejection returns the exact failure class/rule plus model-readable diagnostic evidence when available.
+6. The agent revises content, layout, assets, or infrastructure strategy and rebuilds. There is no legacy two-repair/six-model-call ceiling controlling this loop.
+7. Only a validated build receives a `buildId`.
+8. The run succeeds only when `accept_validated_artifact` is called with a real validated `buildId` from that run.
+9. The accepted artifact is promoted into the normal Agent Díaz artifact store. Presentations continue to expose PPTX, PDF, and browser-HTML downloads.
 
-The model cannot finish by merely saying an artifact is ready. The acceptance tool is the terminal production-readiness gate.
+The model cannot finish merely by claiming an artifact is ready.
 
-## Failure policy
+## Failure and recovery policy
 
-- `PLAN_CONTENT`: repair missing/incorrect requirements, structure, or content and rebuild.
-- `PLAN_NORMALIZABLE`: normalize the plan without discarding valid user requirements and rebuild.
-- `ASSET`: improve image queries or retry transient image acquisition without degrading requested visual coverage.
-- `BUILD`: use the deterministic rule/diagnostic to revise layout or content and rebuild.
-- `INFRA`: preserve good content and retry the infrastructure operation rather than rewriting the artifact to dodge an outage.
+- `PLAN_CONTENT`: repair missing/incorrect requirements or structure.
+- `PLAN_NORMALIZABLE`: normalize without discarding valid user requirements.
+- `ASSET`: improve queries or retry transient acquisition while preserving requested visual coverage.
+- `BUILD`: use validator/diagnostic evidence to revise layout or content.
+- `INFRA`: preserve good artifact work and retry the external dependency rather than degrading content.
 
-The runtime must not fail silently. Failures and retries are recorded through structured job/application logs. The only normal reasons to end without a downloadable artifact are explicit user cancellation or an unrecoverable external dependency.
+Each attempt stores the complete plan plus append-only `REVISION_HISTORY.jsonl`. Recovery materializes `recovery/LATEST_PLAN.json` and `recovery/REVISION_HISTORY.jsonl` into a new sandbox after process restart. Repeated identical non-infrastructure failures increase `stagnationCount` and explicitly force a strategy change.
 
-## Filesystem and sandbox isolation
+Transient provider/sandbox/MCP failures persist `INFRA_RETRY.json` and use capped exponential retry across process restarts. Permanent configuration failures do not loop forever. User cancellation is terminal.
 
-The sandbox filesystem is the canonical agent workspace. Exact uploaded files are materialized into `/workspace/inputs`; V2 does not grant the agent the broader host upload directory.
+## Canonical production filesystem
 
-Sandbox backend selection is pluggable:
+Cloudflare Sandbox is the production execution plane.
 
-- `cloudflare`: hosted Cloudflare Sandbox bridge through the OpenAI Agents extension client
-- `docker`: isolated local Docker sandbox
-- `unix`: Unix-local sandbox for development/fallback
+The important distinction is:
 
-Configuration:
+- R2 alone is object storage, not a POSIX filesystem.
+- the Cloudflare Sandbox container supplies the real Linux filesystem;
+- R2 is mounted into that Linux namespace for durable storage.
+
+The canonical paths are:
 
 ```text
-AGENT_SANDBOX_PROVIDER=cloudflare|docker|unix
-CLOUDFLARE_SANDBOX_WORKER_URL=https://<your-sandbox-bridge-worker>
-CLOUDFLARE_SANDBOX_API_KEY=<optional bridge bearer key>
-AGENT_SANDBOX_DOCKER_IMAGE=node:22-bookworm-slim
+/workspace          real Linux sandbox filesystem
+/workspace/inputs   explicitly attached user files
+/workspace/persist  R2-backed durable mount
 ```
 
-If `AGENT_SANDBOX_PROVIDER` is not set but `CLOUDFLARE_SANDBOX_WORKER_URL` is present, V2 automatically selects the hosted Cloudflare sandbox. Otherwise it falls back to Unix-local and emits a warning when that fallback is used in production. This keeps V2 usable immediately while allowing production shell/filesystem execution to move behind a hosted isolation boundary without another architectural rewrite.
+`/workspace` remains the fast working tree. The Worker R2 binding is mounted at `/workspace/persist` rather than over the workspace root, so durable storage does not hide the normal sandbox tree.
 
-## MCP
+Every Cloudflare sandbox session is preflighted before the model can use it:
 
-MCP is an extension layer for external systems and specialist tools; it is not being used as a fake replacement for the native sandbox filesystem.
+1. mount the configured R2 Worker binding at `/workspace/persist` using a per-job prefix;
+2. prove create → rename → read → delete semantics in `/workspace`;
+3. repeat that filesystem sentinel on `/workspace/persist`;
+4. confirm Node, Chromium, Playwright MCP, Chrome DevTools MCP, filesystem MCP, and Puppeteer are installed in the same container.
 
-V2 supports multiple MCP servers simultaneously through `MCP_SERVERS_JSON`. For example:
+A failure at any of those gates closes the session and becomes an infrastructure failure instead of silently falling back to a fake/host filesystem.
+
+## Cloudflare production requirements
+
+Production Cloudflare configuration fails closed unless all of these are present:
+
+```text
+AGENT_RUNTIME=v2
+AGENT_SANDBOX_PROVIDER=cloudflare
+CLOUDFLARE_SANDBOX_WORKER_URL=https://<agent-diaz-sandbox-bridge>
+CLOUDFLARE_SANDBOX_API_KEY=<bridge bearer secret>
+CLOUDFLARE_SANDBOX_R2_BINDING=AGENT_WORKSPACE
+```
+
+The repository includes `cloudflare/sandbox-bridge/`, which owns:
+
+- the official `@cloudflare/sandbox` bridge Worker;
+- Durable Object/Container bindings;
+- the R2 binding `AGENT_WORKSPACE`;
+- the custom sandbox image;
+- Chromium and the browser/MCP toolchain;
+- deployment and CI smoke tests.
+
+The configured R2 bucket is `agent-diaz-v2-workspace`.
+
+Cloudflare Sandbox/Containers requires Workers Paid. Warm-pool target is `0` by default so merely deploying the bridge does not intentionally maintain idle pre-warmed containers.
+
+## Browser and MCP execution boundary
+
+Browser tooling that must inspect or manipulate Agent Díaz workspace files lives inside the Cloudflare sandbox image:
+
+- Chromium
+- Playwright MCP
+- Chrome DevTools MCP
+- MCP filesystem server
+- Puppeteer
+
+That means these processes and the agent shell see the same `/workspace` namespace.
+
+`MCP_SERVERS_JSON` remains available for external MCP systems, especially Streamable HTTP services. Its stdio mode runs on the Agent Díaz application host. That host is not the Cloudflare sandbox and therefore cannot be treated as sharing `/workspace`; production rejects host-level stdio MCP by default unless explicitly overridden.
+
+The current OpenAI Agents 0.17 Cloudflare client does not implement exposed-port resolution from a sandbox back to the app host. V2 therefore does not fake a localhost connection from Render to a sandbox-local Playwright server. Browser/filesystem automation that depends on the canonical workspace stays inside the sandbox execution boundary. External MCP stays external.
+
+This boundary can later be simplified if the provider adds supported sandbox port resolution; the artifact loop itself will not need a rewrite.
+
+## Sandbox backend compatibility
+
+Backend selection remains pluggable:
+
+- `cloudflare`: required/recommended production isolation boundary
+- `docker`: local isolated development/test backend
+- `unix`: development fallback only; production refuses it unless the emergency `AGENT_SANDBOX_ALLOW_UNSAFE_UNIX=true` override is deliberately set
+
+If `CLOUDFLARE_SANDBOX_WORKER_URL` is configured and no explicit provider is selected, V2 selects Cloudflare automatically.
+
+## External MCP configuration
+
+Example external server:
 
 ```json
 [
@@ -83,24 +140,15 @@ V2 supports multiple MCP servers simultaneously through `MCP_SERVERS_JSON`. For 
     "transport": "http",
     "name": "Research MCP",
     "url": "https://example.com/mcp",
-    "authorizationEnv": "RESEARCH_MCP_AUTH"
-  },
-  {
-    "transport": "stdio",
-    "name": "Filesystem MCP",
-    "fullCommand": "npx -y @modelcontextprotocol/server-filesystem /workspace"
-  },
-  {
-    "transport": "stdio",
-    "name": "Playwright MCP",
-    "fullCommand": "npx -y @playwright/mcp@latest --headless"
+    "authorizationEnv": "RESEARCH_MCP_AUTH",
+    "allowedTools": ["search", "fetch"]
   }
 ]
 ```
 
-Server names must be unique. HTTP credentials can be referenced by environment-variable name rather than embedded in the JSON. MCP tools are server-prefixed to avoid collisions, connection failures clean up already-connected servers, and all servers are closed at the end of the run.
+Server names must be unique. Credentials may be referenced by environment-variable name instead of embedded in JSON. Per-server allow/block filters are supported. Partially connected runtimes are rolled back on failure and servers close in reverse order.
 
-The existing single-server settings remain supported for backward compatibility:
+Legacy single-remote-server settings remain supported:
 
 ```text
 MCP_SERVER_URL
@@ -108,34 +156,38 @@ MCP_SERVER_LABEL
 MCP_AUTHORIZATION
 ```
 
-## Compatibility and rollout
+## Diagnostics and acceptance
 
-- Real artifact jobs on `variant/agent-diaz-v2` use V2 by default.
-- `AGENT_RUNTIME=legacy` is an emergency compatibility override on the V2 branch.
-- Existing regression tests remain on the proven legacy harness unless a V2 test explicitly opts into `AGENT_RUNTIME=v2`; this preserves renderer/validator regression coverage while the new harness is tested separately.
-- `main` is unchanged.
-- The frozen rollback branch `snapshot/main-2026-09-04-green` is unchanged.
+Rejected builds return structured text plus, when available, the preserved failed artifact as tool file output. PPTX/DOCX failures also receive a LibreOffice-rendered diagnostic PDF when conversion succeeds. Host-only diagnostic paths are never treated as sufficient evidence for a remote model.
 
-## Maturity note
+`GET /healthz` reports process liveness.
 
-The OpenAI Agents SDK is the production agent runtime used by V2. The newer Sandbox Agents layer is still marked beta upstream, so the sandbox provider is deliberately isolated behind a small adapter. Agent Díaz can move among Cloudflare-hosted, Docker, or local sandbox implementations without changing the artifact loop, MCP layer, validators, or UI contract.
+`GET /readyz` reports static deployment readiness and returns 503 for unsafe/incomplete V2 configuration. In Cloudflare production, static readiness requires the authenticated bridge and R2 binding configuration. The first real job still must pass the live sandbox preflight described above.
 
+`GET /version` exposes non-secret runtime metadata only.
 
-## Final production-readiness contract
+## CI production gate
 
-V2 now separates liveness from agent readiness:
+Promotion is blocked unless CI passes all existing Agent Díaz tests plus the Cloudflare execution proof:
 
-- `GET /healthz` answers whether the web process is alive.
-- `GET /readyz` answers whether the selected V2 sandbox/MCP configuration is safe enough to start artifact work. It returns HTTP 503 when the agent runtime is not deployable.
-- `GET /version` exposes only non-secret runtime metadata: Agents SDK version, selected runtime, sandbox provider, readiness flag, and MCP server count.
+1. root TypeScript, tests, production build, runtime smoke, and reviewed audit;
+2. Cloudflare bridge Worker typecheck;
+3. custom Cloudflare sandbox image build;
+4. real POSIX create/rename/read/delete in `/workspace`;
+5. Chromium, Playwright MCP, Chrome DevTools MCP, filesystem MCP, and Puppeteer presence;
+6. real Puppeteer navigation/render/screenshot using a file written in `/workspace`;
+7. real filesystem MCP read from `/workspace`;
+8. real Playwright MCP navigation to HTML written in `/workspace`;
+9. checkpoint-3 golden artifact matrix;
+10. exact-prompt presentation route regression;
+11. production Agent Díaz container build;
+12. preservation of the regression artifact packages.
 
-Production fails closed for agent shell execution. Unix-local is accepted for development, but production requires a hosted Cloudflare sandbox or an explicitly selected Docker sandbox unless `AGENT_SANDBOX_ALLOW_UNSAFE_UNIX=true` is deliberately set as an emergency override.
+This proves the repository and the exact Cloudflare container image contract. It does not substitute for the final paid-provider smoke after the Cloudflare Worker, R2 bucket, and secrets are actually deployed.
 
-Stdio MCP servers are likewise development-friendly but execute on the application host. Production therefore prefers Streamable HTTP MCP and rejects stdio by default unless `AGENT_MCP_ALLOW_STDIO_IN_PRODUCTION=true` is deliberately enabled. `MCP_SERVERS_JSON` supports per-server `allowedTools` and `blockedTools` filters.
+## Rollout
 
-Every rejected build now returns model-readable diagnostic evidence. When available, the exact preserved failed artifact is attached as a function-tool file output; PPTX/DOCX failures also receive a LibreOffice-rendered diagnostic PDF when conversion succeeds. Host filesystem diagnostic paths are never relied on as the model's evidence channel.
-
-Every V2 attempt persists its complete ArtifactPlan plus an append-only `REVISION_HISTORY.jsonl`. If the app process restarts before completion, the latest plan and revision ledger are materialized into `recovery/` in the new sandbox so the agent can resume from the last known strategy instead of blindly restarting. Repeated identical non-infrastructure failures produce a `stagnationCount` and explicit instruction to change strategy rather than dead-horse the same plan.
-
-
-Transient V2 control-plane failures are also restart-safe. A provider, hosted-sandbox, or MCP outage writes an `INFRA_RETRY.json` marker beside the revision ledger, schedules capped exponential retry, and leaves the job `blocked` only while the external dependency is unavailable. `AgentRunner.resume()` recognizes that marker after a process restart and restarts the job automatically. Permanent `agent-v2-configuration` failures deliberately clear the marker and remain blocked until deployment configuration is corrected, preventing a bad configuration from becoming an infinite retry loop. User cancellation is terminal and cannot be overwritten by a racing failure handler.
+- `AGENT_RUNTIME=legacy` remains an emergency compatibility switch.
+- existing deterministic renderer/validator regression coverage remains intact.
+- no production deployment is performed merely by merging this code.
+- after repository CI is green and the branch is promoted, the live rollout is: enable Workers Paid, create the R2 bucket, deploy the included bridge, configure the application environment, confirm `/readyz`, then run a real provider artifact and repair-loop smoke test.
