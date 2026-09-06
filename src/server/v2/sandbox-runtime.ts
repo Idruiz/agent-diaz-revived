@@ -1,9 +1,5 @@
 import crypto from "node:crypto";
-import {
-  CloudflareSandboxClient,
-  type CloudflareSandboxClientOptions,
-  type CloudflareSandboxSession,
-} from "@openai/agents-extensions/sandbox/cloudflare";
+import { CloudflareSandboxClient } from "@openai/agents-extensions/sandbox/cloudflare";
 import {
   DockerSandboxClient,
   UnixLocalSandboxClient,
@@ -218,37 +214,30 @@ export async function preflightV2CloudflareSession(args: {
   });
 }
 
-class AgentDiazCloudflareSandboxClient extends CloudflareSandboxClient {
-  private readonly agentDiazJobId: string;
-  private readonly agentDiazEnv: NodeJS.ProcessEnv;
+function attachAgentDiazCloudflarePreflight(
+  client: CloudflareSandboxClient,
+  jobId: string,
+  env: NodeJS.ProcessEnv,
+): CloudflareSandboxClient {
+  // CloudflareSandboxClient.create has overloads. Wrapping the instance method
+  // and casting the replacement back to the exact overloaded member type keeps
+  // the SDK contract intact while ensuring every session is preflighted.
+  const originalCreate = client.create.bind(client) as (
+    ...args: unknown[]
+  ) => Promise<V2SandboxSessionLike>;
 
-  constructor(
-    options: CloudflareSandboxClientOptions,
-    jobId: string,
-    env: NodeJS.ProcessEnv,
-  ) {
-    super(options);
-    this.agentDiazJobId = jobId;
-    this.agentDiazEnv = env;
-  }
-
-  override async create(
-    args?: Parameters<CloudflareSandboxClient["create"]>[0],
-    manifestOptions?: Parameters<CloudflareSandboxClient["create"]>[1],
-  ): Promise<CloudflareSandboxSession> {
-    const session = await super.create(args, manifestOptions);
+  client.create = (async (...args: unknown[]) => {
+    const session = await originalCreate(...args);
     try {
-      await preflightV2CloudflareSession({
-        session,
-        jobId: this.agentDiazJobId,
-        env: this.agentDiazEnv,
-      });
+      await preflightV2CloudflareSession({ session, jobId, env });
       return session;
     } catch (error) {
       await session.close?.().catch(() => {});
       throw error;
     }
-  }
+  }) as CloudflareSandboxClient["create"];
+
+  return client;
 }
 
 export function createV2SandboxRuntime(
@@ -260,8 +249,8 @@ export function createV2SandboxRuntime(
 
   if (provider === "cloudflare") {
     const workerUrl = env.CLOUDFLARE_SANDBOX_WORKER_URL!.trim();
-    const client = new AgentDiazCloudflareSandboxClient(
-      {
+    const client = attachAgentDiazCloudflarePreflight(
+      new CloudflareSandboxClient({
         workerUrl,
         ...(env.CLOUDFLARE_SANDBOX_API_KEY
           ? { apiKey: env.CLOUDFLARE_SANDBOX_API_KEY }
@@ -270,7 +259,7 @@ export function createV2SandboxRuntime(
         createTimeoutMs: 120_000,
         requestTimeoutMs: 120_000,
         archiveLimits: {},
-      },
+      }),
       jobId,
       env,
     );
