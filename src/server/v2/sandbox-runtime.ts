@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
-import { CloudflareSandboxClient } from "@openai/agents-extensions/sandbox/cloudflare";
+import {
+  CloudflareSandboxClient,
+  type CloudflareSandboxClientOptions,
+  type CloudflareSandboxSession,
+} from "@openai/agents-extensions/sandbox/cloudflare";
 import {
   DockerSandboxClient,
   UnixLocalSandboxClient,
@@ -88,61 +92,6 @@ export function assertV2SandboxProviderReady(
     throw new Error(
       "Agent Díaz V2 refuses Unix-local shell execution in production. Configure CLOUDFLARE_SANDBOX_WORKER_URL, select AGENT_SANDBOX_PROVIDER=docker, or explicitly set AGENT_SANDBOX_ALLOW_UNSAFE_UNIX=true for an emergency override.",
     );
-}
-
-export function createV2SandboxRuntime(
-  jobId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): V2SandboxRuntime {
-  const provider = resolveV2SandboxProvider(env);
-  assertV2SandboxProviderReady(provider, env);
-
-  if (provider === "cloudflare") {
-    const workerUrl = env.CLOUDFLARE_SANDBOX_WORKER_URL!.trim();
-    const client = new CloudflareSandboxClient({
-      workerUrl,
-      ...(env.CLOUDFLARE_SANDBOX_API_KEY
-        ? { apiKey: env.CLOUDFLARE_SANDBOX_API_KEY }
-        : {}),
-      timeoutMs: 120_000,
-      createTimeoutMs: 120_000,
-      requestTimeoutMs: 120_000,
-      archiveLimits: {},
-    });
-    log("info", "agent_v2.sandbox_selected", {
-      jobId,
-      provider,
-      hosted: true,
-    });
-    return { provider, client };
-  }
-
-  if (provider === "docker") {
-    const image =
-      env.AGENT_SANDBOX_DOCKER_IMAGE?.trim() || "node:22-bookworm-slim";
-    const client = new DockerSandboxClient({ image });
-    log("info", "agent_v2.sandbox_selected", {
-      jobId,
-      provider,
-      hosted: false,
-      image,
-    });
-    return { provider, client };
-  }
-
-  log(
-    env.NODE_ENV === "production" ? "warn" : "info",
-    "agent_v2.sandbox_selected",
-    {
-      jobId,
-      provider,
-      hosted: false,
-      unsafeProductionOverride:
-        env.NODE_ENV === "production" &&
-        enabled(env.AGENT_SANDBOX_ALLOW_UNSAFE_UNIX),
-    },
-  );
-  return { provider, client: new UnixLocalSandboxClient() };
 }
 
 async function mountCloudflareR2Binding(
@@ -244,45 +193,123 @@ async function runCloudflareToolchainSentinel(
     );
 }
 
-export async function prepareV2SandboxSession(args: {
-  runtime: V2SandboxRuntime;
-  manifest: unknown;
+export async function preflightV2CloudflareSession(args: {
+  session: V2SandboxSessionLike;
   jobId: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<V2SandboxSessionLike> {
+}): Promise<void> {
   const env = args.env ?? process.env;
-  const client = args.runtime.client as any;
-  const session = (await client.create({
-    manifest: args.manifest,
-    concurrencyLimits: {
-      manifestEntries: 4,
-      localDirFiles: 12,
-    },
-    archiveLimits: {},
-  })) as V2SandboxSessionLike;
+  const mounted = await mountCloudflareR2Binding(args.session, args.jobId, env);
+  await runFilesystemSentinel(args.session, V2_WORKSPACE_ROOT, "workspace");
+  if (mounted)
+    await runFilesystemSentinel(
+      args.session,
+      V2_PERSIST_MOUNT,
+      "persistent R2 mount",
+    );
+  await runCloudflareToolchainSentinel(args.session);
 
-  try {
-    const mounted =
-      args.runtime.provider === "cloudflare"
-        ? await mountCloudflareR2Binding(session, args.jobId, env)
-        : false;
-    await runFilesystemSentinel(session, V2_WORKSPACE_ROOT, "workspace");
-    if (mounted)
-      await runFilesystemSentinel(session, V2_PERSIST_MOUNT, "persistent R2 mount");
-    if (args.runtime.provider === "cloudflare")
-      await runCloudflareToolchainSentinel(session);
+  log("info", "agent_v2.sandbox_preflight_passed", {
+    jobId: args.jobId,
+    provider: "cloudflare",
+    workspace: V2_WORKSPACE_ROOT,
+    persistentMount: mounted ? V2_PERSIST_MOUNT : null,
+    browserToolchain: "verified",
+  });
+}
 
-    log("info", "agent_v2.sandbox_preflight_passed", {
-      jobId: args.jobId,
-      provider: args.runtime.provider,
-      workspace: V2_WORKSPACE_ROOT,
-      persistentMount: mounted ? V2_PERSIST_MOUNT : null,
-      browserToolchain:
-        args.runtime.provider === "cloudflare" ? "verified" : "not-required",
-    });
-    return session;
-  } catch (error) {
-    await session.close?.().catch(() => {});
-    throw error;
+class AgentDiazCloudflareSandboxClient extends CloudflareSandboxClient {
+  private readonly agentDiazJobId: string;
+  private readonly agentDiazEnv: NodeJS.ProcessEnv;
+
+  constructor(
+    options: CloudflareSandboxClientOptions,
+    jobId: string,
+    env: NodeJS.ProcessEnv,
+  ) {
+    super(options);
+    this.agentDiazJobId = jobId;
+    this.agentDiazEnv = env;
   }
+
+  override async create(
+    args?: Parameters<CloudflareSandboxClient["create"]>[0],
+    manifestOptions?: Parameters<CloudflareSandboxClient["create"]>[1],
+  ): Promise<CloudflareSandboxSession> {
+    const session = await super.create(args, manifestOptions);
+    try {
+      await preflightV2CloudflareSession({
+        session,
+        jobId: this.agentDiazJobId,
+        env: this.agentDiazEnv,
+      });
+      return session;
+    } catch (error) {
+      await session.close?.().catch(() => {});
+      throw error;
+    }
+  }
+}
+
+export function createV2SandboxRuntime(
+  jobId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): V2SandboxRuntime {
+  const provider = resolveV2SandboxProvider(env);
+  assertV2SandboxProviderReady(provider, env);
+
+  if (provider === "cloudflare") {
+    const workerUrl = env.CLOUDFLARE_SANDBOX_WORKER_URL!.trim();
+    const client = new AgentDiazCloudflareSandboxClient(
+      {
+        workerUrl,
+        ...(env.CLOUDFLARE_SANDBOX_API_KEY
+          ? { apiKey: env.CLOUDFLARE_SANDBOX_API_KEY }
+          : {}),
+        timeoutMs: 120_000,
+        createTimeoutMs: 120_000,
+        requestTimeoutMs: 120_000,
+        archiveLimits: {},
+      },
+      jobId,
+      env,
+    );
+    log("info", "agent_v2.sandbox_selected", {
+      jobId,
+      provider,
+      hosted: true,
+      canonicalWorkspace: V2_WORKSPACE_ROOT,
+      persistentMount: env.CLOUDFLARE_SANDBOX_R2_BINDING
+        ? V2_PERSIST_MOUNT
+        : null,
+    });
+    return { provider, client };
+  }
+
+  if (provider === "docker") {
+    const image =
+      env.AGENT_SANDBOX_DOCKER_IMAGE?.trim() || "node:22-bookworm-slim";
+    const client = new DockerSandboxClient({ image });
+    log("info", "agent_v2.sandbox_selected", {
+      jobId,
+      provider,
+      hosted: false,
+      image,
+    });
+    return { provider, client };
+  }
+
+  log(
+    env.NODE_ENV === "production" ? "warn" : "info",
+    "agent_v2.sandbox_selected",
+    {
+      jobId,
+      provider,
+      hosted: false,
+      unsafeProductionOverride:
+        env.NODE_ENV === "production" &&
+        enabled(env.AGENT_SANDBOX_ALLOW_UNSAFE_UNIX),
+    },
+  );
+  return { provider, client: new UnixLocalSandboxClient() };
 }
