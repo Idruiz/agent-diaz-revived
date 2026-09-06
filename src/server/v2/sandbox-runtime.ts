@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { CloudflareSandboxClient } from "@openai/agents-extensions/sandbox/cloudflare";
 import {
   DockerSandboxClient,
@@ -17,8 +18,26 @@ export interface V2SandboxRuntime {
   client: V2SandboxClient;
 }
 
+export interface V2SandboxSessionLike {
+  state: Record<string, any>;
+  execCommand(args: {
+    cmd: string;
+    workdir?: string;
+    yieldTimeMs?: number;
+    maxOutputTokens?: number;
+  }): Promise<string>;
+  close?: () => Promise<void>;
+}
+
+export const V2_WORKSPACE_ROOT = "/workspace";
+export const V2_PERSIST_MOUNT = "/workspace/persist";
+
 function enabled(value: string | undefined): boolean {
   return /^(?:1|true|yes|on)$/i.test(value?.trim() ?? "");
+}
+
+function validR2BindingName(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
 export function resolveV2SandboxProvider(
@@ -40,10 +59,27 @@ export function assertV2SandboxProviderReady(
   provider: V2SandboxProvider,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (provider === "cloudflare" && !env.CLOUDFLARE_SANDBOX_WORKER_URL?.trim())
-    throw new Error(
-      "AGENT_SANDBOX_PROVIDER=cloudflare requires CLOUDFLARE_SANDBOX_WORKER_URL",
-    );
+  if (provider === "cloudflare") {
+    if (!env.CLOUDFLARE_SANDBOX_WORKER_URL?.trim())
+      throw new Error(
+        "AGENT_SANDBOX_PROVIDER=cloudflare requires CLOUDFLARE_SANDBOX_WORKER_URL",
+      );
+    const binding = env.CLOUDFLARE_SANDBOX_R2_BINDING?.trim();
+    if (binding && !validR2BindingName(binding))
+      throw new Error(
+        "CLOUDFLARE_SANDBOX_R2_BINDING must be a valid Worker binding identifier",
+      );
+    if (env.NODE_ENV === "production") {
+      if (!env.CLOUDFLARE_SANDBOX_API_KEY?.trim())
+        throw new Error(
+          "Production Cloudflare sandbox requires CLOUDFLARE_SANDBOX_API_KEY so the bridge is not exposed without authentication.",
+        );
+      if (!binding)
+        throw new Error(
+          "Production Cloudflare sandbox requires CLOUDFLARE_SANDBOX_R2_BINDING so /workspace/persist is backed by durable R2 storage.",
+        );
+    }
+  }
   if (
     provider === "unix" &&
     env.NODE_ENV === "production" &&
@@ -107,4 +143,146 @@ export function createV2SandboxRuntime(
     },
   );
   return { provider, client: new UnixLocalSandboxClient() };
+}
+
+async function mountCloudflareR2Binding(
+  session: V2SandboxSessionLike,
+  jobId: string,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const binding = env.CLOUDFLARE_SANDBOX_R2_BINDING?.trim();
+  if (!binding) return false;
+
+  const sandboxId = String(session.state?.sandboxId ?? "").trim();
+  const workerUrl = env.CLOUDFLARE_SANDBOX_WORKER_URL?.trim();
+  if (!sandboxId || !workerUrl)
+    throw new Error(
+      "Cloudflare sandbox session is missing the bridge URL or sandbox ID required for the R2 binding mount.",
+    );
+
+  const mountUrl = new URL(
+    `/v1/sandbox/${encodeURIComponent(sandboxId)}/mount`,
+    workerUrl.endsWith("/") ? workerUrl : `${workerUrl}/`,
+  );
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (env.CLOUDFLARE_SANDBOX_API_KEY?.trim())
+    headers.set(
+      "Authorization",
+      `Bearer ${env.CLOUDFLARE_SANDBOX_API_KEY.trim()}`,
+    );
+
+  const response = await fetch(mountUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      bucket: binding,
+      mountPath: V2_PERSIST_MOUNT,
+      options: {
+        readOnly: false,
+        prefix: `agent-diaz-v2/${jobId}/`,
+      },
+    }),
+  });
+  if (!response.ok) {
+    const body = (await response.text().catch(() => "")).slice(0, 2_000);
+    throw new Error(
+      `Cloudflare R2 binding mount failed with HTTP ${response.status}${body ? `: ${body}` : ""}`,
+    );
+  }
+  return true;
+}
+
+async function runFilesystemSentinel(
+  session: V2SandboxSessionLike,
+  targetDir: string,
+  label: string,
+): Promise<void> {
+  const token = crypto.randomUUID().replaceAll("-", "");
+  const marker = `__AGENT_DIAZ_POSIX_OK_${token}__`;
+  const command = [
+    "set -eu",
+    `mkdir -p ${targetDir}`,
+    `printf '%s' '${token}' > ${targetDir}/.diaz-fs-${token}.tmp`,
+    `mv ${targetDir}/.diaz-fs-${token}.tmp ${targetDir}/.diaz-fs-${token}.renamed`,
+    `test \"$(cat ${targetDir}/.diaz-fs-${token}.renamed)\" = '${token}'`,
+    `rm ${targetDir}/.diaz-fs-${token}.renamed`,
+    `printf '%s' '${marker}'`,
+  ].join(" && ");
+  const output = await session.execCommand({
+    cmd: command,
+    workdir: V2_WORKSPACE_ROOT,
+    maxOutputTokens: 2_000,
+  });
+  if (!output.includes(marker))
+    throw new Error(
+      `Agent Díaz V2 ${label} filesystem sentinel did not complete create/rename/read/delete semantics.`,
+    );
+}
+
+async function runCloudflareToolchainSentinel(
+  session: V2SandboxSessionLike,
+): Promise<void> {
+  const marker = "__AGENT_DIAZ_BROWSER_TOOLCHAIN_OK__";
+  const command = [
+    "set -eu",
+    "command -v node >/dev/null",
+    "command -v chromium >/dev/null || command -v chromium-browser >/dev/null",
+    "command -v playwright-mcp >/dev/null",
+    "command -v chrome-devtools-mcp >/dev/null",
+    "command -v mcp-server-filesystem >/dev/null",
+    "test -f /opt/agent-diaz-tools/node_modules/puppeteer-core/package.json",
+    `printf '%s' '${marker}'`,
+  ].join(" && ");
+  const output = await session.execCommand({
+    cmd: command,
+    workdir: V2_WORKSPACE_ROOT,
+    maxOutputTokens: 2_000,
+  });
+  if (!output.includes(marker))
+    throw new Error(
+      "Cloudflare sandbox image is missing the Agent Díaz browser/MCP toolchain (Chromium, Playwright MCP, Chrome DevTools MCP, filesystem MCP, or Puppeteer).",
+    );
+}
+
+export async function prepareV2SandboxSession(args: {
+  runtime: V2SandboxRuntime;
+  manifest: unknown;
+  jobId: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<V2SandboxSessionLike> {
+  const env = args.env ?? process.env;
+  const client = args.runtime.client as any;
+  const session = (await client.create({
+    manifest: args.manifest,
+    concurrencyLimits: {
+      manifestEntries: 4,
+      localDirFiles: 12,
+    },
+    archiveLimits: {},
+  })) as V2SandboxSessionLike;
+
+  try {
+    const mounted =
+      args.runtime.provider === "cloudflare"
+        ? await mountCloudflareR2Binding(session, args.jobId, env)
+        : false;
+    await runFilesystemSentinel(session, V2_WORKSPACE_ROOT, "workspace");
+    if (mounted)
+      await runFilesystemSentinel(session, V2_PERSIST_MOUNT, "persistent R2 mount");
+    if (args.runtime.provider === "cloudflare")
+      await runCloudflareToolchainSentinel(session);
+
+    log("info", "agent_v2.sandbox_preflight_passed", {
+      jobId: args.jobId,
+      provider: args.runtime.provider,
+      workspace: V2_WORKSPACE_ROOT,
+      persistentMount: mounted ? V2_PERSIST_MOUNT : null,
+      browserToolchain:
+        args.runtime.provider === "cloudflare" ? "verified" : "not-required",
+    });
+    return session;
+  } catch (error) {
+    await session.close?.().catch(() => {});
+    throw error;
+  }
 }
