@@ -1,0 +1,37 @@
+name: SWARM branch dependency refresh
+on:
+  push:
+    branches:
+      - swarm-tool-registry-integration-20261106
+permissions:
+  contents: write
+jobs:
+  refresh:
+    if: ${{ !contains(github.event.head_commit.message, '[zod-refresh]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: swarm-tool-registry-integration-20261106
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+      - name: Refresh vulnerable Zod package and lockfile only
+        run: npm install 'zod@^4.6.6' --save --package-lock-only --ignore-scripts
+      - name: Verify frozen installation and TypeScript
+        run: |
+          npm ci
+          npm run check
+          npm run audit:reviewed
+      - name: Commit security-only dependency refresh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'security: upgrade vulnerable Zod and lockfile [zod-refresh]'
+            git push origin HEAD:swarm-tool-registry-integration-20261106
+          fi
