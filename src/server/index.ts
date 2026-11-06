@@ -19,7 +19,7 @@ ensureDirs(config.dataDir, config.artifactDir, config.uploadDir);
 const db = openDatabase(config);
 const auth = createAuth(config, db);
 const runner = new AgentRunner(config, db);
-const swarmArtifactApi = createSwarmArtifactApi(config, db);
+const swarmArtifactApi = createSwarmArtifactApi(config, db, runner);
 const packageMeta = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")) as { version: string; dependencies?: Record<string, string> };
 const exactDependencyVersion = (name: string) => String(packageMeta.dependencies?.[name] ?? "unknown").replace(/^[^0-9]*/, "");
 const app = express();
