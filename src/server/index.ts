@@ -11,6 +11,7 @@ import { ensureDirs } from "./files.js";
 import { apiRoutes } from "./routes.js";
 import { presentationExportRoutes } from "./presentation-exports.js";
 import { AgentRunner } from "./openai-agent.js";
+import { createSwarmArtifactApi } from "./swarm-api.js";
 import { log } from "./log.js";
 
 const config = loadConfig();
@@ -18,6 +19,7 @@ ensureDirs(config.dataDir, config.artifactDir, config.uploadDir);
 const db = openDatabase(config);
 const auth = createAuth(config, db);
 const runner = new AgentRunner(config, db);
+const swarmArtifactApi = createSwarmArtifactApi(config, db);
 const packageMeta = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")) as { version: string; dependencies?: Record<string, string> };
 const exactDependencyVersion = (name: string) => String(packageMeta.dependencies?.[name] ?? "unknown").replace(/^[^0-9]*/, "");
 const app = express();
@@ -63,6 +65,7 @@ app.get("/version", (_req, res) => res.json({ buildSha: process.env.RENDER_GIT_C
 // Companion PDF/HTML presentation routes are additive and deliberately mounted
 // before the canonical API routes. A failed companion export never replaces,
 // delays, or invalidates the already accepted PPTX artifact.
+app.use("/api/swarm/v1", swarmArtifactApi.router);
 app.use("/api", presentationExportRoutes(config, db, auth));
 app.use("/api", apiRoutes(config, db, runner, auth));
 app.use((err: any, _req: any, res: any, _next: any) => {
@@ -86,6 +89,7 @@ if (config.NODE_ENV === "production" && fs.existsSync(publicDir)) {
 const server = app.listen(config.PORT, () => {
   log("info", "server.started", { port: config.PORT, env: config.NODE_ENV });
   runner.resume();
+  swarmArtifactApi.resume();
 });
 const stop = () =>
   server.close(() => {
