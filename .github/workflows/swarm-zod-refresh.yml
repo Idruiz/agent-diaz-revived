@@ -21,6 +21,7 @@ jobs:
           cache: npm
       - name: Refresh vulnerable Zod package and lockfile only
         run: npm install 'zod@^4.6.6' --save --package-lock-only --ignore-scripts
+          npm audit fix --omit=dev --package-lock-only --ignore-scripts
       - name: Verify frozen installation and TypeScript
         run: |
           npm ci
