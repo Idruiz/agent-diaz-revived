@@ -49,7 +49,6 @@ const maxConcurrency = 1;
 export function createSwarmArtifactApi(config: Config, db: Db, runner?:Pick<AgentRunner,'start'|'cancel'>) {
   const router = Router();
   const active = new Set<string>();
-  const studio = createFullStudioBridge(config,db,runner);
   const modeFor = (id:string):'studio'|'plan' => {
     const row=db.raw.prepare("SELECT json_extract(payload_json,'$.inputMode') mode FROM swarm_artifact_jobs WHERE id=?")
       .get(id) as {mode?:'studio'|'plan'}|undefined;
@@ -84,6 +83,7 @@ export function createSwarmArtifactApi(config: Config, db: Db, runner?:Pick<Agen
     CREATE INDEX IF NOT EXISTS idx_swarm_jobs_status ON swarm_artifact_jobs(status, created_at);
   `);
 
+  const studio = createFullStudioBridge(config,db,runner);
   const queryJob = db.raw.prepare('SELECT id,kind,status,progress,message,error,artifact_id,created_at,updated_at FROM swarm_artifact_jobs WHERE id=?');
   const queryPayload = db.raw.prepare('SELECT payload_json FROM swarm_artifact_jobs WHERE id=?');
   const queryArtifact = db.raw.prepare('SELECT * FROM swarm_artifact_files WHERE job_id=?');
