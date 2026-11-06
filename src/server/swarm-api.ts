@@ -44,7 +44,7 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
   const router = Router();
   const active = new Set<string>();
   let scheduled = false;
-  db.raw.exec(\`
+  db.raw.exec(`
     CREATE TABLE IF NOT EXISTS swarm_artifact_jobs(
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -70,7 +70,7 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_swarm_jobs_status ON swarm_artifact_jobs(status, created_at);
-  \`);
+  `);
 
   const queryJob = db.raw.prepare('SELECT id,kind,status,progress,message,error,artifact_id,created_at,updated_at FROM swarm_artifact_jobs WHERE id=?');
   const queryPayload = db.raw.prepare('SELECT payload_json FROM swarm_artifact_jobs WHERE id=?');
@@ -86,7 +86,7 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
       artifact: artifact ? {
         id: artifact.id, name: artifact.name, mime: artifact.mime,
         size: artifact.size, sha256: artifact.sha256,
-        downloadPath: \`/api/swarm/v1/jobs/\${job.id}/artifacts/\${artifact.id}\`,
+        downloadPath: `/api/swarm/v1/jobs/${job.id}/artifacts/${artifact.id}`,
         validation: JSON.parse(artifact.receipt_json),
       } : null,
     };
@@ -129,7 +129,7 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
         const storedHash = built.validationReceipt.artifactSha256;
         if (storedHash && storedHash !== actualHash) throw Error('Artifact SHA-256 validation mismatch');
         const extension = path.extname(built.name).toLowerCase();
-        const filename = \`swarm-\${id}-\${actualHash.slice(0,16)}\${extension}\`;
+        const filename = `swarm-${id}-${actualHash.slice(0,16)}${extension}`;
         const target = path.join(config.artifactDir, filename);
         fs.renameSync(built.path, target);
         const artifactId = crypto.randomUUID();
