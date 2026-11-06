@@ -669,7 +669,15 @@ export class AgentRunner {
   }
 
   private contextInstructions(conversationId: string): string {
-    const archives = this.db.listArchiveSummaries(20);
+    // Machine-to-machine jobs run in a fresh conversation but must NEVER
+    // inherit the owner's unrelated archived conversation summaries.
+    const hasSwarmLedger=Boolean(this.db.raw.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swarm_artifact_jobs'"
+    ).get());
+    const isExternalJob=hasSwarmLedger&&Boolean(this.db.raw.prepare(
+      "SELECT 1 FROM jobs WHERE conversation_id=? AND id IN (SELECT id FROM swarm_artifact_jobs) LIMIT 1"
+    ).get(conversationId));
+    const archives = isExternalJob ? [] : this.db.listArchiveSummaries(20);
     const archiveContext = archives.length
       ? `ARCHIVAL MEMORY FROM OLDER CONVERSATIONS (use only when relevant; never claim it was said in this conversation):\n${archives.map((a) => `[${a.title}] ${a.summary}`).join("\n\n")}`
       : "";
