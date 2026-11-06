@@ -23,6 +23,8 @@ jobs:
         run: |
           npm install 'zod@^4.6.6' --save --package-lock-only --ignore-scripts
           npm audit fix --omit=dev --package-lock-only --ignore-scripts || echo 'Nonbreaking audit remediation incomplete; verify gate remains enforced'
+          npm install 'archiver@^8.0.0' --save --package-lock-only --ignore-scripts
+          npm audit fix --omit=dev --package-lock-only --ignore-scripts || echo 'Nonbreaking audit remediation incomplete; verify gate remains enforced'
       - name: Verify frozen installation and TypeScript
         run: |
           npm ci
