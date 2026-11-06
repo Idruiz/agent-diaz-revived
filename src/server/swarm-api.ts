@@ -9,6 +9,8 @@ import { ArtifactPlanSchema, type ArtifactPlan, type JobKind } from '../shared/c
 import { buildArtifact } from './builders.js';
 import { log } from './log.js';
 import { withArtifactRunLog, readArtifactRunLog } from './artifact-run-log.js';
+import { createFullStudioBridge, type StudioKind } from './swarm-studio.js';
+import type { AgentRunner } from './openai-agent.js';
 
 /**
  * Machine-to-machine artifact transport. Separate authentication and job ledger
@@ -21,13 +23,17 @@ import { withArtifactRunLog, readArtifactRunLog } from './artifact-run-log.js';
 const MAX_QUEUE = 20;
 const MAX_PAYLOAD_BYTES = 160_000;
 const ACCEPTED_KINDS = ['presentation', 'document', 'website', 'research', 'analysis'] as const;
-const RequestSchema = z.object({
-  requestId: z.string().uuid(),
-  kind: z.enum(ACCEPTED_KINDS),
-  inputMode: z.literal('plan'),
-  plan: ArtifactPlanSchema,
-  prompt: z.string().trim().max(30000).default(''),
+const BaseRequest = {requestId:z.string().uuid(),kind:z.enum(ACCEPTED_KINDS)};
+const StudioRequest = z.object({
+  ...BaseRequest,inputMode:z.literal('studio').default('studio'),
+  prompt:z.string().trim().min(2).max(30000),
+  modelMode:z.enum(['balanced','deep']).default('deep')
 }).strict();
+const PlanRequest = z.object({
+  ...BaseRequest,inputMode:z.literal('plan'),
+  plan:ArtifactPlanSchema,prompt:z.string().trim().max(30000).default('')
+}).strict();
+const RequestSchema=z.union([StudioRequest,PlanRequest]);
 
 type Kind = (typeof ACCEPTED_KINDS)[number];
 type Request = z.infer<typeof RequestSchema>;
@@ -40,9 +46,15 @@ const safeID = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab]
 const secret = (process.env.SWARM_DIAZ_API_KEY ?? '').trim();
 const maxConcurrency = 1;
 
-export function createSwarmArtifactApi(config: Config, db: Db) {
+export function createSwarmArtifactApi(config: Config, db: Db, runner?:Pick<AgentRunner,'start'|'cancel'>) {
   const router = Router();
   const active = new Set<string>();
+  const studio = createFullStudioBridge(config,db,runner);
+  const modeFor = (id:string):'studio'|'plan' => {
+    const row=db.raw.prepare("SELECT json_extract(payload_json,'$.inputMode') mode FROM swarm_artifact_jobs WHERE id=?")
+      .get(id) as {mode?:'studio'|'plan'}|undefined;
+    return row?.mode==='studio'?'studio':'plan';
+  };
   let scheduled = false;
   db.raw.exec(`
     CREATE TABLE IF NOT EXISTS swarm_artifact_jobs(
@@ -79,10 +91,15 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
   const update = (id: string, status: string, progress: number, message: string, error: string | null = null) =>
     writeState.run(status, progress, message.slice(0, 400), error?.slice(0, 2000) ?? null, now(), id);
   const published = (job: JobRow) => {
+    const mode=modeFor(job.id);
+    if(mode==='studio')studio.sync(job.id,job.kind);
+    const current=queryJob.get(job.id) as JobRow;
     const artifact = queryArtifact.get(job.id) as ArtifactRow | undefined;
     return {
-      jobId: job.id, kind: job.kind, status: job.status, progress: job.progress,
-      message: job.message, error: job.error, createdAt: job.created_at, updatedAt: job.updated_at,
+      jobId:current.id,kind:current.kind,status:current.status,progress:current.progress,
+      inputMode:mode,
+      pipeline:mode==='studio'?'standalone-full-studio':'structured-builder',
+      message:current.message,error:current.error,createdAt:current.created_at,updatedAt:current.updated_at,
       artifact: artifact ? {
         id: artifact.id, name: artifact.name, mime: artifact.mime,
         size: artifact.size, sha256: artifact.sha256,
@@ -109,7 +126,7 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
   const runOne = async (id: string) => {
     const payloadRow = queryPayload.get(id) as { payload_json: string } | undefined;
     if (!payloadRow) throw Error('Job record missing');
-    const input = RequestSchema.parse(JSON.parse(payloadRow.payload_json));
+    const input = PlanRequest.parse(JSON.parse(payloadRow.payload_json));
     update(id, 'running', 5, 'Starting deterministic artifact builder');
     const scratch = path.join(config.artifactDir, '.swarm-work', id);
     fs.mkdirSync(scratch, { recursive: true });
@@ -149,7 +166,7 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
 
   const pump = () => {
     if (active.size >= maxConcurrency) return;
-    const queued = db.raw.prepare("SELECT id FROM swarm_artifact_jobs WHERE status='queued' ORDER BY created_at ASC LIMIT 1").get() as { id: string } | undefined;
+    const queued = db.raw.prepare("SELECT id FROM swarm_artifact_jobs WHERE status='queued' AND json_extract(payload_json,'$.inputMode')='plan' ORDER BY created_at ASC LIMIT 1").get() as { id: string } | undefined;
     if (!queued || active.has(queued.id)) return;
     active.add(queued.id);
     void runOne(queued.id).catch(err => {
@@ -166,7 +183,9 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
   router.use(authorize);
   router.get('/capabilities', (_req,res) => res.json({
     ok: true, name: 'agent-diaz-deterministic-artifacts', version: 1,
-    inputModes: ['plan'], formats: { presentation: 'pptx', document: 'docx', website: 'zip', research: 'docx', analysis: 'docx' },
+    inputModes:['studio','plan'],defaultMode:'studio',defaultModelMode:'deep',
+    studioPipeline:'Same standalone evidence → AI planning → images → deterministic render and QA',
+    formats: { presentation: 'pptx', document: 'docx', website: 'zip', research: 'docx', analysis: 'docx' },
     async: true, idempotency: 'requestId UUID', maxQueuedJobs: MAX_QUEUE,
   }));
   router.post('/jobs', (req,res) => {
@@ -175,7 +194,7 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
     const parsed = RequestSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ok:false,error:'INVALID_JOB',issues:parsed.error.issues});
     const input = parsed.data;
-    const serialized = JSON.stringify({ kind: input.kind, inputMode: input.inputMode, plan: input.plan, prompt: input.prompt });
+    const serialized = JSON.stringify(input);
     const hash = sha256(serialized);
     const existing = db.raw.prepare('SELECT request_hash FROM swarm_artifact_jobs WHERE id=?').get(input.requestId) as {request_hash:string} | undefined;
     if (existing) {
@@ -186,16 +205,21 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
     }
     const waiting = (db.raw.prepare("SELECT COUNT(*) count FROM swarm_artifact_jobs WHERE status IN ('queued','running')").get() as {count:number}).count;
     if (waiting >= MAX_QUEUE) return res.status(429).set('Retry-After','15').json({ok:false,error:'QUEUE_FULL'});
+    if(input.inputMode==='studio'&&!runner)return res.status(503).json({ok:false,error:'FULL_STUDIO_RUNNER_NOT_CONFIGURED'});
     const stamp = now();
     try {
-      db.raw.prepare("INSERT INTO swarm_artifact_jobs(id,kind,request_hash,payload_json,status,progress,message,created_at,updated_at) VALUES(?,?,?,?,'queued',0,'Queued',?,?)")
-        .run(input.requestId,input.kind,hash,JSON.stringify(input),stamp,stamp);
+      db.raw.transaction(()=>{
+        db.raw.prepare("INSERT INTO swarm_artifact_jobs(id,kind,request_hash,payload_json,status,progress,message,created_at,updated_at) VALUES(?,?,?,?,'queued',0,'Queued',?,?)")
+          .run(input.requestId,input.kind,hash,JSON.stringify(input),stamp,stamp);
+        if(input.inputMode==='studio')studio.create(input);
+      })();
     } catch (err) {
       if (String(err).includes('UNIQUE')) return res.status(409).json({ok:false,error:'CONCURRENT_IDEMPOTENCY_CONFLICT'});
       throw err;
     }
-    log('info','swarm_api.job_created',{jobId:input.requestId,kind:input.kind});
-    schedule();
+    log('info','swarm_api.job_created',{jobId:input.requestId,kind:input.kind,inputMode:input.inputMode});
+    if(input.inputMode==='studio')studio.start(input.requestId);
+    else schedule();
     return res.status(202).json({ok:true,replayed:false,...published(queryJob.get(input.requestId) as JobRow)});
   });
   router.get('/jobs/:id', (req,res) => {
@@ -230,8 +254,9 @@ export function createSwarmArtifactApi(config: Config, db: Db) {
 
   /** Re-queue jobs interrupted by process restart. A job never reports success unless its bytes and receipt were committed. */
   const resume = () => {
-    const stale = db.raw.prepare("UPDATE swarm_artifact_jobs SET status='queued',progress=0,message='Recovered after service restart',updated_at=? WHERE status='running'").run(now());
+    const stale = db.raw.prepare("UPDATE swarm_artifact_jobs SET status='queued',progress=0,message='Recovered after service restart',updated_at=? WHERE status='running' AND json_extract(payload_json,'$.inputMode')='plan'").run(now());
     if (stale.changes) log('warn','swarm_api.recovered_interrupted_jobs',{count:stale.changes});
+    studio.resumeStudio();
     schedule();
   };
   return { router, resume };
